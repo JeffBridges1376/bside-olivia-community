@@ -16,20 +16,16 @@ from runtime.private_world.life_rhythm import LOCAL
 _RUNTIME = web.AppKey("personal_chat", dict)
 ACTIVATE_SAVED_CONFIG = web.AppKey("personal_chat_activate_saved_config", object)
 _CONSUMER_TIMEOUT_SECONDS = 15
-_VOICE_QUEUE_TIMEOUT_SECONDS = 10 * 60
 _VOICE_RENDER_TIMEOUT_SECONDS = 20 * 60
 
 
 async def prepare_chat_audio(server, text, path):
-    """Keep the media slot until the worker really exits, even after fallback."""
+    """Submit chat speech independently of letter and photo media work."""
     from runtime.media.voice_direction import TextOnlyVoicePlan
     from runtime.remote_pipeline import PROGRESS_CALLBACK
     from .service import QUEUE_NOTICE
     config_path = Path(os.environ['OLIVIA_TTS_CONFIG'])
     notice = QUEUE_NOTICE.get()
-    if server.media_semaphore.locked() and notice is not None:
-        await notice()
-    await asyncio.wait_for(server.media_semaphore.acquire(), _VOICE_QUEUE_TIMEOUT_SECONDS)
     loop = asyncio.get_running_loop()
     queued = asyncio.Event()
     active = True
@@ -40,11 +36,11 @@ async def prepare_chat_audio(server, text, path):
     try:
         worker = asyncio.create_task(asyncio.to_thread(server.render_reply_audio, text, path,
             tts_config_path=config_path,
-            voice_performance_plan=TextOnlyVoicePlan(text), environment=dict(os.environ)))
+            voice_performance_plan=TextOnlyVoicePlan(text),
+            environment={**os.environ, 'OLIVIA_MEDIA_CHANNEL': 'qq'}))
     finally:
         PROGRESS_CALLBACK.reset(token)
     def finished(task):
-        server.media_semaphore.release()
         if not task.cancelled():
             task.exception()
     worker.add_done_callback(finished)
@@ -140,7 +136,7 @@ async def generate(server, event, row):
     content = event.text + incoming_context(row)
     source = server._CURRENT_LETTER_MEMORY_SOURCE.set(f"reply:{event.exchange_id}:1")
     receipt = server._CURRENT_LETTER_RECEIPT.set(datetime.fromisoformat(row["life_received_at"]))
-    from .presentation import CURRENT, parse, parse_social
+    from .presentation import CURRENT, parse, parse_social, recent_delivery_formats
     from .initiative import letter_invitation_allowed
     allowed = letter_invitation_allowed(server.store.personal_chats, getattr(server.store, 'letters', []),
                                          datetime.now().timestamp())
@@ -158,6 +154,8 @@ async def generate(server, event, row):
     except (TypeError, ValueError):
         pass
     presentation = CURRENT.set({'voice_available': voice_available, 'listening_preference': 'voice_ok',
+                                'recent_delivery_formats': recent_delivery_formats(server.store.personal_chats,
+                                    channel=event.channel, binding_id=event.binding_id),
                                 'structured': True, 'decision_now': datetime.now(LOCAL).isoformat(),
                                 'due_followup': row.get('followup_quote'),
                                 'channel': event.channel, 'incoming_format': event.input_kind,
@@ -246,10 +244,7 @@ async def commit(server, row):
 
 async def prepare_chat_photo(server, row, send):
     from runtime.image_reply import prepare
-    from .service import photo_notice
-    await prepare(server, row, row.get('content', ''), row['reply_text'], channel='qq',
-                  on_ready=lambda: photo_notice(row, send, lambda: persist_chat(server),
-                      'progress', '好，我准备一张照片，稍等一下。'))
+    await prepare(server, row, row.get('content', ''), row['reply_text'], channel='qq')
 
 
 async def deliver_photo(server, row, send):
@@ -463,7 +458,7 @@ def install_personal_chat(app, server):
                 from runtime.letter_stickers.selection import allowed_stickers
                 try:
                     context = server.letters_adapter.build_reply_context(ReplyMode.FUTURE_IM, future_im_enabled=True)
-                    return key in allowed_stickers(context.private_behavior)
+                    return key in allowed_stickers(context.private_behavior, channel='qq')
                 except Exception:
                     return False
             service = PersonalChatService(server.store.personal_chats, lambda: persist_chat(server),
