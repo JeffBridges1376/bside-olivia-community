@@ -75,12 +75,12 @@ def open_log():
     global _LOG, LOG_PATH
     cands = []
     try:
-        cands.append(Path(__file__).resolve().parent / "olivia_memory.log")
+        cands.append(Path(__file__).resolve().parent / "olivia_memory_diagnostic.log")
     except Exception:
         pass
     tmp = os.environ.get("TEMP") or os.environ.get("TMP")
     if tmp:
-        cands.append(Path(tmp) / "olivia_memory.log")
+        cands.append(Path(tmp) / "olivia_memory_diagnostic.log")
     for cand in cands:
         try:
             if cand.exists() and cand.stat().st_size > _LOG_MAX:
@@ -115,6 +115,10 @@ def log_line(msg=""):
     """只写日志，不打印。"""
     if _LOG is not None:
         try:
+            # Omit the whole message instead of guessing where a quoted or
+            # space-containing path ends. Console output remains unchanged.
+            if "/" in msg or "\\" in msg:
+                msg = "[path-bearing diagnostic omitted]"
             _LOG.write(msg + "\n")
             _LOG.flush()
         except Exception:
@@ -136,23 +140,25 @@ def log_header(argv):
     log_line("=" * 72)
     log_line("运行时间 : %s" % datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S %z"))
     log_line("工具版本 : %s" % __version__)
-    log_line("命令行   : %s" % " ".join([str(sys.argv[0])] + list(argv)))
-    log_line("工作目录 : %s" % os.getcwd())
-    log_line("Python   : %s  (%s)" % (sys.version.split()[0], sys.executable))
-    log_line("日志文件 : %s" % LOG_PATH)
+    log_line("Python   : %s" % sys.version.split()[0])
     log_line("-" * 72)
 
 
 def log_footer(state: str):
     log_line("-" * 72)
+    if state.startswith("异常中止"):
+        state = "异常中止"
     log_line("结束状态 : %s" % state)
 
 
 def log_traceback():
     import traceback
     log_line()
-    log_line("---- 完整堆栈（贴给别人查问题用这一段）----")
-    log_line(traceback.format_exc())
+    log_line("---- 脱敏堆栈（不含路径、源码及异常正文）----")
+    exc_type, _, tb = sys.exc_info()
+    log_line("exception_type: %s" % (exc_type.__name__ if exc_type else "unknown"))
+    for frame in traceback.extract_tb(tb):
+        log_line("function=%s line=%d" % (frame.name, frame.lineno))
     log_line("---- 堆栈结束 ----")
 
 
@@ -3995,10 +4001,10 @@ if __name__ == "__main__":
         _rc = 130
     except Exception as _ex:
         log()
-        log("  ✗ 出错了：%s: %s" % (type(_ex).__name__, _ex))
+        say("  ✗ 出错了：%s: %s" % (type(_ex).__name__, _ex))
         log("    数据库没有被改动的部分不受影响；若已自动备份，可用备份覆盖回 memory.sqlite3。")
         if LOG_PATH is not None:
-            log("    完整堆栈已写进日志：%s" % LOG_PATH)
+            log("    脱敏堆栈已写进日志：%s" % LOG_PATH)
             log("    （把这个文件发给帮忙的人就能查）")
         else:
             log("    （日志文件没能写出来，请把上面的输出整段复制下来）")

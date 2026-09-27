@@ -311,9 +311,29 @@ def test_runtime_log_never_receives_letter_bodies(tmp_path, monkeypatch):
         tool._LOG = None
 
     shown = console.getvalue()
-    logged = (log_dir / "olivia_memory.log").read_text(encoding="utf-8")
+    logged = (log_dir / "olivia_memory_diagnostic.log").read_text(encoding="utf-8")
     for text in (BODY, LIBRARY_REPLY, SOURCE_REPLY):
         assert text in shown, "the user still has to be able to read this on screen"
         assert text not in logged, "letter text leaked into the diagnostic log"
     assert "同一分钟" in logged, "the log still records times and counts"
     assert "preview-1" in logged, "the log still records which letter it was"
+
+
+def test_diagnostic_log_omits_paths_and_exception_details(tmp_path, monkeypatch):
+    tool = _tool_module()
+    output = io.StringIO()
+    monkeypatch.setattr(tool, "_LOG", output)
+    private = str(tmp_path / "private-source.soul")
+    tool.log_header(["apply", private])
+    for path in (private, r"Z:\private user\letters.soul", r"\\host\private\letters", "/private/letters.soul"):
+        tool.log_line("source: " + path)
+    try:
+        raise ValueError("private exception body")
+    except ValueError:
+        tool.log_traceback()
+    tool.log_footer("异常中止：ValueError: private exception body")
+    logged = output.getvalue()
+    for secret in (private, "private-source", "private user", "host", "/private", "private exception body"):
+        assert secret not in logged
+    assert "ValueError" in logged
+    assert "工具版本" in logged
