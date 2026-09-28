@@ -268,7 +268,13 @@ def test_zero_memory_budget_cannot_enable_the_history_tail(tmp_path):
         adapter = production_adapter(archive, memory)
         request, check = asyncio.run(final_request(adapter, '好久不见。'))
         assert '铜纽扣' not in repr(request.messages)
-        assert check.calls == []
+        # Persona selection remains active; disabling memory still prevents
+        # archive data from entering either this selector or the writer.
+        assert len(check.calls) == 1
+        packet = json.loads(check.calls[0][-1]['content'])
+        assert packet['persona_candidates']
+        assert packet['candidates'] == packet['recent_records'] == packet['recent_dialogue'] == []
+        assert '铜纽扣' not in repr(check.calls)
     finally:
         archive.close()
 

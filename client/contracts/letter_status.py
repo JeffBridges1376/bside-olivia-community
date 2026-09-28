@@ -9,6 +9,7 @@ class OriginalLetterStatus(IntEnum):
     PENDING = 1
     REPLIED = 4
     FAILED = 5
+    NO_REPLY = 6  # Supported by the development companion frontend patch.
 
 
 _INTERNAL_TO_WIRE = {
@@ -19,6 +20,7 @@ _INTERNAL_TO_WIRE = {
     "FAILED": OriginalLetterStatus.FAILED,
     "CANCELED": OriginalLetterStatus.FAILED,
     "CANCELLED": OriginalLetterStatus.FAILED,
+    "SKIPPED": OriginalLetterStatus.NO_REPLY,
 }
 
 

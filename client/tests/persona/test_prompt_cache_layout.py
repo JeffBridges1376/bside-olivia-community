@@ -38,7 +38,9 @@ def test_changing_clock_relationship_and_life_preserves_fixed_persona_prefix():
 
     common = os.path.commonprefix([result.system_content for result in results])
     for declaration in snapshot.declarations:
-        if declaration.tier == "PUBLIC_CANON":
+        if declaration.inclusion == "phase":
+            assert declaration.declaration_id not in common
+        elif declaration.tier == "PUBLIC_CANON":
             assert declaration.declaration_id in common
     assert "<private_behavior>" not in common
     assert "合成近况" not in common
@@ -80,5 +82,7 @@ def test_chat_delivery_changes_do_not_break_persona_cache_prefix(channel):
             CURRENT.reset(token)
     assert results[0] == results[1]
     for declaration in snapshot.declarations:
-        if declaration.tier == 'PUBLIC_CANON':
+        if declaration.inclusion == 'phase':
+            assert declaration.declaration_id not in results[0]
+        elif declaration.tier == 'PUBLIC_CANON':
             assert declaration.declaration_id in results[0]

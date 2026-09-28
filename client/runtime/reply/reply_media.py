@@ -343,6 +343,8 @@ def render_reply_video(
     ffmpeg_path: Path | None = None,
     provider_cache_root: Path | None = None,
 ) -> dict[str, object]:
+    if voice_performance_plan is not None and voice_performance_plan.spoken_text != text:
+        raise ReplyMediaError("VOICE_DIRECTION_TEXT_MISMATCH")
     from runtime.remote_pipeline import enabled, generate
     if enabled(environment):
         return generate('video', {'text': text, 'voice_plan': voice_performance_plan.to_dict() if voice_performance_plan else {'reply_text': text},
@@ -475,7 +477,7 @@ def render_reply_video(
     }
 
 
-def render_reply_audio(text: str, output_path: Path, *, tts_config_path: Path,
+def render_reply_audio(text: str, output_path: Path, *, tts_config_path: Path | None,
                        voice_performance_plan: TextOnlyVoicePlan | VoicePerformancePlan,
                        environment: Mapping[str, str] | None = None) -> dict[str, object]:
     """Generate speech directly, without video dependencies or a video VRAM gate."""
@@ -484,6 +486,8 @@ def render_reply_audio(text: str, output_path: Path, *, tts_config_path: Path,
     from runtime.remote_pipeline import enabled, generate
     if enabled(environment):
         return generate('tts', {'text': text, 'voice_plan': voice_performance_plan.to_dict()}, output_path, environment=environment)
+    if tts_config_path is None:
+        raise ReplyMediaError('TTS_NOT_CONFIGURED')
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="olivia-voice-", dir=output_path.parent) as temporary:
         config = _tts_config(tts_config_path, Path(temporary), ordinary_video=True, env=environment)

@@ -37,7 +37,7 @@ def test_relationship_profile_changes_letter_budget_and_reason_threshold():
     close = make_context([{**base, 'initiative_tier': 'close', 'initiative_caution': 'normal'}], now=2000)
     committed = make_context([{**base, 'initiative_tier': 'committed', 'initiative_caution': 'normal'}], now=2000)
     assert reserved['remaining'] == 1 and reserved['initiative_profile']['tier'] == 'reserved'
-    assert close['remaining'] == 2 and committed['remaining'] == 3
+    assert close['remaining'] == 2 and committed['remaining'] == 6
     reserved_followup = next(item for item in reserved['candidates'] if item['kind'] == 'correspondence_followup')
     close_followup = next(item for item in close['candidates'] if item['kind'] == 'correspondence_followup')
     committed_followup = next(item for item in committed['candidates'] if item['kind'] == 'correspondence_followup')
@@ -69,9 +69,10 @@ def test_quota_unread_and_expiry_are_rechecked_without_catchup(tmp_path):
 def test_publication_locks_send_hides_draft_and_commits_only_final_letter(tmp_path, voice_ok):
     script = r'''
 import asyncio, json, time, os
+from datetime import datetime, timezone
 from types import SimpleNamespace
 import local_server as server
-from runtime.reply.proactive_letters import write_json
+from runtime.reply.proactive_letters import scan_pending, write_json
 root = server._state_root()
 write_json(root / 'proactive/settings.json', {'enabled': True, 'allow_voice': True})
 assert server._proactive_reason == 'disabled'
@@ -81,6 +82,13 @@ write_json(root / 'proactive/settings.json', {'enabled': False})
 assert server._proactive_status()['reason'] == 'disabled'
 write_json(root / 'proactive/settings.json', {'enabled': True, 'allow_voice': True})
 server.store.letters.clear()
+server.store.letters.append({'letter_id':'u1', 'content':'之前说起谱子', 'reply_text':'好啊',
+                            'letter_status':'COMPLETED', 'created_at':time.time()-7200,
+                            'reply_revision':1, 'is_read':1, 'initiative_tier':'close',
+                            'initiative_caution':'normal'})
+world = {}
+server.daily_life_runtime = SimpleNamespace(store=SimpleNamespace(
+    exchange_state=lambda: world, record_media_delivery=lambda event: False))
 server._proactive_ready = lambda: True
 server.private_world_committer = None
 committed = []
@@ -93,9 +101,9 @@ async def complete(*args, **kwargs):
 server._proactive_complete = complete
 async def render(lid, content, body, mode):
     assert content == '' and server._proactive_busy
-    assert server._letter_collection('current') == []
+    assert not [row for row in server._letter_collection('current') if row.get('origin') == 'proactive']
     assert not committed
-    row = server.store.letters[0]
+    row = server.store.letters[-1]
     row['media_status'] = 'COMPLETED' if os.environ['VOICE_OK'] == '1' else 'FAILED'
     if row['media_status'] == 'COMPLETED':
         path = root / 'media' / (lid + '.wav')
@@ -107,11 +115,14 @@ async def render(lid, content, body, mode):
         assert not row.get('media_deliveries')
 server._render_media_job = render
 async def main():
-    await server._publish_proactive({'id': 'test', 'source_id': 'reply:u1:1'},
-                                    {'format': 'voice', 'title': '写给你'})
+    server._refresh_proactive_context()
+    intent = scan_pending(root)
+    assert intent.get('kind') == 'correspondence_followup'
+    turn = await server._prepare_proactive_turn(intent, now=datetime.now(timezone.utc))
+    await server._publish_proactive(intent, {'format': 'voice', 'title': '写给你'}, turn=turn)
     assert not server._proactive_busy
     assert len(committed) == 1
-    row = server._letter_collection('current')[0]
+    row = next(row for row in server._letter_collection('current') if row.get('origin') == 'proactive')
     assert row['content'] == '' and row['origin'] == 'proactive'
     assert row['reply_mode'] == ('voice_reply' if os.environ['VOICE_OK'] == '1' else 'text')
     assert row['reply_revision'] == 1
@@ -126,11 +137,19 @@ async def main():
     assert server.recover_pending_private_world() == 0
     detail = await server.route('GET', '/toy/letter/detail', {}, {'letter_id':row['letter_id']})
     assert detail['code'] == 0, detail
-    assert json.loads((root / 'state.json').read_text(encoding='utf-8'))['letters'][0]['is_read'] == 1
+    persisted = json.loads((root / 'state.json').read_text(encoding='utf-8'))['letters']
+    assert next(item for item in persisted if item.get('origin') == 'proactive')['is_read'] == 1
     async def text_letter(*args, **kwargs):
         return '第一段。\n\n\n第二段。\n[[signature:阿离]]'
     server._proactive_complete = text_letter
-    await server._publish_proactive({'id':'signature'}, {'format':'text','title':'写给你'})
+    world['shared'] = [{'id':'signature-followup', 'actor':'user', 'status':'planned',
+        'source_id':'reply:u1:1',
+        'updated_at':datetime.fromtimestamp(time.time()-2*86400, timezone.utc).isoformat()}]
+    server._refresh_proactive_context()
+    intent = scan_pending(root)
+    assert intent.get('kind') == 'shared_followup'
+    turn = await server._prepare_proactive_turn(intent, now=datetime.now(timezone.utc))
+    await server._publish_proactive(intent, {'format':'text','title':'写给你'}, turn=turn)
     signed = server.store.letters[-1]
     assert signed['reply_text'] == '第一段。\n\n\n第二段。'
     assert signed['reply_signature'] == '阿离'
@@ -144,7 +163,11 @@ async def main():
         raise ValueError('bad model response')
     server._proactive_complete = broken
     try:
-        await server._publish_proactive({'id':'second'}, {'format':'text','title':'x'})
+        server._refresh_proactive_context()
+        intent = scan_pending(root)
+        assert intent.get('kind') == 'shared_followup'
+        turn = await server._prepare_proactive_turn(intent, now=datetime.now(timezone.utc))
+        await server._publish_proactive(intent, {'format':'text','title':'x'}, turn=turn)
     except ValueError:
         pass
     assert not server._proactive_busy and len(committed) == 1

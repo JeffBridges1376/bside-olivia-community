@@ -387,18 +387,21 @@ def test_proactive_runtime_passes_empty_user_and_commits_only_linli_evidence(tmp
 
 def test_runtime_refresh_is_cached_and_failed_generation_keeps_public_state(tmp_path):
     from runtime.private_world.daily_life_runtime import DailyLifeRuntime
+    from tests.private_world.decisions import life_decision
     class Gateway:
         calls = 0
         async def complete(self, messages, **kwargs):
             self.calls += 1
             if self.calls > 1:
                 raise RuntimeError("provider unavailable")
-            return SimpleNamespace(text=json.dumps({"current": {"location": "琴房", "activity": "慢练", "note": "换一种指法试试。"}, "projects": []}), reasoning="not public")
+            return SimpleNamespace(text=json.dumps(life_decision(messages, kind='practice', focus='指法')), reasoning="not public")
     gateway = Gateway()
     runtime = DailyLifeRuntime(DailyLifeStore(tmp_path / "life.sqlite3"), lambda: gateway, lambda: "林离喜欢弹琴。")
+    runtime._last_failure_code = 'JEV_UNAVAILABLE'
     async def run():
         await asyncio.gather(runtime.refresh(NOW), runtime.refresh(NOW))
         assert gateway.calls == 1
+        assert runtime.snapshot(NOW)['last_failure_code'] is None
         before = runtime.snapshot(NOW)["current"]
         await runtime.refresh(NOW + timedelta(hours=8))
         assert gateway.calls == 1  # Rest hours postpone autonomous updates.

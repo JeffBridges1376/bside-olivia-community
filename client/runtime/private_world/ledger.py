@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import closing, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 import json
 import os
@@ -78,6 +78,8 @@ class LedgerEvent:
     event_type: str
     payload: dict[str, object]
     occurred_at: str
+    reducer_input: dict | None = field(default=None, repr=False, compare=False)
+    projection_result: dict | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if any(
@@ -353,6 +355,9 @@ class SQLitePrivateWorldLedger:
                     raise LedgerVersionConflictError(
                         "snapshot base version is stale"
                     )
+                current = self._strict_stored_snapshot(*latest) if latest else PrivateWorldSnapshot()
+                if event.reducer_input is not None:
+                    event, snapshot = self._project(connection, event, current)
                 snapshot_json = self._snapshot_json(snapshot)
                 if latest is None:
                     if snapshot.version not in {1, 2}:
@@ -388,6 +393,10 @@ class SQLitePrivateWorldLedger:
                         event.occurred_at,
                     ),
                 )
+                if event.reducer_input is not None:
+                    connection.execute('INSERT INTO private_world_projection_inputs(event_id, payload_json, result_json) VALUES (?,?,?)',
+                                       (event.event_id, json.dumps(event.reducer_input, ensure_ascii=False, sort_keys=True),
+                                        json.dumps(event.projection_result, sort_keys=True)))
                 if write_snapshot:
                     connection.execute(
                         """INSERT INTO private_world_snapshots
@@ -398,11 +407,166 @@ class SQLitePrivateWorldLedger:
                             event.event_id,
                         ),
                     )
+                initialized = (event.event_type == 'initialize_historical_relationship'
+                               and event.payload.get('reason_code') == 'INITIALIZE_HISTORICAL_RELATIONSHIP')
+                if initialized or (event.reducer_input is None and snapshot != current):
+                    # An old writer/control path has no replayable input. Its
+                    # committed state is an explicit compatibility checkpoint,
+                    # never reverse-engineer commands from score differences.
+                    self._save_projection_base(connection, snapshot)
         except sqlite3.Error as exc:
             raise LedgerWriteError(
                 "private world transaction failed"
             ) from exc
         return True
+
+    def _save_projection_base(self, connection, snapshot):
+        cursor = connection.execute('SELECT COALESCE(MAX(rowid),0) FROM private_world_events').fetchone()[0]
+        value = json.dumps({'cursor': cursor, 'snapshot': self._snapshot_json(snapshot)}, sort_keys=True)
+        connection.execute('INSERT OR REPLACE INTO private_world_metadata(key,value) VALUES (?,?)',
+                           ('ordered_projection_v1', value))
+
+    def _project(self, connection, incoming, current):
+        """Replay frozen inputs inside the same transaction as the new audit.
+
+        No schema migration/rewrite of prior user records is required. Existing
+        saved states supply the first baseline; subsequent typed inputs are ordered
+        by UTC event time and stable event identity, independent of completion.
+        """
+        from .commands import ApplyHistoricalRelationshipEvidence, ConfirmRelationshipStage, command_from_record
+        from .reducer import (_DEDUPLICATION_WINDOW, ReducerEventKind, reduce_private_world,
+                              reduce_private_world_command, reducer_event_from_record)
+        connection.execute('CREATE TABLE IF NOT EXISTS private_world_projection_inputs '
+                           '(event_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, result_json TEXT)')
+        if 'result_json' not in {row[1] for row in connection.execute('PRAGMA table_info(private_world_projection_inputs)')}:
+            connection.execute('ALTER TABLE private_world_projection_inputs ADD COLUMN result_json TEXT')
+        row = connection.execute('SELECT value FROM private_world_metadata WHERE key=?',
+                                 ('ordered_projection_v1',)).fetchone()
+        if row is None:
+            self._save_projection_base(connection, current)
+            row = connection.execute('SELECT value FROM private_world_metadata WHERE key=?',
+                                     ('ordered_projection_v1',)).fetchone()
+        base = json.loads(row[0])
+        opaque = connection.execute(
+            'SELECT s.version, s.payload_json, e.rowid FROM private_world_events e '
+            'JOIN private_world_snapshots s ON s.event_id=e.event_id '
+            'LEFT JOIN private_world_projection_inputs p ON p.event_id=e.event_id '
+            'WHERE e.rowid>? AND p.event_id IS NULL ORDER BY e.rowid DESC LIMIT 1',
+            (base['cursor'],)).fetchone()
+        if opaque is not None:
+            # Also recognize writes made while rolled back to a pre-projection
+            # binary: that writer cannot update our compatibility metadata.
+            self._strict_stored_snapshot(opaque[0], opaque[1])
+            base = {'cursor': opaque[2], 'snapshot': opaque[1]}
+            connection.execute('UPDATE private_world_metadata SET value=? WHERE key=?',
+                               (json.dumps(base, sort_keys=True), 'ordered_projection_v1'))
+        base_payload = json.loads(base['snapshot'])
+        projected = self._strict_stored_snapshot(base_payload['version'], base['snapshot'])
+        rows = connection.execute('SELECT e.event_id, e.delivery_id, e.event_type, e.payload_json, e.occurred_at, p.payload_json '
+                                  'FROM private_world_events e JOIN private_world_projection_inputs p ON e.event_id=p.event_id '
+                                  'WHERE e.rowid>?', (base['cursor'],)).fetchall()
+        records = [LedgerEvent(a, b, c, json.loads(d), e, json.loads(f)) for a, b, c, d, e, f in rows]
+        records.append(incoming)
+        records.sort(key=lambda item: (datetime.fromisoformat(item.occurred_at.replace('Z', '+00:00')).astimezone(timezone.utc),
+            item.reducer_input['value']['command_id'] if item.reducer_input and item.reducer_input['kind'] == 'command'
+            else item.event_id))
+        legacy = connection.execute('SELECT e.payload_json, e.occurred_at, p.result_json FROM private_world_events e '
+                                    'LEFT JOIN private_world_projection_inputs p ON e.event_id=p.event_id WHERE e.rowid<=?',
+                                    (base['cursor'],)).fetchall()
+        equivalents = []
+        stage_watermark = None
+        for raw, at, derived in legacy:
+            audit = json.loads(raw)
+            assessment = json.loads(derived) if derived else audit
+            when = datetime.fromisoformat(at.replace('Z', '+00:00'))
+            if assessment.get('applied') is True and audit.get('semantic_key'):
+                equivalents.append((audit['semantic_key'], when))
+            if 'relationship_stage' in audit.get('change_fields', ()):
+                stage_watermark = max(stage_watermark, when) if stage_watermark else when
+        live_stage = projected.relationship_stage != 'unknown'
+        incoming_reason = None
+        incoming_qualification = False
+        outcomes = {}
+        revision = connection.execute('SELECT COALESCE(MAX(rowid),0)+1 FROM private_world_events').fetchone()[0]
+        # ponytail: replay the post-upgrade journal; checkpoint only after a
+        # measured scale need and a defined late-event retention boundary.
+        for item in records:
+            frozen = item.reducer_input
+            if frozen is None:
+                continue  # Canonical delivery records do not alter state.
+            if not isinstance(frozen, dict) or set(frozen) != {'schema', 'kind', 'value'} or frozen['schema'] != 1:
+                raise LedgerWriteError('stored reducer input schema is invalid')
+            if frozen['kind'] == 'event':
+                candidate = reducer_event_from_record(frozen['value'])
+                if candidate.kind.value != item.event_type or candidate.occurred_at != datetime.fromisoformat(item.occurred_at):
+                    raise LedgerWriteError('stored reducer event time mismatch')
+                if candidate.kind in {ReducerEventKind.SUPPORT_RECEIVED, ReducerEventKind.BOUNDARY_RESPECTED,
+                                      ReducerEventKind.MEANINGFUL_EXCHANGE, ReducerEventKind.SHARED_EXPERIENCE,
+                                      ReducerEventKind.CONFLICT, ReducerEventKind.REPAIR}:
+                    keys = {candidate.semantic_key, 'canonical-interaction:' + candidate.kind.value}
+                    times = [at for key, at in equivalents if key in keys]
+                    predecessor = max((at for at in times if at <= candidate.occurred_at), default=None)
+                    if any(candidate.occurred_at < at < candidate.occurred_at + _DEDUPLICATION_WINDOW for at in times):
+                        predecessor = candidate.occurred_at
+                    candidate = replace(candidate, last_equivalent_at=predecessor)
+                if candidate.kind is ReducerEventKind.STAGE_CONFIRMED and stage_watermark and candidate.occurred_at < stage_watermark:
+                    candidate = replace(candidate, target_stage=projected.relationship_stage)
+                result = reduce_private_world(projected, candidate)
+                if result.delta.applied:
+                    equivalents.append((candidate.semantic_key, candidate.occurred_at))
+                live_stage = live_stage or candidate.kind is ReducerEventKind.STAGE_CONFIRMED
+            elif frozen['kind'] == 'command':
+                candidate = command_from_record(frozen['value'])
+                if candidate.kind.value != item.event_type or candidate.occurred_at != datetime.fromisoformat(item.occurred_at):
+                    raise LedgerWriteError('stored reducer command time mismatch')
+                # A command denied at submission cannot acquire permission from
+                # later arrival of an earlier stage confirmation.
+                if item.payload.get('reason_code') == 'INTIMACY_EXCEEDS_STAGE':
+                    outcomes[item.event_id] = {'applied': False, 'reason_code': 'INTIMACY_EXCEEDS_STAGE',
+                                              'contact_qualification': False, 'revision': revision}
+                    if item.event_id == incoming.event_id:
+                        incoming_reason = 'INTIMACY_EXCEEDS_STAGE'
+                    continue
+                if isinstance(candidate, ApplyHistoricalRelationshipEvidence) and live_stage:
+                    candidate = replace(candidate, relationship_stage=None)
+                result = reduce_private_world_command(projected, candidate)
+                live_stage = live_stage or isinstance(candidate, ConfirmRelationshipStage)
+            else:
+                raise LedgerWriteError('stored reducer input kind is invalid')
+            projected = result.snapshot
+            from runtime.personal_chat.initiative_profile import profile_from_snapshot
+            profile = profile_from_snapshot(projected)
+            outcomes[item.event_id] = {'applied': result.delta.applied, 'reason_code': result.delta.reason_code,
+                'contact_qualification': sum(getattr(projected, key) >= 70
+                    for key in ('familiarity', 'trust', 'comfort', 'closeness')) >= 3,
+                'initiative_tier': profile.tier, 'initiative_caution': profile.caution,
+                'revision': revision}
+            if item.event_id == incoming.event_id:
+                incoming_reason = result.delta.reason_code
+                incoming_qualification = sum(getattr(projected, key) >= 70
+                    for key in ('familiarity', 'trust', 'comfort', 'closeness')) >= 3
+        changed = [field for field in current.__dataclass_fields__
+                   if field != 'version' and getattr(current, field) != getattr(projected, field)]
+        initialized = incoming_reason == 'INITIALIZE_HISTORICAL_RELATIONSHIP'
+        applied = bool(changed) or initialized
+        projected = replace(projected, version=current.version + applied)
+        payload = {**incoming.payload, 'applied': applied,
+                   'change_fields': changed, 'snapshot_version': projected.version,
+                   'reason_code': incoming_reason,
+                   'contact_qualification': incoming_qualification}
+        for identity, outcome in outcomes.items():
+            connection.execute('UPDATE private_world_projection_inputs SET result_json=? WHERE event_id=?',
+                               (json.dumps(outcome, sort_keys=True), identity))
+        return replace(incoming, payload=payload, projection_result=outcomes[incoming.event_id]), projected
+
+    def projection_result(self, event_id: str) -> dict | None:
+        """Read current derived eligibility; events() remains immutable audit."""
+        with self._connection() as connection:
+            exists = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='private_world_projection_inputs'").fetchone()
+            if not exists or 'result_json' not in {row[1] for row in connection.execute('PRAGMA table_info(private_world_projection_inputs)')}:
+                return None
+            row = connection.execute('SELECT result_json FROM private_world_projection_inputs WHERE event_id=?', (event_id,)).fetchone()
+        return json.loads(row[0]) if row and row[0] else None
 
     def events(self) -> tuple[LedgerEvent, ...]:
         with self._connection() as connection:
@@ -410,6 +574,11 @@ class SQLitePrivateWorldLedger:
                 """SELECT event_id, delivery_id, event_type, payload_json, occurred_at
                    FROM private_world_events ORDER BY rowid"""
             ).fetchall()
+            has_projection = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='private_world_projection_inputs'").fetchone()
+            derived = {}
+            if has_projection and 'result_json' in {row[1] for row in connection.execute('PRAGMA table_info(private_world_projection_inputs)')}:
+                derived = {identity: json.loads(result) for identity, result in connection.execute(
+                    'SELECT event_id,result_json FROM private_world_projection_inputs WHERE result_json IS NOT NULL')}
         return tuple(
             LedgerEvent(
                 row[0],
@@ -417,6 +586,7 @@ class SQLitePrivateWorldLedger:
                 row[2],
                 json.loads(row[3]),
                 row[4],
+                projection_result=derived.get(row[0]),
             )
             for row in rows
         )

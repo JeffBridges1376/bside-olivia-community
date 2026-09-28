@@ -115,9 +115,14 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatc
         return 2
     server._reply_pipeline_timeout_seconds = chat_timeout
     async def bounded_run(request, context):
+        from runtime.personal_chat.presentation import CURRENT
+        assert CURRENT.get()['raw_user_text'] == event.text
+        assert request.content == event.text + CURRENT.get()['incoming_observation_context']
         if failure_code == 'outer_timeout':
             raise TimeoutError()
-        assert request.max_input_chars == 40000 + len(event.text)
+        assert request.max_input_chars == 40000 + len(request.content)
+        assert request.content.startswith(event.text + '\n[系统图片观察，非用户原话]')
+        assert json.loads(request.content.split('\n', 2)[2])['current_turn_has_images'] is False
         assert any(f.fact_id == 'runtime.photo_attachment' and '已开启' in f.statement
                    for f in context.world_facts)
         return await original_run(request, context)
@@ -148,7 +153,8 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatc
     assert "即时聊天" in system
     assert "synthetic-memory-keeps-piano" in system
     assert "synthetic-world-evening-piano" in system
-    assert calls[0][-1]["content"] == event.text
+    assert calls[0][-1]["content"].split('\n', 1)[0] == event.text
+    assert json.loads(calls[0][-1]['content'].split('\n', 2)[2])['current_turn_has_images'] is False
 
 
 def test_service_ack_precedes_backend_world_and_daily_life_commit():
@@ -184,8 +190,10 @@ def test_service_ack_precedes_backend_world_and_daily_life_commit():
         service = PersonalChatService(rows, server._persist_store_state, generate,
             lambda row: backend.commit(server, row), {"qq": ("100", "200")})
         await service.handle(PersonalMessage("qq", "100", "200", "1", "hello"), send)
+        await asyncio.gather(*service.consumer_tasks.values())
         assert operations.index("ack") < operations.index("world") < operations.index("daily") < operations.index("memory")
         await service.recover()
+        await asyncio.gather(*service.consumer_tasks.values())
         assert operations.count("world") == operations.count("daily") == operations.count("memory") == 1
     asyncio.run(scenario())
 
@@ -365,12 +373,13 @@ def test_diagnostic_snapshot_excludes_content_and_secrets(tmp_path):
     import local_server
     server = SimpleNamespace(store=local_server.Store(), _state_root=lambda: tmp_path,
         _atomic_write_store_file=local_server._atomic_write_store_file)
-    server.store.personal_chats = [{"delivery_status": "SENDING", "content": "private-text", "owner": "private-owner"}]
+    server.store.personal_chats = [{"delivery_status": status, "content": "private-text", "owner": "private-owner"}
+                                  for status in ('SENDING', 'RECEIVED')]
     runtime = {"status": {"wechat": "FAILED"}, "errors": {"wechat": backend._failure_code(RuntimeError("secret-token=https://private"))}}
     backend._publish_status(server, runtime)
     text = (tmp_path / "personal-chat-status.json").read_text(encoding="utf-8")
     assert "private" not in text and "secret" not in text
-    assert json.loads(text)["exchanges"] == {"SENDING": 1}
+    assert json.loads(text)["exchanges"] == {"SENDING": 1, 'RECEIVED': 1}
     assert backend._failure_code(RuntimeError("WECHAT_API_REJECTED")) == "WECHAT_API_REJECTED"
 
 
@@ -423,13 +432,16 @@ def test_consumer_failure_preserves_reply_and_retries_without_stopping_transport
         service = PersonalChatService(rows, lambda: None, generate,
             lambda row: backend.recoverable_commit(server, row), {"qq": ("100", "200")})
         await service.handle(PersonalMessage("qq", "100", "200", "1", "hello"), send)
+        await asyncio.gather(*service.consumer_tasks.values())
         assert rows[0]["delivery_status"] == "DELIVERED" and rows[0]["consumer_failures"] == 1
         for _ in range(5):
             await service.recover()
+            await asyncio.gather(*service.consumer_tasks.values())
         assert len(attempts) == 1 and sends == ["reply"]
         for _ in range(4):
             rows[0]['consumer_retry_at'] = 0
             await service.recover()
+            await asyncio.gather(*service.consumer_tasks.values())
         assert len(attempts) == 5 and sends == ['reply']
         assert rows[0]["consumer_error_code"] == "PERSONAL_CHAT_DAILY_LIFE_UNAVAILABLE"
     asyncio.run(scenario())

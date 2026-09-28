@@ -56,7 +56,7 @@ def _letter(**overrides: object) -> dict[str, object]:
 
 
 def test_original_client_enums_match_supported_bundle() -> None:
-    assert tuple(int(value) for value in OriginalClientLetterStatus) == (1, 2, 3, 4, 5)
+    assert tuple(int(value) for value in OriginalClientLetterStatus) == (1, 2, 3, 4, 5, 6)
     assert tuple(int(value) for value in OriginalClientAuditStatus) == (1, 2, 3)
     assert tuple(int(value) for value in OriginalClientReplyType) == (0, 1, 2, 3, 4)
 

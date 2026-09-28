@@ -16,10 +16,13 @@ def test_selected_channel_keeps_other_channel_add_action(tmp_path):
     script = r'''
 const assert = require('node:assert/strict');
 let state, actions, posts, rendered;
+let qqSaving=false, renderedStatus='', pollTimer;
+const root={isConnected:true};
+const updateReplyHealth=()=>{};
 const STATUS='status', CHANNEL_CHOICE='choice', WECHAT_START='wechat-start';
 const node=(_tag,text)=>({text,children:[],append(...items){this.children.push(...items)}});
 const document={createDocumentFragment:()=>node('fragment')};
-const content={replaceChildren(fragment){rendered=fragment}};
+const content={contains:()=>false,replaceChildren(fragment){rendered=fragment}};
 const renderWechat=()=>node('div','wechat-card'), renderQQ=()=>node('div','qq-card');
 const action=(label,callback)=>{const button={label,callback};actions.push(button);return button};
 const schedule=()=>{};

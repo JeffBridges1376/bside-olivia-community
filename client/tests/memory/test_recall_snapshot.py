@@ -71,7 +71,10 @@ def test_near_full_persona_still_discloses_retrieval_failure():
     from reply_context import ReplyContext, ReplyMode, TrustedTime
     snapshot = load_persona('linli_character/persona_release_v2.json').snapshot
     context = ReplyContext.create(ReplyMode.TEXT_LETTER, trusted_time=TrustedTime(datetime(2026, 9, 16, tzinfo=timezone.utc)))
-    capacity = 10000
+    from persona_assembly import assemble_persona
+    baseline = assemble_persona(snapshot, context, user_input='你好', max_units=100000,
+                                selected_declaration_ids=(), relationship_expression_enabled=True)
+    capacity = baseline.budget_report.required_units + 1024
     recall = RecallResult(topics=('你好',), source_status=(('original_index', 'unavailable'),))
     renderer = MemoryPromptBuilder(NullMemoryPort(), conversation_memory=None, max_tokens=300000)
     adapter = SimpleNamespace(memory_prompt_builder=SimpleNamespace(

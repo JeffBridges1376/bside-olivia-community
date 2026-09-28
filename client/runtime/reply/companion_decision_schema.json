@@ -1,0 +1,837 @@
+{
+  "source_sha256": "f8402144cb4903b1643eade7abc44b7cee321d68a31d8a85bb686512236414e3",
+  "input": {
+    "type": "object",
+    "properties": {
+      "messages": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]{0,39}$"
+            },
+            "role": {
+              "enum": [
+                "user",
+                "assistant"
+              ]
+            },
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 8000
+            }
+          },
+          "required": [
+            "id",
+            "role",
+            "text"
+          ],
+          "additionalProperties": false
+        },
+        "minItems": 1,
+        "maxItems": 32,
+        "uniqueItems": false
+      },
+      "current_turn_id": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]{0,39}$"
+      },
+      "capabilities": {
+        "type": "object",
+        "properties": {
+          "kinds": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "text",
+                "image",
+                "audio_speech",
+                "audio_song",
+                "audio_rap",
+                "video_silent",
+                "video_speech",
+                "video_song"
+              ]
+            },
+            "minItems": 0,
+            "maxItems": 8,
+            "uniqueItems": true
+          },
+          "synchronize": {
+            "type": "boolean"
+          },
+          "playback_events": {
+            "type": "boolean"
+          },
+          "compose_audio": {
+            "type": "boolean"
+          },
+          "compose_video": {
+            "type": "boolean"
+          },
+          "split_spoken_content": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kinds",
+          "synchronize",
+          "playback_events",
+          "compose_audio",
+          "compose_video",
+          "split_spoken_content"
+        ],
+        "additionalProperties": false
+      },
+      "environment": {
+        "type": "object",
+        "properties": {
+          "can_read": {
+            "enum": [
+              true,
+              false,
+              null
+            ]
+          },
+          "can_view": {
+            "enum": [
+              true,
+              false,
+              null
+            ]
+          },
+          "can_listen": {
+            "enum": [
+              true,
+              false,
+              null
+            ]
+          }
+        },
+        "required": [
+          "can_read",
+          "can_view",
+          "can_listen"
+        ],
+        "additionalProperties": false
+      },
+      "forbidden_kinds": {
+        "type": "array",
+        "items": {
+          "enum": [
+            "text",
+            "image",
+            "audio_speech",
+            "audio_song",
+            "audio_rap",
+            "video_silent",
+            "video_speech",
+            "video_song"
+          ]
+        },
+        "minItems": 0,
+        "maxItems": 8,
+        "uniqueItems": true
+      }
+    },
+    "required": [
+      "messages",
+      "current_turn_id",
+      "capabilities",
+      "environment",
+      "forbidden_kinds"
+    ],
+    "additionalProperties": false
+  },
+  "output": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "const": "companion-plan/2-draft"
+      },
+      "understanding": {
+        "type": "object",
+        "properties": {
+          "intents": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "sharing",
+                "recall_question",
+                "creative_request",
+                "practical_request",
+                "correction",
+                "emotional_support",
+                "relationship_discussion",
+                "boundary_preference",
+                "casual_chat",
+                "information_question",
+                "roleplay_request",
+                "risk_expression"
+              ]
+            },
+            "minItems": 0,
+            "maxItems": 4,
+            "uniqueItems": true
+          },
+          "needs": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "be_heard",
+                "comfort",
+                "celebrate",
+                "advice",
+                "practical_help",
+                "information",
+                "connection",
+                "co_create",
+                "play",
+                "repair",
+                "autonomy"
+              ]
+            },
+            "minItems": 0,
+            "maxItems": 4,
+            "uniqueItems": true
+          },
+          "affect": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "enum": [
+                  "present",
+                  "no_salient",
+                  "unclear"
+                ]
+              },
+              "coverage": {
+                "enum": [
+                  "complete",
+                  "partial"
+                ]
+              },
+              "states": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "enum": [
+                        "joy",
+                        "pride",
+                        "gratitude",
+                        "affection",
+                        "relief",
+                        "anticipation",
+                        "calm",
+                        "sadness",
+                        "disappointment",
+                        "anger",
+                        "fear_anxiety",
+                        "shame_guilt",
+                        "loneliness",
+                        "boredom",
+                        "confusion",
+                        "surprise"
+                      ]
+                    },
+                    "intensity": {
+                      "enum": [
+                        "low",
+                        "medium",
+                        "high",
+                        "unknown"
+                      ]
+                    },
+                    "basis": {
+                      "enum": [
+                        "explicit",
+                        "contextual"
+                      ]
+                    },
+                    "target": {
+                      "enum": [
+                        "self",
+                        "assistant",
+                        "other_person",
+                        "situation",
+                        "unspecified"
+                      ]
+                    },
+                    "evidence_turn_ids": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9_]{0,39}$"
+                      },
+                      "minItems": 1,
+                      "maxItems": 8,
+                      "uniqueItems": true
+                    }
+                  },
+                  "required": [
+                    "label",
+                    "intensity",
+                    "basis",
+                    "target",
+                    "evidence_turn_ids"
+                  ],
+                  "additionalProperties": false
+                },
+                "minItems": 0,
+                "maxItems": 3,
+                "uniqueItems": false
+              }
+            },
+            "required": [
+              "status",
+              "coverage",
+              "states"
+            ],
+            "additionalProperties": false
+          },
+          "control_candidates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "domain": {
+                  "enum": [
+                    "boundary",
+                    "memory",
+                    "contact"
+                  ]
+                },
+                "operation": {
+                  "enum": [
+                    "forbid",
+                    "allow",
+                    "revoke",
+                    "set_preference",
+                    "retrieve",
+                    "store_request",
+                    "correct",
+                    "do_not_store",
+                    "delete_request",
+                    "followup_request",
+                    "cancel_followup",
+                    "pause",
+                    "resume"
+                  ]
+                },
+                "scope": {
+                  "enum": [
+                    "turn",
+                    "session",
+                    "persistent"
+                  ]
+                },
+                "evidence_turn_ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9_]{0,39}$"
+                  },
+                  "minItems": 1,
+                  "maxItems": 8,
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "domain",
+                "operation",
+                "scope",
+                "evidence_turn_ids"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 0,
+            "maxItems": 8,
+            "uniqueItems": false
+          },
+          "requirements": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_]{0,39}$"
+                },
+                "fulfillment": {
+                  "enum": [
+                    "current",
+                    "pending"
+                  ]
+                },
+                "alternatives": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "kinds": {
+                        "type": "array",
+                        "items": {
+                          "enum": [
+                            "text",
+                            "image",
+                            "audio_speech",
+                            "audio_song",
+                            "audio_rap",
+                            "video_silent",
+                            "video_speech",
+                            "video_song"
+                          ]
+                        },
+                        "minItems": 1,
+                        "maxItems": 8,
+                        "uniqueItems": true
+                      },
+                      "min_assets": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 8
+                      },
+                      "max_assets": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 8
+                      }
+                    },
+                    "required": [
+                      "kinds",
+                      "min_assets",
+                      "max_assets"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "minItems": 1,
+                  "maxItems": 4,
+                  "uniqueItems": true
+                },
+                "evidence_turn_ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9_]{0,39}$"
+                  },
+                  "minItems": 1,
+                  "maxItems": 8,
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "id",
+                "fulfillment",
+                "alternatives",
+                "evidence_turn_ids"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 0,
+            "maxItems": 8,
+            "uniqueItems": false
+          },
+          "extras_allowed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "intents",
+          "needs",
+          "affect",
+          "control_candidates",
+          "requirements",
+          "extras_allowed"
+        ],
+        "additionalProperties": false
+      },
+      "proposal": {
+        "type": "object",
+        "properties": {
+          "timing": {
+            "enum": [
+              "now",
+              "close_turn",
+              "wait_user",
+              "defer",
+              "no_reply"
+            ]
+          },
+          "moves": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_]{0,39}$"
+                },
+                "act": {
+                  "enum": [
+                    "acknowledge",
+                    "listen",
+                    "validate_feeling",
+                    "comfort",
+                    "encourage",
+                    "celebrate",
+                    "answer",
+                    "suggest",
+                    "co_create",
+                    "play",
+                    "repair",
+                    "clarify",
+                    "close"
+                  ]
+                },
+                "tones": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "warm",
+                      "calm",
+                      "cheerful",
+                      "interested",
+                      "playful",
+                      "concerned",
+                      "solemn",
+                      "matter_of_fact"
+                    ]
+                  },
+                  "minItems": 1,
+                  "maxItems": 2,
+                  "uniqueItems": true
+                },
+                "intensity": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "act",
+                "tones",
+                "intensity"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 0,
+            "maxItems": 8,
+            "uniqueItems": false
+          },
+          "contents": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_]{0,39}$"
+                },
+                "purpose": {
+                  "enum": [
+                    "reply",
+                    "acknowledgment",
+                    "explanation",
+                    "story",
+                    "lyrics",
+                    "song",
+                    "illustration",
+                    "demonstration",
+                    "summary"
+                  ]
+                },
+                "move_ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9_]{0,39}$"
+                  },
+                  "minItems": 1,
+                  "maxItems": 8,
+                  "uniqueItems": true
+                },
+                "allowed_kinds": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "text",
+                      "image",
+                      "audio_speech",
+                      "audio_song",
+                      "audio_rap",
+                      "video_silent",
+                      "video_speech",
+                      "video_song"
+                    ]
+                  },
+                  "minItems": 1,
+                  "maxItems": 8,
+                  "uniqueItems": true
+                },
+                "derived_from": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^[a-z][a-z0-9_]{0,39}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "purpose",
+                "move_ids",
+                "allowed_kinds",
+                "derived_from"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 0,
+            "maxItems": 8,
+            "uniqueItems": false
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_]{0,39}$"
+                },
+                "medium": {
+                  "enum": [
+                    "text",
+                    "image",
+                    "audio",
+                    "video"
+                  ]
+                },
+                "parts": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "enum": [
+                          "text",
+                          "image",
+                          "audio_speech",
+                          "audio_song",
+                          "audio_rap",
+                          "video_silent",
+                          "video_speech",
+                          "video_song"
+                        ]
+                      },
+                      "content_ref": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9_]{0,39}$"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "content_ref"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "minItems": 1,
+                  "maxItems": 4,
+                  "uniqueItems": false
+                },
+                "after": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "step_id": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9_]{0,39}$"
+                      },
+                      "event": {
+                        "enum": [
+                          "delivered",
+                          "playback_finished"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "step_id",
+                      "event"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "minItems": 0,
+                  "maxItems": 8,
+                  "uniqueItems": true
+                },
+                "requirement_ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9_]{0,39}$"
+                  },
+                  "minItems": 0,
+                  "maxItems": 8,
+                  "uniqueItems": true
+                }
+              },
+              "required": [
+                "id",
+                "medium",
+                "parts",
+                "after",
+                "requirement_ids"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 0,
+            "maxItems": 8,
+            "uniqueItems": false
+          },
+          "deliver_together": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{0,39}$"
+              },
+              "minItems": 1,
+              "maxItems": 8,
+              "uniqueItems": true
+            },
+            "minItems": 0,
+            "maxItems": 4,
+            "uniqueItems": false
+          },
+          "synchronize": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{0,39}$"
+              },
+              "minItems": 1,
+              "maxItems": 8,
+              "uniqueItems": true
+            },
+            "minItems": 0,
+            "maxItems": 4,
+            "uniqueItems": false
+          },
+          "clarify_fields": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "reference",
+                "need",
+                "media_requirement"
+              ]
+            },
+            "minItems": 0,
+            "maxItems": 3,
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "timing",
+          "moves",
+          "contents",
+          "steps",
+          "deliver_together",
+          "synchronize",
+          "clarify_fields"
+        ],
+        "additionalProperties": false
+      },
+      "resolution": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "enum": [
+              "ready",
+              "partial",
+              "needs_clarification",
+              "unsupported"
+            ]
+          },
+          "blocked_steps": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]{0,39}$"
+            },
+            "minItems": 0,
+            "maxItems": 8,
+            "uniqueItems": true
+          },
+          "uncertain_fields": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "affect",
+                "reference",
+                "need",
+                "media_requirement"
+              ]
+            },
+            "minItems": 0,
+            "maxItems": 4,
+            "uniqueItems": true
+          },
+          "action_executed": {
+            "const": false
+          }
+        },
+        "required": [
+          "status",
+          "blocked_steps",
+          "uncertain_fields",
+          "action_executed"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "required": [
+      "schema_version",
+      "understanding",
+      "proposal",
+      "resolution"
+    ],
+    "additionalProperties": false
+  },
+  "control_operations": {
+    "boundary": [
+      "forbid",
+      "allow",
+      "revoke",
+      "set_preference"
+    ],
+    "memory": [
+      "retrieve",
+      "store_request",
+      "correct",
+      "do_not_store",
+      "delete_request"
+    ],
+    "contact": [
+      "followup_request",
+      "cancel_followup",
+      "pause",
+      "resume"
+    ]
+  }
+}

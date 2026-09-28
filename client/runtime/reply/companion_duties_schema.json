@@ -1,0 +1,816 @@
+{
+  "schema_dialect": "https://json-schema.org/draft/2020-12/schema",
+  "max_http_body_bytes": 32768,
+  "persona_request": {
+    "type": "object",
+    "properties": {
+      "current_message": {
+        "type": "string",
+        "maxLength": 8000,
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "recent_dialogue": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "role": {
+              "enum": [
+                "user",
+                "assistant"
+              ]
+            },
+            "content": {
+              "type": "string",
+              "maxLength": 4000,
+              "minLength": 1,
+              "pattern": "\\S"
+            }
+          },
+          "required": [
+            "role",
+            "content"
+          ],
+          "additionalProperties": false
+        },
+        "maxItems": 8
+      },
+      "persona_candidates": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "maxLength": 160,
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "statement": {
+              "type": "string",
+              "maxLength": 2000,
+              "minLength": 1,
+              "pattern": "\\S"
+            }
+          },
+          "required": [
+            "id",
+            "statement"
+          ],
+          "additionalProperties": false
+        },
+        "maxItems": 64
+      }
+    },
+    "required": [
+      "current_message",
+      "recent_dialogue",
+      "persona_candidates"
+    ],
+    "additionalProperties": false
+  },
+  "exchange_request": {
+    "type": "object",
+    "properties": {
+      "mode": {
+        "const": "exchange"
+      },
+      "topics": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]{0,47}$"
+            },
+            "label": {
+              "type": "string",
+              "maxLength": 40,
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "kind": {
+              "enum": [
+                "interest",
+                "taste",
+                "trait"
+              ]
+            },
+            "baseline": {
+              "enum": [
+                "avoid",
+                "neutral",
+                "like"
+              ]
+            },
+            "anchor": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "key",
+            "label",
+            "kind",
+            "baseline",
+            "anchor"
+          ],
+          "additionalProperties": false
+        },
+        "maxItems": 32
+      },
+      "source_id": {
+        "type": "string",
+        "maxLength": 200,
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "source_hash": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "as_of": {
+        "type": "string",
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?(?:Z|[+-]\\d{2}:\\d{2})$",
+        "format": "date-time",
+        "description": "Timezone-aware RFC3339 string. Epoch numbers and naive local timestamps are rejected."
+      },
+      "user_text": {
+        "type": "string",
+        "maxLength": 8000
+      },
+      "character_text": {
+        "type": "string",
+        "maxLength": 8000
+      },
+      "origin": {
+        "enum": [
+          "user",
+          "proactive"
+        ]
+      },
+      "relationship_kind": {
+        "enum": [
+          null,
+          "shared_experience"
+        ]
+      },
+      "episodes": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "episode_id": {
+              "type": "string",
+              "maxLength": 200,
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 2000,
+              "minLength": 1,
+              "pattern": "\\S"
+            }
+          },
+          "required": [
+            "episode_id",
+            "description"
+          ],
+          "additionalProperties": false
+        },
+        "maxItems": 12
+      },
+      "withdrawal_candidates": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "source_id": {
+              "type": "string",
+              "maxLength": 200,
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "key": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]{0,47}$"
+            },
+            "stance": {
+              "enum": [
+                "positive",
+                "negative"
+              ]
+            },
+            "occurred_at": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?(?:Z|[+-]\\d{2}:\\d{2})$",
+              "format": "date-time",
+              "description": "Timezone-aware RFC3339 string. Epoch numbers and naive local timestamps are rejected."
+            },
+            "available_at": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?(?:Z|[+-]\\d{2}:\\d{2})$",
+              "format": "date-time",
+              "description": "Timezone-aware RFC3339 string. Epoch numbers and naive local timestamps are rejected."
+            },
+            "episode_id": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "experience_quote": {
+              "type": "string",
+              "maxLength": 240,
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "character_quote": {
+              "type": "string",
+              "maxLength": 240,
+              "minLength": 1,
+              "pattern": "\\S"
+            }
+          },
+          "required": [
+            "source_id",
+            "key",
+            "stance",
+            "occurred_at",
+            "available_at",
+            "episode_id",
+            "experience_quote",
+            "character_quote"
+          ],
+          "additionalProperties": false
+        },
+        "maxItems": 12
+      }
+    },
+    "required": [
+      "mode",
+      "topics",
+      "source_id",
+      "source_hash",
+      "as_of",
+      "user_text",
+      "character_text",
+      "origin",
+      "relationship_kind",
+      "episodes",
+      "withdrawal_candidates"
+    ],
+    "additionalProperties": false
+  },
+  "world_request": {
+    "type": "object",
+    "properties": {
+      "mode": {
+        "const": "world"
+      },
+      "topics": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]{0,47}$"
+            },
+            "label": {
+              "type": "string",
+              "maxLength": 40,
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "kind": {
+              "enum": [
+                "interest",
+                "taste",
+                "trait"
+              ]
+            },
+            "baseline": {
+              "enum": [
+                "avoid",
+                "neutral",
+                "like"
+              ]
+            },
+            "anchor": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "key",
+            "label",
+            "kind",
+            "baseline",
+            "anchor"
+          ],
+          "additionalProperties": false
+        },
+        "maxItems": 32
+      },
+      "basis": {
+        "type": "object",
+        "properties": {
+          "as_of": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?(?:Z|[+-]\\d{2}:\\d{2})$",
+            "format": "date-time",
+            "description": "Timezone-aware RFC3339 string. Epoch numbers and naive local timestamps are rejected."
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "source_id": {
+                  "type": "string",
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "source_hash": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "occurred_at": {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?(?:Z|[+-]\\d{2}:\\d{2})$",
+                  "format": "date-time",
+                  "description": "Timezone-aware RFC3339 string. Epoch numbers and naive local timestamps are rejected."
+                },
+                "world": {
+                  "type": "object",
+                  "required": [
+                    "note"
+                  ],
+                  "properties": {
+                    "note": {
+                      "type": "string",
+                      "maxLength": 8000
+                    }
+                  },
+                  "description": "Complete frozen original world object, with arbitrary additional product fields preserved. Canonical SHA256 must match source_hash; no projection or truncation."
+                },
+                "appraisal": {
+                  "type": "object",
+                  "properties": {
+                    "quote": {
+                      "type": "string",
+                      "maxLength": 240
+                    },
+                    "reaction": {
+                      "enum": [
+                        "none",
+                        "pleased",
+                        "frustrated",
+                        "concerned",
+                        "hurt",
+                        "relieved",
+                        "calm"
+                      ]
+                    },
+                    "action_tendency": {
+                      "enum": [
+                        "none",
+                        "continue",
+                        "adjust",
+                        "rest",
+                        "share",
+                        "quiet"
+                      ]
+                    },
+                    "goal_or_need": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "maxLength": 160,
+                          "minLength": 1,
+                          "pattern": "\\S"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "quote",
+                    "reaction",
+                    "action_tendency",
+                    "goal_or_need"
+                  ],
+                  "additionalProperties": false
+                },
+                "appraisal_version": {
+                  "type": "string",
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "pattern": "\\S"
+                }
+              },
+              "required": [
+                "source_id",
+                "source_hash",
+                "occurred_at",
+                "world",
+                "appraisal",
+                "appraisal_version"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 3
+          }
+        },
+        "required": [
+          "as_of",
+          "sources"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "required": [
+      "mode",
+      "topics",
+      "basis"
+    ],
+    "additionalProperties": false
+  },
+  "persona_response": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "const": "companion-persona-selection/1"
+      },
+      "decision": {
+        "type": "object",
+        "properties": {
+          "persona_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 160,
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "maxItems": 12,
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "persona_ids"
+        ],
+        "additionalProperties": false
+      },
+      "input_digest": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "backend": {
+        "const": "jev"
+      },
+      "model": {
+        "const": "jev-1.13.0"
+      },
+      "status": {
+        "const": "valid_contract"
+      },
+      "contract_valid": {
+        "const": true
+      },
+      "action_executed": {
+        "const": false
+      },
+      "production_approved": {
+        "const": false
+      },
+      "latency_ms": {
+        "type": "number",
+        "minimum": 0
+      },
+      "api_calls": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "usage": {
+        "type": "object",
+        "properties": {
+          "input_tokens": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "input_tokens"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "required": [
+      "schema_version",
+      "decision",
+      "input_digest",
+      "backend",
+      "model",
+      "status",
+      "contract_valid",
+      "action_executed",
+      "production_approved",
+      "latency_ms",
+      "api_calls",
+      "usage"
+    ],
+    "additionalProperties": false
+  },
+  "exchange_response": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "const": "companion-experience-appraisal/1"
+      },
+      "decision": {
+        "type": "object",
+        "properties": {
+          "candidates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_]{0,47}$"
+                },
+                "stance": {
+                  "enum": [
+                    "positive",
+                    "negative"
+                  ]
+                },
+                "user_quote": {
+                  "type": "string",
+                  "maxLength": 240,
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "character_quote": {
+                  "type": "string",
+                  "maxLength": 240,
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "experience_quote": {
+                  "type": "string",
+                  "maxLength": 240,
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "episode_id": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 200,
+                      "minLength": 1,
+                      "pattern": "\\S"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "withdraws": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 200,
+                      "minLength": 1,
+                      "pattern": "\\S"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "key",
+                "stance",
+                "user_quote",
+                "character_quote",
+                "experience_quote",
+                "episode_id",
+                "withdraws"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 3
+          }
+        },
+        "required": [
+          "candidates"
+        ],
+        "additionalProperties": false
+      },
+      "input_digest": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "backend": {
+        "const": "jev"
+      },
+      "model": {
+        "const": "jev-1.13.0"
+      },
+      "status": {
+        "const": "valid_contract"
+      },
+      "contract_valid": {
+        "const": true
+      },
+      "action_executed": {
+        "const": false
+      },
+      "production_approved": {
+        "const": false
+      },
+      "latency_ms": {
+        "type": "number",
+        "minimum": 0
+      },
+      "api_calls": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "usage": {
+        "type": "object",
+        "properties": {
+          "input_tokens": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "input_tokens"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "required": [
+      "schema_version",
+      "decision",
+      "input_digest",
+      "backend",
+      "model",
+      "status",
+      "contract_valid",
+      "action_executed",
+      "production_approved",
+      "latency_ms",
+      "api_calls",
+      "usage"
+    ],
+    "additionalProperties": false
+  },
+  "world_response": {
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "const": "companion-experience-appraisal/1"
+      },
+      "decision": {
+        "type": "object",
+        "properties": {
+          "candidates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "source_id": {
+                  "type": "string",
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "key": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_]{0,47}$"
+                },
+                "stance": {
+                  "enum": [
+                    "positive",
+                    "negative"
+                  ]
+                },
+                "quote": {
+                  "type": "string",
+                  "maxLength": 240,
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "reason": {
+                  "type": "string",
+                  "maxLength": 160,
+                  "minLength": 1,
+                  "pattern": "\\S"
+                }
+              },
+              "required": [
+                "source_id",
+                "key",
+                "stance",
+                "quote",
+                "reason"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 3
+          }
+        },
+        "required": [
+          "candidates"
+        ],
+        "additionalProperties": false
+      },
+      "input_digest": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "backend": {
+        "const": "jev"
+      },
+      "model": {
+        "const": "jev-1.13.0"
+      },
+      "status": {
+        "const": "valid_contract"
+      },
+      "contract_valid": {
+        "const": true
+      },
+      "action_executed": {
+        "const": false
+      },
+      "production_approved": {
+        "const": false
+      },
+      "latency_ms": {
+        "type": "number",
+        "minimum": 0
+      },
+      "api_calls": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "usage": {
+        "type": "object",
+        "properties": {
+          "input_tokens": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "input_tokens"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "required": [
+      "schema_version",
+      "decision",
+      "input_digest",
+      "backend",
+      "model",
+      "status",
+      "contract_valid",
+      "action_executed",
+      "production_approved",
+      "latency_ms",
+      "api_calls",
+      "usage"
+    ],
+    "additionalProperties": false
+  },
+  "constraints": [
+    "Unique persona IDs, topic keys, episode IDs and world source IDs; exchange candidate keys unique.",
+    "Entire request canonical digest: json.dumps(ensure_ascii=False,sort_keys=True,separators=(comma,colon),allow_nan=False), UTF8 SHA256.",
+    "input_digest binds bytes-equivalent canonical frozen input; does not authenticate history, ownership or database state.",
+    "All world source hashes are canonical digest(world); exchange source_hash is an opaque upstream binding, not recomputed from selected text.",
+    "World occurred_at <= basis.as_of; withdrawal occurred_at < as_of and available_at <= as_of; compare aware instants, not string lexicography.",
+    "Nonempty quotes <=240 characters must be exact contiguous source substrings; experience_quote must occur inside user_quote.",
+    "Unknown/mixed outcomes produce no new positive/negative candidates. Withdrawal preserves target stance only for compatibility; it is not a new outcome.",
+    "Product supplies only optional persona candidates, actual episode IDs and then-visible unwithdrawn withdrawal targets; it revalidates authoritative state.",
+    "Timestamp format, semantic IDs, source hashes and source references are additionally checked in code. No text truncation."
+  ]
+}

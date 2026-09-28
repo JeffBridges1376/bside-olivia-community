@@ -492,6 +492,15 @@ def routing_context_from_environment(
 
 
 def _voice_reply_configured(env: Mapping[str, str]) -> bool:
+    from runtime.remote_pipeline import enabled as remote_enabled
+    if remote_enabled(env):
+        from runtime.remote_generation import RemoteGeneration
+        from runtime.cloud_service import CloudError
+        try:
+            api = RemoteGeneration(env.get('OLIVIA_GPU_API_URL', ''), env.get('OLIVIA_GPU_API_KEY', ''))
+            return bool(api.url and api.token)
+        except (CloudError, ValueError, TypeError):
+            return False
     from runtime.reply.reply_media import _tts_config
     from tts.delivery import delivery_configured
     import tempfile

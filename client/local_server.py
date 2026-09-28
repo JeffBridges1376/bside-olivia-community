@@ -9,6 +9,7 @@ import asyncio
 from collections import deque
 from contextvars import ContextVar
 import json
+import sys
 import os as _os
 import re as _re
 import random
@@ -167,6 +168,7 @@ from runtime.reply.reply_context import (
 )
 from runtime.reply.reply_pipeline import (
     ReplyPipeline, UnavailableRewriter, current_turn_interpretation_enabled,
+    _runtime_current_turn_interpreter,
 )
 from runtime.reply.reply_model_quality import (
     create_model_quality_ports,
@@ -473,6 +475,7 @@ def apply_runtime_llm_config(
             reviewer=reviewer or NullReviewer(),
             rewriter=rewriter or UnavailableRewriter(),
             discover_runtime_ports=False,
+            current_turn_interpreter=_runtime_current_turn_interpreter(quality_orchestrator),
         )
     except Exception:
         raise
@@ -639,11 +642,15 @@ class _LetterGateway(Gateway):
             ),
             "",
         )
-        built_messages = await asyncio.to_thread(self.adapter._messages, content)
+        persona = load_persona(self.adapter.persona_v2_path).snapshot if self.adapter.config.persona_v2_enabled else None
+        built_messages = await asyncio.to_thread(self.adapter._messages, content, persona_snapshot=persona)
         from runtime.memory.history_selection import select_history_messages as prepare_recall_messages
+        from runtime.reply.reply_pipeline import _assembled_life_projection
         built_messages = await prepare_recall_messages(
             built_messages, self.adapter.gateway,
             max_input_chars=self.adapter.config.max_input_chars, request_id=request_id,
+            persona_snapshot=persona, persona_mode='text_letter',
+            persona_development=(_assembled_life_projection(built_messages) or {}).get('character_development'),
         )
         stream = (
             self.adapter.gateway.stream_scoped(
@@ -760,6 +767,7 @@ class LetterAdapter:
             context,
             user_input="historical relationship migration policy",
             max_units=self.config.max_input_chars,
+            selected_declaration_ids=(),
         ).system_content
 
     def public_persona_status(self) -> dict[str, str | None]:
@@ -781,21 +789,22 @@ class LetterAdapter:
         # No legacy letter samples or hidden few-shot material are loaded.
         return []
 
-    def _messages(self, content: str, context: str = "") -> tuple[dict[str, str], ...]:
+    def _messages(self, content: str, context: str = "", *, persona_snapshot=None) -> tuple[dict[str, str], ...]:
         if self.config.persona_v2_enabled:
-            return self._persona_v2_messages(content, context)
+            return self._persona_v2_messages(content, context, persona_snapshot=persona_snapshot)
         return self._legacy_messages(content, context)
 
     def _legacy_messages(
-        self, content: str, context: str = ""
+        self, content: str, context: str = "", *, max_input_chars=None
     ) -> tuple[dict[str, str], ...]:
         user_content = content
         if context:
             user_content = content + "\n\n" + context
         snapshot = self.persona_provider.snapshot()
+        budget = self.config.max_input_chars if max_input_chars is None else max_input_chars
         remaining = max(
             0,
-            self.config.max_input_chars - len(snapshot.system_prompt) - len(user_content) - 2,
+            budget - len(snapshot.system_prompt) - len(user_content) - 2,
         )
         if remaining:
             memory_context = self._build_memory_prompt(
@@ -809,25 +818,44 @@ class LetterAdapter:
                 user_content = user_content + "\n\n" + memory_context.text
         return self.persona_provider.messages_for(
             user_content,
-            max_chars=self.config.max_input_chars,
+            max_chars=budget,
         )
 
     def _persona_v2_messages(
-        self, content: str, context: str = ""
+        self, content: str, context: str = "", *, persona_snapshot=None
     ) -> tuple[dict[str, str], ...]:
         user_content = content + ("\n\n" + context if context else "")
-        return self.reply_context_messages(content, mode=ReplyMode.TEXT_LETTER, user_input=user_content)
+        return self.reply_context_messages(content, mode=ReplyMode.TEXT_LETTER, user_input=user_content,
+                                           persona_snapshot=persona_snapshot)
 
-    def reply_context_messages(self, content, *, mode, max_input_chars=None, user_input=None):
+    def reply_context_messages(self, content, *, mode, max_input_chars=None, user_input=None,
+                               life_fragments=None, as_of=None, persona_snapshot=None):
         from runtime.reply.reply_pipeline import assemble_reply_messages
-        loaded = load_persona(self.persona_v2_path)
-        context = self.build_reply_context(mode, **({'future_im_enabled': True} if mode is ReplyMode.FUTURE_IM else {}))
-        messages, _ = assemble_reply_messages(self, loaded.snapshot, context, content,
+        if not self.config.persona_v2_enabled:
+            messages = self._legacy_messages(content, max_input_chars=max_input_chars)
+            if persona_snapshot is not None and messages[0]['content'] != persona_snapshot.system_prompt:
+                raise ValueError('PROACTIVE_PERSONA_CHANGED')
+            return messages
+        snapshot = persona_snapshot if persona_snapshot is not None else load_persona(self.persona_v2_path).snapshot
+        context = self.build_reply_context(mode, as_of=as_of,
+            **({'future_im_enabled': True} if mode is ReplyMode.FUTURE_IM else {}))
+        messages, _ = assemble_reply_messages(self, snapshot, context, content,
             max_input_chars=self.config.max_input_chars if max_input_chars is None else max_input_chars,
-            user_input=user_input)
+            user_input=user_input, life_fragments=life_fragments)
         return messages
 
-    def daily_life_fragments(self, content: str, *, recent_fragments=None) -> tuple[UntrustedFragment, ...]:
+    async def prepare_daily_life_fragments(self, content: str, *, now) -> tuple[UntrustedFragment, ...]:
+        if self.daily_life is None:
+            return ()
+        from runtime.reply.jev_questions import configured_questions
+        from runtime.reply.world_context_selection import select_world_context, selection_dialogue
+        packet = self.daily_life.store.reply_candidates(now=now)
+        packet['recent_dialogue'] = selection_dialogue(self.recent_letter_fragments(content, now=now))
+        value = await select_world_context(configured_questions(), packet, content)
+        return (UntrustedFragment('linli.daily-life', value),
+                UntrustedFragment('linli.rhythm', json.dumps(packet['rhythm'], ensure_ascii=False)))
+
+    def daily_life_fragments(self, content: str, *, recent_fragments=None, now=None) -> tuple[UntrustedFragment, ...]:
         if self.daily_life is None:
             return ()
         try:
@@ -837,7 +865,7 @@ class LetterAdapter:
                 if fragment.fragment_id != 'chat.historical'
                 for pair in json.loads(fragment.text)["letters"]
             )
-            now = self._now()
+            now = self._now() if now is None else now
             value = self.daily_life.store.reply_context(content, now=now, related_text=related)
             rhythm = self.daily_life.snapshot(now)["rhythm"]
             fragments = (UntrustedFragment("linli.daily-life", value),) if value else ()
@@ -845,12 +873,33 @@ class LetterAdapter:
         except (OSError, RuntimeError, ValueError, sqlite3.Error):
             return ()
 
-    def recent_letter_fragments(self, content: str = "") -> tuple[UntrustedFragment, ...]:
+    async def prepare_character_emotion(self, content: str | None, *, now: datetime) -> dict | None:
+        """Read durable input identities, never generated replies or image captions."""
+        if self.daily_life is None:
+            return None
+        emotion = self.daily_life.emotion
+        if emotion is None:
+            return None
+        source = _CURRENT_LETTER_MEMORY_SOURCE.get()
+        if not isinstance(content, str) or not content.strip() or not source:
+            return emotion.view(now)
+        from runtime.memory.received_user_originals import received_originals
+        # Revision belongs to delivery, not to the immutable received message.
+        identifier = source.removeprefix('reply:').rsplit(':', 1)[0]
+        rows = [*store.letters, *store.personal_chats]
+        current = [row for row in rows if row.get('letter_id') == identifier]
+        identities = {item.source_id for item in received_originals(current)}
+        receipts = tuple(sorted((item for item in received_originals(rows)
+            if item.source_id in identities and item.occurred_at <= now
+            and item.user_message in content), key=lambda item: item.occurred_at))
+        return await emotion.evaluate_received(receipts, now=now)
+
+    def recent_letter_fragments(self, content: str = "", *, now=None) -> tuple[UntrustedFragment, ...]:
         if self.recent_letters is None:
             return ()
         from runtime.reply.conversation_context import conversation_context
         recent, historical = conversation_context(self.recent_letters(), query=content,
-            now=self._now(), excluded_sources=self._memory_source_exclusions())
+            now=self._now() if now is None else now, excluded_sources=self._memory_source_exclusions())
         return tuple(UntrustedFragment(name, text) for name, text in
                      (('chat.recent', recent), ('chat.historical', historical)) if text)
 
@@ -875,7 +924,7 @@ class LetterAdapter:
             return 0
         return self.config.max_input_chars
 
-    def build_reply_context(self, mode: ReplyMode, *, future_im_enabled: bool = False) -> ReplyContext:
+    def build_reply_context(self, mode: ReplyMode, *, future_im_enabled: bool = False, as_of=None) -> ReplyContext:
         world_state_available = not isinstance(self.private_world_port, NullPrivateWorldPort)
         try:
             private_snapshot = self.private_world_port.snapshot()
@@ -907,7 +956,7 @@ class LetterAdapter:
         return ReplyContext.create(
             mode,
             future_im_enabled=future_im_enabled,
-            trusted_time=TrustedTime(self._now()),
+            trusted_time=TrustedTime(self._now() if as_of is None else as_of),
             world_facts=facts,
             private_behavior=projected.behavior,
             world_state_available=world_state_available,
@@ -945,12 +994,16 @@ class LetterAdapter:
     ) -> str:
         config, gateway = self._runtime
         try:
-            messages = self._messages(content, context)
+            persona = load_persona(self.persona_v2_path).snapshot if config.persona_v2_enabled else None
+            messages = self._messages(content, context, persona_snapshot=persona)
             async def complete_reply():
                 from runtime.memory.history_selection import select_history_messages as prepare_recall_messages
+                from runtime.reply.reply_pipeline import _assembled_life_projection
                 prepared = await prepare_recall_messages(
                     messages, gateway, max_input_chars=config.max_input_chars,
                     request_id=request_id,
+                    persona_snapshot=persona, persona_mode='text_letter',
+                    persona_development=(_assembled_life_projection(messages) or {}).get('character_development'),
                 )
                 completion = (
                     gateway.complete_scoped(
@@ -1338,6 +1391,16 @@ _route_decision_cache: dict[str, tuple] = {}
 async def _classify_managed_route(content: str, routes: dict[str, bool]) -> TriageResult:
     if video_reply_settings_store.saved_tier() == "text":
         return TriageResult("normal", "text_letter", "text_tier_selected", "completed", False)
+    from runtime.reply.jev_questions import configured_questions
+    from runtime.reply.companion_decision import ERROR_CODES
+    port = configured_questions()
+    if port is not None:
+        from runtime.reply.letter_route_preview import classify
+        try:
+            return await classify(port, content)
+        except (ValueError, RuntimeError) as exc:
+            code = str(exc) if str(exc) in ERROR_CODES else 'JEV_UNAVAILABLE'
+            return TriageResult('unknown', 'text_letter', code, 'unavailable', True)
     import copy
     from letter_triage import routing_context_from_environment
     ready = await asyncio.to_thread(_route_readiness)
@@ -1475,6 +1538,7 @@ letters_adapter = LetterAdapter(
 
 
 def _create_daily_life_runtime() -> DailyLifeRuntime | None:
+    from runtime.private_world.student_world import shanghai_weather
     try:
         path, _reason, enabled = resolve_private_world_database(user_id=_memory_config.user_id)
         if not enabled or path is None:
@@ -1483,7 +1547,10 @@ def _create_daily_life_runtime() -> DailyLifeRuntime | None:
             DailyLifeStore(path.with_name("daily_life.sqlite3")),
             lambda: letters_adapter.gateway,
             lambda: life_persona(letters_adapter.persona_v2_path),
+            emotion_persona=lambda: life_persona(letters_adapter.persona_v2_path, include_emotion_traits=True),
             relationship=lambda: letters_adapter.private_world_port.snapshot(),
+            weather_provider=shanghai_weather,
+            dialogue_rows=lambda: [*store.letters, *store.personal_chats],
         )
     except (OSError, RuntimeError, ValueError, sqlite3.Error):
         return None
@@ -1888,7 +1955,7 @@ _MEDIA_NAME = _re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.(?:mp4|wav|png)$"
 
 def _media_root() -> Path | None:
     configured = _local_data_root()
-    return configured / "media" if configured is not None else None
+    return (configured / "media").resolve() if configured is not None else None
 
 
 async def _media_handler(request: web.Request) -> web.StreamResponse:
@@ -2761,6 +2828,8 @@ def _letter_list_payload(scope: str) -> dict:
 
 
 def _public_llm_error(code: str | None) -> tuple[str, bool]:
+    if isinstance(code, str) and _re.fullmatch(r'JEV_[A-Z0-9_]{1,64}', code):
+        return code, code in {'JEV_UNAVAILABLE', 'JEV_TIMEOUT', 'JEV_HTTP_429', 'JEV_HTTP_503'}
     for provider, public in (('PROVIDER_QUOTA_EXHAUSTED', 'LLM_QUOTA_EXHAUSTED'),
                              ('PROVIDER_USAGE_PENDING', 'LLM_USAGE_PENDING'),
                              ('PROVIDER_REQUEST_DUPLICATE', 'LLM_REQUEST_DUPLICATE'),
@@ -2831,10 +2900,37 @@ def _reply_pipeline_timeout_seconds(exact_mode: str) -> float:
         and quality_config.reasoning_timeout_seconds is not None
         else quality_config.timeout_seconds
     )
-    quality_stages = 7.0 if exact_mode == ReplyMode.TEXT_LETTER.value else 3.0
-    if exact_mode == ReplyMode.TEXT_LETTER.value and current_turn_interpretation_enabled():
-        quality_stages += 1.0
-    return RECALL_CHECK_TIMEOUT_SECONDS + generation_timeout + quality_stages * quality_timeout + 5.0
+    is_letter = exact_mode == ReplyMode.TEXT_LETTER.value
+    semantic_mode = is_letter or exact_mode == ReplyMode.FUTURE_IM.value
+    # Retain the existing reserve even when optional semantic ports are disabled.
+    quality_budget = (7.0 if is_letter else 3.0) * quality_timeout
+    reviewer = getattr(reply_pipeline, 'reviewer', None)
+    if semantic_mode and reviewer is not None and not isinstance(reviewer, NullReviewer):
+        review_timeout = getattr(getattr(getattr(reviewer, 'adapter', None), 'config', None),
+                                 'timeout_seconds', quality_config.timeout_seconds)
+        review_reasoning = getattr(getattr(reviewer, '_transport', None),
+                                   'reasoning_timeout_seconds', quality_config.reasoning_timeout_seconds)
+        # Five layers each allow two attempts. Ordinary review runs all layers
+        # concurrently (2 timeout windows); scoped review has only two slots
+        # (conservative 6 windows). Letters can then perform one adjudication.
+        review_windows = 2.0
+        if is_letter and review_reasoning is not None:
+            review_timeout, review_windows = review_reasoning, 6.0
+        if is_letter:
+            review_windows += 1.0
+        rewriter = getattr(reply_pipeline, 'rewriter', None)
+        rewrite_timeout = getattr(rewriter, 'timeout_seconds', quality_config.timeout_seconds)
+        rewrite_reasoning = getattr(rewriter, 'reasoning_timeout_seconds', quality_config.reasoning_timeout_seconds)
+        if is_letter and rewrite_reasoning is not None:
+            rewrite_timeout = rewrite_reasoning
+        # Initial review, at most one rewrite, then a complete fresh review.
+        quality_budget = max(quality_budget, 2 * review_windows * review_timeout + rewrite_timeout)
+    interpretation_budget = 0.0
+    interpreter = getattr(reply_pipeline, 'current_turn_interpreter', None)
+    if semantic_mode and (interpreter is not None or current_turn_interpretation_enabled()):
+        interpretation_budget = getattr(interpreter, 'timeout_seconds',
+            quality_config.reasoning_timeout_seconds or quality_config.timeout_seconds)
+    return RECALL_CHECK_TIMEOUT_SECONDS + generation_timeout + quality_budget + interpretation_budget + 5.0
 
 
 def _send_result_for_letter(letter: dict) -> dict:
@@ -2920,14 +3016,20 @@ def _proactive_settings() -> dict:
     return settings(read_json(root / 'proactive/settings.json') if root is not None else {})
 
 
-def _refresh_proactive_context() -> dict:
+def _refresh_proactive_context(*, pending_draft=None) -> dict:
     from runtime.reply.proactive_letters import make_context, write_json
-    context = make_context(store.letters, now=time.time())
+    from runtime.reply.proactive_runtime import enabled, live_profile
+    rows = [row for row in store.letters if row is not pending_draft]
+    if enabled():
+        rows += [row for row in store.personal_chats if row is not pending_draft]
+    context = make_context(rows, now=time.time())
     try:
-        world = daily_life_runtime.store.exchange_state() if daily_life_runtime is not None else {}
-        context = make_context(store.letters, now=time.time(), world=world)
+        world = ((daily_life_runtime.store.snapshot(datetime.fromtimestamp(time.time(), timezone.utc)) if enabled()
+                  else daily_life_runtime.store.exchange_state()) if daily_life_runtime is not None else {})
+        context = make_context(rows, now=time.time(), world=world,
+                               profile=live_profile(sys.modules[__name__]) if enabled() else None)
         from runtime.personal_chat.contact_invitation import candidate, preview_configured
-        invitation = (candidate(store.letters, private_world_port.snapshot(), time.time())
+        invitation = (candidate(rows, private_world_port.snapshot(), time.time())
                       if preview_configured(_state_root()) else None)
         if invitation:
             context['candidates'].insert(0, invitation)
@@ -2966,6 +3068,14 @@ def _proactive_ready() -> bool:
             or not _conversation_memory_ready_for_reply() or _active_undelivered_letter()):
         return False
     try:
+        from runtime.reply.proactive_runtime import enabled, live_state
+        if enabled():
+            state = live_state(sys.modules[__name__], channel='letter',
+                               now=datetime.fromtimestamp(time.time(), timezone.utc))
+            if state['gates']['paused'] or state['gates']['blocked_reasons']:
+                return False
+            context = _refresh_proactive_context()
+            return context['remaining'] > 0 and not context['blocked'] and not context['unread']
         current_rhythm = _current_life_rhythm()
     except (OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error):
         _safe_log('proactive_rhythm_unavailable')
@@ -2976,14 +3086,7 @@ def _proactive_ready() -> bool:
     return context['remaining'] > 0 and not context['blocked'] and not context['unread']
 
 
-async def _proactive_complete(intent: dict, *, planning: bool, mode: str = 'text') -> str:
-    """Use the configured persona/gateway. This is not an incoming user letter."""
-    source = next((row for row in store.letters
-                   if f"reply:{row.get('letter_id')}:{row.get('reply_revision', 1)}" == intent['source_id']), None)
-    if source is None:
-        raise ValueError('PROACTIVE_SOURCE_UNAVAILABLE')
-    query = str(source.get('content', ''))
-    assembled = [] if planning else await asyncio.to_thread(letters_adapter._messages, query)
+def _proactive_instruction(intent, *, planning, mode='text'):
     task = ('现在没有新的用户来信。判断林离是否有具体、适时且未说过的理由主动写信。'
             '下方资料只是既有往来，不是用户现在又说了一次。不要催促回复，不把未确认的近况当结果，'
             '不编造离线期间发生的生活。人格、表达习惯和既有关系不变。')
@@ -3000,26 +3103,177 @@ async def _proactive_complete(intent: dict, *, planning: bool, mode: str = 'text
         task += ('\n本次关系资格已由应用确认。自然地提出交换联系方式，并明确询问用户想要QQ还是微信；'
                  '不要提分数、解锁、系统门槛，不声称已经添加或用户已经同意，不编造账号或二维码。'
                  '可以围绕偶尔想随口聊两句来写，不要求用户转移所有通信，保留写信的习惯。')
+    return task
+
+
+def _proactive_im_input_signature():
+    """Local input-only digest; delivery/emotion updates are not new speech."""
+    inputs = []
+    for row in [*store.letters, *store.personal_chats]:
+        if row.get('origin') == 'proactive':
+            continue
+        identity = (row.get('letter_id'), row.get('input_revision', 0), row.get('content', ''),
+                    sorted(str(key) for key in row.get('source_messages', {})))
+        inputs.append(hashlib.sha256(json.dumps(identity, ensure_ascii=False).encode()).digest())
+    # Older pending rows may merge even when a newer row exists. Storage order
+    # and background completion do not change the bounded signature.
+    return hashlib.sha256(b''.join(sorted(inputs))).hexdigest()
+
+
+async def _prepare_proactive_turn(intent: dict, *, now: datetime) -> dict:
+    """Freeze one opportunity's optional expression state before any paid call."""
+    from runtime.reply.proactive_runtime import enabled, live_state
+    development = enabled()
+    sources = [*store.letters, *store.personal_chats] if development else store.letters
+    source_id = intent.get('previous_source_id', intent['source_id'])
+    source = next((row for row in sources
+                   if f"reply:{row.get('letter_id')}:{row.get('reply_revision', 1)}" == source_id), None)
+    life_opportunity = development and intent.get('kind') in {'life_share', 'affection_checkin'}
+    if source is None and not life_opportunity:
+        raise ValueError('PROACTIVE_SOURCE_UNAVAILABLE')
+    source = source or {}
+    initiative_state = live_state(sys.modules[__name__], channel='letter', now=now) if development else None
+    im_input_signature = _proactive_im_input_signature()
+    intent = json.loads(json.dumps(intent))
+    query = str(source.get('content', ''))
     packet = {'opportunity': intent, 'previous_user_letter': query,
               'previous_linli_letter': source.get('reply_text', ''),
-              'now': datetime.now(timezone.utc).isoformat()}
+              'now': now.isoformat()}
+    packet_text = json.dumps(packet, ensure_ascii=False)
+    budget = letters_adapter.config.max_input_chars
+    # Estimate only static required Persona cost. This reads no prior messages,
+    # memory lookup or model call. The shared context selection below happens
+    # before planning, so even a deferred plan may pay for that one selection.
+    if letters_adapter.config.persona_v2_enabled:
+        persona = load_persona(letters_adapter.persona_v2_path).snapshot
+        context = ReplyContext.create(ReplyMode.TEXT_LETTER, trusted_time=TrustedTime(now))
+        baseline = assemble_persona(persona, context, user_input=query or '没有新的用户来信',
+                                    max_units=budget, selected_declaration_ids=())
+        from runtime.reply.fact_attribution import prepare_dialogue_messages
+        projected = prepare_dialogue_messages(baseline.to_messages(), max_input_chars=budget)
+        added = sum(len(m['content']) for m in projected) - len(baseline.system_content) - len(baseline.user_content)
+        required = baseline.budget_report.required_units + 512 + max(0, added)
+    else:
+        persona = letters_adapter.persona_provider.snapshot()
+        required = len(persona.system_prompt) + len(query) + 2
+    task_reserve = max(len(_proactive_instruction(intent, planning=True)),
+        *(len(_proactive_instruction(intent, planning=False, mode=mode)) for mode in ('text', 'voice')))
+    world = None
+    for fragment in letters_adapter.daily_life_fragments('', recent_fragments=(), now=now):
+        if fragment.fragment_id == 'linli.daily-life':
+            try:
+                world = json.loads(fragment.text)
+            except (TypeError, ValueError):
+                pass
+    try:
+        emotion = await letters_adapter.prepare_character_emotion(None, now=now)
+    except Exception:
+        emotion = None
+    from runtime.reply.character_emotion_context import render_expression_blocks
+    common, adopted = render_expression_blocks(world, emotion,
+        max_input_chars=budget - len(packet_text) - task_reserve - required)
+    # One selection precedes planning. A deferred opportunity may therefore pay
+    # this bounded selection call, but the body never selects or reads again.
+    base_budget = budget - task_reserve - sum(map(len, common)) - len(packet_text)
+    if base_budget < 1:
+        raise ValueError('INPUT_TOO_LONG')
+    assembled = await asyncio.to_thread(letters_adapter.reply_context_messages,
+        query or '没有新的用户来信', mode=ReplyMode.TEXT_LETTER, max_input_chars=base_budget,
+        life_fragments=(), as_of=now, persona_snapshot=persona)
+    history = assembled[:-1] if assembled and assembled[-1].get('role') == 'user' else assembled
+    from runtime.memory.history_selection import select_history_messages
+    selected = await select_history_messages(
+        (*history, {'role':'user', 'content':packet_text}), letters_adapter.gateway,
+        max_input_chars=base_budget + len(packet_text), request_id='proactive:' + intent['id'] + ':context',
+        memory_builder=letters_adapter.memory_prompt_builder, as_of=now,
+        exclude_source_ids=letters_adapter._memory_source_exclusions(), current_user_text=None,
+        persona_snapshot=persona if letters_adapter.config.persona_v2_enabled else None,
+        persona_mode='text_letter', persona_development=(adopted['world'] or {}).get('character_development'))
+    return {'intent': intent, 'query': query, 'previous_reply': packet['previous_linli_letter'],
+            'as_of': now, 'packet': packet_text, 'common_blocks': common, 'adopted': adopted,
+            'max_input_chars': budget, 'persona_snapshot': persona,
+            'persona_v2': letters_adapter.config.persona_v2_enabled,
+            'im_input_signature': im_input_signature, 'context_messages':tuple(selected[:-1]),
+            'initiative_state': initiative_state, 'source_id': source_id,
+            'life_opportunity': life_opportunity}
+
+
+def _proactive_turn_current(intent, turn):
+    if _proactive_im_input_signature() != turn['im_input_signature']:
+        return False
+    if intent.get('id') != turn['intent'].get('id') or intent.get('source_id') != turn['intent'].get('source_id'):
+        return False
+    if turn.get('initiative_state') is not None:
+        from runtime.reply.proactive_runtime import live_state, state_binding
+        try:
+            live = live_state(sys.modules[__name__], channel='letter',
+                              now=datetime.fromtimestamp(time.time(), timezone.utc))
+            if state_binding(live) != state_binding(turn['initiative_state']):
+                return False
+        except RuntimeError:
+            return False
+        if turn.get('life_opportunity') and not turn['query']:
+            return True
+    return any(f"reply:{row.get('letter_id')}:{row.get('reply_revision', 1)}" == turn.get('source_id', intent.get('source_id'))
+               and row.get('content', '') == turn['query'] and row.get('reply_text', '') == turn['previous_reply']
+                for row in [*store.letters, *store.personal_chats])
+
+
+def _proactive_opportunity_current(intent, *, pending_draft=None):
+    """Recheck live publication eligibility without changing the frozen view."""
+    from runtime.reply.proactive_letters import scan_pending
+    if pending_draft is not None and (
+            pending_draft.get('origin') != 'proactive'
+            or pending_draft.get('letter_status') != 'PROCESSING'
+            or pending_draft.get('proactive_candidate_id') != intent.get('id')):
+        return False
+    if not _proactive_settings()['enabled'] or _active_undelivered_letter(exclude_letter=pending_draft):
+        return False
+    from runtime.reply.proactive_runtime import enabled, live_state
+    if enabled():
+        try:
+            state = live_state(sys.modules[__name__], channel='letter',
+                now=datetime.fromtimestamp(time.time(), timezone.utc),
+                exclude_id=pending_draft.get('letter_id') if pending_draft is not None else None)
+            if state['gates']['paused'] or state['gates']['blocked_reasons']:
+                return False
+        except RuntimeError:
+            return False
+    context = _refresh_proactive_context(pending_draft=pending_draft)
+    if context['blocked'] or context['unread'] or context['remaining'] <= 0:
+        return False
+    if enabled():
+        stamp = time.time()
+        return any(item.get('id') == intent.get('id') and item.get('source_id') == intent.get('source_id')
+                   and item['not_before'] <= stamp < item['expires_at'] for item in context['candidates'])
+    root = _state_root()
+    current = scan_pending(root) if root is not None else {}
+    return (current.get('id') == intent.get('id')
+            and current.get('source_id') == intent.get('source_id'))
+
+
+async def _proactive_complete(intent: dict, *, planning: bool, turn: dict, mode: str = 'text') -> str:
+    """Two stages reuse one frozen view; neither treats old query as new input."""
+    if not _proactive_turn_current(intent, turn):
+        raise ValueError('PROACTIVE_SOURCE_UNAVAILABLE')
+    if letters_adapter.config.persona_v2_enabled != turn['persona_v2']:
+        raise ValueError('PROACTIVE_PERSONA_CHANGED')
+    task = _proactive_instruction(turn['intent'], planning=planning, mode=mode)
     # Preserve the complete shared context, including native dialogue roles.
     # Only the current task changes: an opportunity is not a new user message.
-    history = assembled[:-1] if assembled and assembled[-1].get('role') == 'user' else assembled
-    messages = (*history,
-                {'role': 'user', 'content': json.dumps(packet, ensure_ascii=False)})
+    messages = turn['context_messages']
     gateway = letters_adapter.gateway
     request_id = 'proactive:' + intent['id'] + (':plan' if planning else ':body')
-    if not planning:
-        from runtime.memory.history_selection import select_history_messages as prepare_recall_messages
-        messages = await prepare_recall_messages(
-            messages, gateway,
-            max_input_chars=getattr(letters_adapter, 'config', LLM_CONFIG).max_input_chars,
-            request_id=request_id,
-        )
+    # Shared blocks are appended after all recall/compaction. They cannot be
+    # individually cropped or re-rendered differently in the body stage.
+    messages = (*messages, *({'role': 'system', 'content': block} for block in turn['common_blocks']),
+                {'role': 'user', 'content': turn['packet']})
+    if turn.get('proactive_result') is not None:
+        from runtime.reply.proactive_runtime import project_decision
+        messages = project_decision(messages, turn['proactive_result'], max_input_chars=turn['max_input_chars'] - len(task))
     from runtime.reply.fact_attribution import finalize_reply_messages
     messages = finalize_reply_messages(messages, task,
-        max_input_chars=getattr(letters_adapter, 'config', LLM_CONFIG).max_input_chars)
+        max_input_chars=turn['max_input_chars'])
     scope = GatewayRequestScope.PROACTIVE_PLANNING if planning else GatewayRequestScope.BACKGROUND_REASONING
     result = await asyncio.wait_for(gateway.complete_scoped(
         messages, request_id=request_id,
@@ -3030,9 +3284,10 @@ async def _proactive_complete(intent: dict, *, planning: bool, mode: str = 'text
     return text
 
 
-async def _publish_proactive(intent: dict, plan: dict) -> None:
+async def _publish_proactive(intent: dict, plan: dict, *, turn: dict) -> None:
     global _proactive_busy
-    if not _proactive_ready():
+    if (not _proactive_ready() or not _proactive_turn_current(intent, turn)
+            or not _proactive_opportunity_current(intent)):
         return
     if intent.get('kind') == 'contact_invitation':
         from runtime.personal_chat.contact_invitation import status, preview_configured
@@ -3043,7 +3298,7 @@ async def _publish_proactive(intent: dict, plan: dict) -> None:
     _proactive_busy = True
     letter = None
     try:
-        body = await _proactive_complete(intent, planning=False, mode=plan['format'])
+        body = await _proactive_complete(intent, planning=False, mode=plan['format'], turn=turn)
         if intent.get('kind') == 'contact_invitation' and ('QQ' not in body.upper() or '微信' not in body):
             raise ValueError('PROACTIVE_CONTACT_INVITATION_INCOMPLETE')
         signature = None
@@ -3052,7 +3307,7 @@ async def _publish_proactive(intent: dict, plan: dict) -> None:
             body, signature = split_signature(body)
             if not body.strip():
                 raise ValueError('PROACTIVE_RESPONSE_INVALID')
-        if not _proactive_settings()['enabled']:
+        if not _proactive_turn_current(intent, turn) or not _proactive_opportunity_current(intent):
             return
         if intent.get('kind') == 'contact_invitation':
             from runtime.personal_chat.contact_invitation import status
@@ -3064,6 +3319,9 @@ async def _publish_proactive(intent: dict, plan: dict) -> None:
                   'proactive_candidate_id': intent['id'], 'reply_mode': 'text',
                   'proactive_kind': intent.get('kind'),
                   'media_status': 'NOT_REQUESTED', 'reply_video_enabled': False}
+        if turn.get('proactive_result') is not None:
+            from runtime.reply.proactive_runtime import record_decision
+            letter['proactive_decision'] = record_decision(turn['proactive_result'])
         _prepare_private_world_delivery(letter, body)
         letter['reply_text'] = body
         letter['reply_signature'] = signature
@@ -3077,7 +3335,8 @@ async def _publish_proactive(intent: dict, plan: dict) -> None:
                 letter.update(media_status='FAILED', media_error_code='MEDIA_TIMEOUT', media_retryable=False)
             if letter.get('media_status') != 'COMPLETED':
                 letter['reply_mode'] = 'text'
-        if not _proactive_settings()['enabled']:
+        if (not _proactive_turn_current(intent, turn)
+                or not _proactive_opportunity_current(intent, pending_draft=letter)):
             letter['letter_status'] = 'CANCELED'
             _persist_store_state()
             return
@@ -3085,6 +3344,10 @@ async def _publish_proactive(intent: dict, plan: dict) -> None:
         letter.update(letter_status='COMPLETED', published_at=now.timestamp(),
                       created_at=int(now.timestamp()), replied_at=int(now.timestamp()),
                       private_world_occurred_at=now.isoformat(), daily_life_status='PENDING')
+        from runtime.reply.character_emotion_context import freeze_expression_context, store_expression_context
+        snapshot = freeze_expression_context('proactive:' + intent['id'] + ':body', turn['as_of'],
+            world=turn['adopted']['world'], emotion=turn['adopted']['emotion'])
+        store_expression_context(letter, snapshot, body)
         _persist_store_state()
         _commit_private_world_letter(letter)
         if letter.get('reply_audio_url') and letter.get('media_status') == 'COMPLETED':
@@ -3105,8 +3368,74 @@ async def _publish_proactive(intent: dict, plan: dict) -> None:
             _history_memory_admin_gate.release()
 
 
+async def _jev_proactive_tick() -> None:
+    """Development-only Jev contact decision; existing publication owns delivery."""
+    global _proactive_reason
+    from runtime.reply.proactive_letters import DAY, read_json, write_json, scan_pending
+    from runtime.reply.proactive_runtime import contact_slot, packet, decide, record_decision
+    root = _state_root()
+    if root is None or not _proactive_settings()['enabled']:
+        _proactive_reason = 'disabled'
+        return
+    if not _proactive_ready():
+        _proactive_reason = 'waiting'
+        return
+    with contact_slot(sys.modules[__name__], 'letter') as acquired:
+        if not acquired:
+            return
+        now = datetime.fromtimestamp(time.time(), timezone.utc)
+        schedule = read_json(root / 'proactive/schedule.json')
+        if now.timestamp() < schedule.get('next_check_at', 0):
+            return
+        attempts = [item for item in schedule.get('attempts', [])
+                    if isinstance(item, dict) and isinstance(item.get('id'), str)
+                    and type(item.get('at')) in (int, float) and item['at'] > now.timestamp() - DAY]
+        from runtime.reply.proactive_runtime import live_profile
+        profile = live_profile(sys.modules[__name__])
+        if len(attempts) >= profile.letter_daily_limit * 3:
+            _proactive_reason = 'waiting'
+            return
+        intent = scan_pending(root, excluded_ids={item['id'] for item in attempts})
+        if not intent:
+            _proactive_reason = 'no_opportunity'
+            return
+        attempts.append({'id': intent['id'], 'at': now.timestamp()})
+        schedule = {'next_check_at': now.timestamp() + profile.letter_followup_delay, 'attempts': attempts}
+        write_json(root / 'proactive/schedule.json', schedule)
+        turn = await _prepare_proactive_turn(intent, now=now)
+        state = turn['initiative_state']
+        kinds = {'correspondence_followup': 'followup', 'shared_followup': 'shared_topic',
+                 'relationship_checkin': 'connection', 'affection_checkin': 'connection',
+                 'contact_invitation': 'connection', 'life_share': 'daily_share'}
+        offered = [{'id': intent['id'], 'kind': kinds[intent['kind']],
+                    'description': json.dumps(intent, ensure_ascii=False, separators=(',', ':'))}]
+        value = packet(channel='letter', now=now, profile=state['profile'], world=turn['adopted']['world'],
+            rhythm=state['snapshot']['rhythm'], emotion=turn['adopted']['emotion'],
+            messages=turn['context_messages'], opportunities=offered, rows=state['rows'],
+            available_media=['text'], hard_gates=state['gates'])
+        result = await decide(value)
+        schedule['last_decision'] = record_decision(result)
+        write_json(root / 'proactive/schedule.json', schedule)
+        turn['proactive_result'] = result
+        if result.decision['action'] != 'send':
+            _proactive_reason = 'deferred'
+            return
+        if not _proactive_turn_current(intent, turn) or not _proactive_opportunity_current(intent):
+            _proactive_reason = 'deferred'
+            return
+        _proactive_reason = 'writing'
+        await _publish_proactive(intent, {'decision': 'send', 'format': 'text', 'title': '想和你说说话'}, turn=turn)
+        _refresh_proactive_context()
+        scan_pending(root)
+        _proactive_reason = 'waiting'
+
+
 async def _proactive_tick() -> None:
     global _proactive_reason
+    from runtime.reply.proactive_runtime import enabled
+    if enabled():
+        await _jev_proactive_tick()
+        return
     from runtime.reply.proactive_letters import DAY, read_json, write_json, scan_pending
     root = _state_root()
     if root is None or not _proactive_settings()['enabled']:
@@ -3143,10 +3472,11 @@ async def _proactive_tick() -> None:
     attempts.append({'id': intent['id'], 'at': now})
     write_json(root / 'proactive/schedule.json', {'next_check_at': now + 3600, 'attempts': attempts})
     _proactive_reason = 'considering'
+    turn = await _prepare_proactive_turn(intent, now=datetime.fromtimestamp(now, timezone.utc))
     # Eligibility already supplies a concrete reason. The model writes the
     # invitation in character, but does not postpone it or add media latency.
     plan = ({'decision': 'send', 'format': 'text', 'title': '想和你聊两句'} if contact
-            else json.loads(await _proactive_complete(intent, planning=True)))
+            else json.loads(await _proactive_complete(intent, planning=True, turn=turn)))
     if (not isinstance(plan, dict) or set(plan) != {'decision', 'format', 'title'}
             or plan['decision'] not in {'send', 'defer'} or plan['format'] not in {'text', 'voice'}
             or not isinstance(plan['title'], str) or not 1 <= len(plan['title']) <= 40):
@@ -3155,9 +3485,9 @@ async def _proactive_tick() -> None:
     # not the background worker's stale decision.
     _refresh_proactive_context()
     current = scan_pending(root)
-    if plan['decision'] == 'send' and current.get('id') == intent['id'] and _proactive_ready():
+    if plan['decision'] == 'send' and current.get('id') == intent['id'] and _proactive_turn_current(current, turn) and _proactive_ready():
         _proactive_reason = 'writing'
-        await _publish_proactive(current, plan)
+        await _publish_proactive(current, plan, turn=turn)
         _refresh_proactive_context()
         scan_pending(root)
         _proactive_reason = 'waiting'
@@ -3182,11 +3512,13 @@ async def _proactive_loop() -> None:
         await asyncio.sleep(300)
 
 
-def _active_undelivered_letter(*, now: float | None = None) -> dict | None:
+def _active_undelivered_letter(*, now: float | None = None, exclude_letter=None) -> dict | None:
     from original_client_letter_contract import _video_pending, _photo_pending
 
     current_time = time.time() if now is None else now
     for letter in store.letters:
+        if letter is exclude_letter:
+            continue
         if _video_pending(letter) or _photo_pending(letter):
             return letter
         if letter.get("letter_status") in {"PENDING", "PROCESSING"}:
@@ -3371,6 +3703,9 @@ async def route(
                 return ok(report)
             if p.endswith("/import"):
                 return ok(await asyncio.to_thread(library.import_path, body.get("path")))
+            if p.endswith("/reveal"):
+                await asyncio.to_thread(library.reveal, body.get("id"))
+                return ok({"opened": True})
             if p.endswith("/rename"):
                 await asyncio.to_thread(library.rename, body.get("id"), body.get("name"))
             elif p.endswith("/delete"):
@@ -3779,6 +4114,13 @@ async def route(
         return ok({})
     if p == "/toy/letter/route-preview":
         from letter_triage import explicitly_requested_route
+        if body.get('letter_id') is not None:
+            original = next((row for row in store.letters if row.get('letter_id') == body['letter_id']), None)
+            if original is None:
+                return err(404, 'LETTER_NOT_FOUND', {})
+            if original.get('letter_status') != 'FAILED' or original.get('superseded_by') or original.get('origin') == 'proactive':
+                return err(409, 'LETTER_RESEND_NOT_ALLOWED', {})
+            body = {**original.get('material', {}), 'content': original.get('content', '')}
         content = body.get("content")
         if not isinstance(content, str) or not content.strip() or len(content) > 10000:
             return err(400, "INVALID_CONTENT", {})
@@ -3806,10 +4148,12 @@ async def route(
             return err(409, "REPLY_ROUTE_PREVIEW_EXPIRED", {"error_code": "REPLY_ROUTE_PREVIEW_EXPIRED"})
         if decision.status == "unavailable":
             reason = getattr(decision, 'reason_code', '')
+            from runtime.reply.companion_decision import ERROR_CODES
             code = {'router_quota_exhausted': 'LLM_QUOTA_EXHAUSTED', 'router_auth_failed': 'LLM_AUTH_FAILED',
                     'router_rate_limited': 'LLM_RATE_LIMITED', 'router_timeout': 'LLM_TIMEOUT',
                     'router_invalid_result': 'REPLY_ROUTE_INVALID_RESULT',
-                    'router_invalid_content': 'REPLY_ROUTE_INVALID_CONTENT'}.get(reason, 'VIDEO_TRIAGE_UNAVAILABLE')
+                    'router_invalid_content': 'REPLY_ROUTE_INVALID_CONTENT'}.get(
+                        reason, reason if reason in ERROR_CODES else 'VIDEO_TRIAGE_UNAVAILABLE')
             from runtime.diagnostics.failure_context import project_failure_context
             detail = project_failure_context(getattr(decision, "diagnostic", None) or {})
             if code == 'VIDEO_TRIAGE_UNAVAILABLE':
@@ -3852,6 +4196,8 @@ async def route(
                                        preview_videos, routes, body.get('cover_source_id'), body.get('cover_output', 'audio'),
                                        body.get('original_output'), body.get('music_options', {}))
         return ok({"token": token, "requested_route": requested, "video_enabled": selected_video,
+                   "image_enabled": video_reply_settings_store.image_snapshot().get('enabled', False),
+                   "image_requested": decision.reason_code == 'jev_image_request',
                    "requires_cover_audio": bool(body.get("cover_source_id")),
                    "needs_confirmation": bool(requested and not routes[requested]),
                    "needs_video_confirmation": video_confirmation,
@@ -4291,7 +4637,10 @@ async def route(
             route_decision = await _classify_managed_route(content, routes)
         if route_decision is not None:
             if route_decision.status == "unavailable":
-                return err(503, "VIDEO_TRIAGE_UNAVAILABLE", {"error_code": "VIDEO_TRIAGE_UNAVAILABLE"})
+                from runtime.reply.companion_decision import ERROR_CODES
+                reason = getattr(route_decision, 'reason_code', '')
+                code = reason if reason in ERROR_CODES else 'VIDEO_TRIAGE_UNAVAILABLE'
+                return err(503, code, {"error_code": code})
             requested = explicitly_requested_route(route_decision)
             explicit_video = bool({"explicit_video_reply_request", "explicit_video_output_request"}.intersection(route_decision.music_contexts))
             if video_once is not None and (video_once != requested or not explicit_video or preview_token is None):
@@ -4416,6 +4765,8 @@ async def route(
             return _send_result_for_letter(letter)
         return _send_result_for_letter(letter)
     if p == "/toy/letter/resend":
+        if 'material' in body and not isinstance(body['material'], dict):
+            return _invalid_field_type('material', 'object')
         if _proactive_busy:
             return err(409, "PROACTIVE_LETTER_BUSY", {"error_code": "PROACTIVE_LETTER_BUSY"})
         lid = _request_value(body, query, "letter_id", "letterId")
@@ -4461,7 +4812,10 @@ async def route(
             "/toy/letter/send",
             {
                 "content": original.get("content", ""),
-                "material": original.get("material", {}),
+                "material": {**original.get("material", {}), **{
+                    key: value for key, value in (body.get('material') or {}).items()
+                    if key in {'route_preview_token', 'route_allow_once', 'route_video_once'}
+                }},
             },
             {"scope": "current"},
             defer_reply=defer_reply,
@@ -4783,6 +5137,9 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     cover_options = {"source_audio": cover_source, "cover_lyrics": material.get("cover_lyrics", ""),
                                      "cover_language": material.get("cover_language", "unknown"),
                                      "cover_options": material.get("cover_options", {})}
+                from runtime.reply.character_emotion_context import checked_expression_context
+                song_expression_context = checked_expression_context(letter) or {
+                    'as_of': '1970-01-01T00:00:00+00:00', 'world': None, 'emotion': None}
                 render_metadata = await asyncio.to_thread(music_renderer,
                     content,
                     reply_text,
@@ -4800,6 +5157,7 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                     spoken_action_base_path=spoken_action_base,
                     voice_performance_plan=voice_plan,
                     gateway=letters_adapter.gateway,
+                    expression_context=song_expression_context,
                     environment=environment,
                     include_spoken=reply_mode == ReplyMode.MUSICAL_VIDEO.value,
                     **({'reply_adapter': letters_adapter} if letter.get('music_provider') != 'ace_step_xl_cover' else {}),
@@ -5103,6 +5461,11 @@ async def _refresh_daily_life_periodically() -> None:
 
 async def _start_reply_tasks(_app: web.Application) -> None:
     global _proactive_task
+    if _refresh_contact_relationship_projection():
+        try:
+            _persist_store_state()
+        except (OSError, StoreStateUnavailable):
+            _safe_log('contact_projection_persist_unavailable')
     _refresh_proactive_context()
     prefs = _proactive_settings()
     if prefs['enabled'] and prefs['login_check_enabled'] and _state_root() is not None:
@@ -5277,6 +5640,28 @@ def _prepare_private_world_delivery(letter: dict, canonical_text: str) -> None:
     letter["private_world_semantic_key"] = f"canonical.{semantic_digest}"
 
 
+def _refresh_contact_relationship_projection() -> bool:
+    """Refresh cached letter/IM behavior from one current projection read."""
+    if private_world_relationship_committer is None:
+        return False
+    try:
+        from runtime.personal_chat.contact_invitation import observe
+        ledger = private_world_relationship_committer.ledger
+        snapshot, events = ledger.snapshot(), ledger.events()
+        changed = False
+        fields = ('contact_qualification', 'contact_projection_revision', 'initiative_tier', 'initiative_caution')
+        for row in (*store.letters, *getattr(store, 'personal_chats', ())):
+            if not row.get('private_world_delivery_id'):
+                continue
+            before = tuple(row.get(key) for key in fields)
+            observe(row, snapshot, events)
+            changed = changed or before != tuple(row.get(key) for key in fields)
+        return changed
+    except (AttributeError, OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error):
+        _safe_log('contact_projection_refresh_unavailable')
+        return False
+
+
 def _schedule_daily_life_exchange(letter: dict) -> None:
     if daily_life_runtime is None:
         return
@@ -5289,7 +5674,7 @@ def _schedule_daily_life_exchange(letter: dict) -> None:
 
     async def deliver():
         try:
-            from runtime.personal_chat.contact_invitation import status, observe, validate_choice
+            from runtime.personal_chat.contact_invitation import status, validate_choice
             contact = status(store.letters, private_world_port.snapshot())
             invitation_id = contact.get('invitation_id') if letter.get('origin') != 'proactive' else None
             # A delayed extraction cannot interpret an older letter as acceptance.
@@ -5315,7 +5700,7 @@ def _schedule_daily_life_exchange(letter: dict) -> None:
                 letter["relationship_status"] = relationship_status.value
                 if relationship_status.value not in {"COMMITTED", "DUPLICATE"}:
                     raise RuntimeError("DAILY_LIFE_RELATIONSHIP_UNAVAILABLE")
-                observe(letter, private_world_port.snapshot(), private_world_relationship_committer.ledger.events())
+                _refresh_contact_relationship_projection()
             if invitation_id:
                 payload = daily_life_runtime.store._exchange_payload(source_id, letter['content'], letter['reply_text'])
                 choice = validate_choice(payload.get('contact_choice'), letter['content'])
@@ -5338,9 +5723,11 @@ def _schedule_daily_life_exchange(letter: dict) -> None:
         except (OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
             letter["daily_life_error_code"] = "DAILY_LIFE_EXCHANGE_UNAVAILABLE"
             reason = str(exc)
+            from runtime.reply.companion_decision import ERROR_CODES as jev_error_codes
+            from runtime.private_world.jev_exchange import EXCHANGE_ERROR_CODES
             # Persist only bounded machine codes, never model text or credentials.
             letter["daily_life_failure_reason"] = (
-                reason if _re.fullmatch(r"DAILY_LIFE_[A-Z_]{1,64}", reason)
+                reason if reason in jev_error_codes or reason in EXCHANGE_ERROR_CODES or _re.fullmatch(r"DAILY_LIFE_[A-Z_]{1,64}", reason)
                 else "DAILY_LIFE_" + type(exc).__name__.upper()
             )
         finally:
@@ -5472,6 +5859,18 @@ async def _run_reply_pipeline_for_letter(
     receipt_token = _CURRENT_LETTER_RECEIPT.set(
         datetime.fromisoformat(letter["life_received_at"]) if letter.get("life_received_at") else letters_adapter._now()
     )
+    from runtime.reply.companion_runtime import TURN_CONTEXT
+    input_revision = letter.get('input_revision', 0)
+    async def save_companion_decision(record):
+        if letter.get('input_revision', 0) != input_revision or letter.get('content', content) != content:
+            raise RuntimeError('JEV_INPUT_SUPERSEDED')
+        letter['companion_decision'] = record
+        _persist_store_state()
+    decision_token = TURN_CONTEXT.set(dict(received_source_id=f'reply:{letter_id}:user',
+        semantic_kinds=(['text', 'image'] if exact_mode == ReplyMode.TEXT_LETTER.value
+                        and letter.get('image_reply_settings', {}).get('enabled') else ['text']),
+        input_revision=input_revision, companion_decision=letter.get('companion_decision'),
+        save_companion_decision=save_companion_decision))
     try:
         reply_input = reply_input_override
         if reply_input is None:
@@ -5483,6 +5882,7 @@ async def _run_reply_pipeline_for_letter(
             )
         request = ReplyRequest(
             content=reply_input,
+            received_user_text=content,
             request_id=f"letter-reply:{letter_id}{request_suffix}",
             idempotency_key=(
                 f"{idempotency_key}:{letter_id}{request_suffix}"
@@ -5518,11 +5918,18 @@ async def _run_reply_pipeline_for_letter(
             timeout=_reply_pipeline_timeout_seconds(exact_mode),
         )
     finally:
+        TURN_CONTEXT.reset(decision_token)
         _CURRENT_LETTER_MEMORY_SOURCE.reset(source_token)
         _CURRENT_LETTER_RECEIPT.reset(receipt_token)
 
 
 async def generate_reply(letter_id, content, *, idempotency_key=None):
+    from runtime.reply.jev_billing import billing_scope
+    with billing_scope('letter:' + str(letter_id)):
+        return await _generate_reply_billed(letter_id, content, idempotency_key=idempotency_key)
+
+
+async def _generate_reply_billed(letter_id, content, *, idempotency_key=None):
     """Run one routed current-letter reply to its canonical terminal state."""
 
     letter = next(
@@ -5532,18 +5939,38 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
     if letter is None:
         return False
 
+    # A manual retry after enabling the native image consumer must not restore
+    # the old text-only capability selection and fail forever. Keep its receipt.
+    saved = letter.get('companion_decision') or {}
+    saved_plan = saved.get('plan', {})
+    old_parts = [p.get('kind') for step in saved_plan.get('proposal', {}).get('steps', [])
+                 for p in step.get('parts', [])]
+    if (letter.get('error_code') == 'JEV_PLAN_UNSUPPORTED' and old_parts == ['image']
+            and saved_plan.get('resolution', {}).get('status') == 'unsupported'
+            and letter.get('image_reply_settings', {}).get('enabled') is True):
+        letter['superseded_companion_decision'] = saved
+        letter.pop('companion_decision', None)
+        letter['input_revision'] = int(letter.get('input_revision', 0)) + 1
+
     # Persist once: retries and slow background extraction cannot move receipt
     # time to the end of generation or create another sleep interruption.
     letter.setdefault("life_received_at", letters_adapter._now().isoformat())
 
     letter["letter_status"] = "PROCESSING"
+    letter.pop('expression_context', None)
     _persist_store_state()
     receive_eligibility = receive_eligibility_from_letter(letter)
     if isinstance(letter.get("route_preflight"), dict):
         decision = TriageResult(**letter["route_preflight"])
     elif receive_eligibility.enabled:
         try:
-            decision = await emotion_triage.classify(content)
+            from runtime.reply.companion_runtime import configured_port
+            if configured_port() is not None:
+                decision = await _classify_managed_route(
+                    content, letter.get("reply_routes") or video_reply_settings_store.routes_snapshot()
+                )
+            else:
+                decision = await emotion_triage.classify(content)
         except (GatewayError, asyncio.TimeoutError, ValueError, RuntimeError):
             _safe_log("triage_degraded", error_code="VIDEO_TRIAGE_UNAVAILABLE")
             decision = TriageResult(
@@ -5626,6 +6053,22 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
         _persist_store_state()
         _safe_log("letter_failed", error_code=public_code)
         return False
+    if getattr(result, 'companion_decision', None) is not None:
+        letter['companion_decision'] = result.companion_decision
+        letter['companion_timing'] = result.companion_timing
+        letter['companion_delivery'] = result.companion_delivery
+        image_requested = (result.companion_delivery == 'image'
+                           and letter.get('image_reply_settings', {}).get('enabled') is True)
+        letter['image_status'] = 'PENDING' if image_requested else 'SKIPPED'
+        if result.companion_timing in {'wait_user', 'defer', 'no_reply'}:
+            letter['letter_status'] = 'SKIPPED'
+            letter.pop('reply_text', None)
+            _mark_media_not_requested(letter)
+            _persist_store_state()
+            return True
+    else:
+        for field in ('companion_decision', 'companion_timing', 'companion_delivery'):
+            letter.pop(field, None)
     if (
         exact_mode
         in {
@@ -5645,6 +6088,8 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
     if daily_life_runtime is not None:
         letter["daily_life_status"] = "PENDING"
     letter["reply_text"] = result.text
+    from runtime.reply.character_emotion_context import store_expression_context
+    store_expression_context(letter, getattr(result, 'expression_context', None), result.text)
     letter["reply_sticker_id"] = getattr(result, "sticker_id", None)
     letter["reply_signature"] = getattr(result, "signature", None)
     letter["letter_status"] = "COMPLETED"
@@ -5668,7 +6113,8 @@ async def generate_reply(letter_id, content, *, idempotency_key=None):
     letters_adapter.remember_conversation(content, result.text)
     from runtime.image_reply import schedule as schedule_image
     import sys
-    schedule_image(sys.modules[__name__], letter)
+    if not letter.get('companion_decision') or letter.get('companion_delivery') == 'image':
+        schedule_image(sys.modules[__name__], letter)
     _safe_log("letter_completed", reply_mode=exact_mode)
     return True
 

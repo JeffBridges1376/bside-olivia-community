@@ -14,7 +14,7 @@ def test_photo_follows_fixed_paper_without_covering_body(status):
     start = source.index("  if (typeof customElements")
     component = source[start:source.index('  const text =', start)]
     css = '\n'.join(line for line in source.splitlines()
-                    if line.strip().startswith(('.mail-box-reply-content', '.mail-responsive-card:has(olivia-photo', 'olivia-photo', '.olivia-letter-photo-print')))
+                    if line.strip().startswith(('.mail-box-reply-content', '.mail-responsive-card:has(olivia-photo', '.olivia-photo-stack', 'olivia-photo', '.olivia-letter-photo-print')))
     image = io.BytesIO()
     Image.new('RGB', (768, 1024), 'gray').save(image, 'PNG')
     with playwright.sync_playwright() as p:
@@ -36,12 +36,13 @@ def test_photo_follows_fixed_paper_without_covering_body(status):
         page.set_content('''<style>
           #stack{height:720px;display:flex;flex-direction:column}
           .mail-responsive-card{width:650px;height:365px;flex:1 0 290px;aspect-ratio:16/9}
-          .mail-box-reply-content{display:flex;flex-direction:column;position:relative;width:650px;height:365px;box-sizing:border-box}
+          .mail-box-reply-content{display:flex;flex-direction:column;position:relative;width:650px;height:365px;box-sizing:border-box;background:#f3eee4}
           textarea{height:230px;margin:20px 24px;width:calc(100% - 48px);box-sizing:border-box;font-size:16px;line-height:24px}
           #date{position:absolute;bottom:20px;right:20px}
+          #native-expand{position:absolute;bottom:8px;right:12px;width:32px;height:32px;z-index:2}
         </style><style>''' + css + '''</style>
           <div id="stack"><div class="mail-responsive-card"><div class="mail-box-reply-content mail-box-reply-content-text">
-          <textarea class="mail-box-reply-content-textarea" readonly></textarea><div id="date">日期</div></div><olivia-photo letter-id="test"></olivia-photo></div>
+          <textarea class="mail-box-reply-content-textarea" readonly></textarea><div id="date">日期</div></div><olivia-photo letter-id="test"></olivia-photo><button id="native-expand">展开</button></div>
           <div id="next">下一封信</div></div>''')
         page.locator('textarea').evaluate('(el)=>el.value="完整正文。".repeat(300)')
         page.add_script_tag(content="const apiBase='http://photo.test';" + component)
@@ -64,28 +65,43 @@ def test_photo_follows_fixed_paper_without_covering_body(status):
             assert boxes['paper']['height'] == 365, 'Attachments must not stretch the paper'
             assert boxes['body']['height'] == 230, 'Attachments must not squeeze the body'
             if status == 'COMPLETED':
-                assert boxes['photo']['top'] >= boxes['paper']['bottom'], 'Closed photo must not cover the letter'
+                native = page.locator('#native-expand').bounding_box()
+                assert boxes['photo']['right'] + 8 <= native['x'], 'Photo tab must leave room for the native corner action'
+                assert boxes['photo']['top'] < boxes['paper']['bottom'], 'Closed photo must be tucked under the paper'
+                assert 12 <= boxes['photo']['bottom'] - boxes['paper']['bottom'] <= 44, 'Only one small photo corner should peek out'
                 assert boxes['next'] - boxes['paper']['bottom'] <= 60, 'Tucked photos must not add a full row'
+                assert page.locator('olivia-photo img').is_visible(), 'The corner must show a real photo, not just a text button'
+                assert not page.locator('olivia-photo img').evaluate('''img=>{const r=img.getBoundingClientRect();return img===document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)}'''), 'Paper must cover the main body of the closed photo'
             else:
                 assert boxes['photo']['top'] >= boxes['paper']['bottom']
             assert boxes['next'] >= boxes['photo']['bottom']
         assert page.locator('textarea').evaluate('(el)=>{el.scrollTop=el.scrollHeight;return el.scrollTop>0}'), 'Long letters remain scrollable'
         if status == 'COMPLETED':
             button = page.locator('olivia-photo button')
-            assert not page.locator('olivia-photo img').is_visible()
             assert not acknowledgements, 'A tucked photo has not been opened yet'
+            def open_corner():
+                page.wait_for_timeout(320)
+                point = page.locator('olivia-photo img').evaluate('''img=>{
+                  const r=img.getBoundingClientRect(),paper=img.closest('.mail-responsive-card').querySelector('.mail-box-reply-content').getBoundingClientRect();
+                  for(let y=paper.bottom+4;y<r.bottom;y+=3)for(let x=r.left+4;x<r.right;x+=3)
+                    if(document.elementFromPoint(x,y)===img)return {x,y};
+                  return null;
+                }''')
+                assert point, 'A real image corner must remain visible and clickable below the paper'
+                page.mouse.click(point['x'], point['y'])
             with page.expect_request('**/toy/image/ack'):
-                page.get_by_text('查看照片', exact=True).click()
+                open_corner()
             assert button.get_attribute('aria-expanded') == 'true'
+            assert page.locator('olivia-photo').evaluate('el=>el.getAnimations().length') > 0
+            page.wait_for_timeout(320)
             assert page.locator('olivia-photo img').is_visible()
             assert page.locator('olivia-photo img').evaluate('''img=>{const r=img.getBoundingClientRect();return img.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))}'''), 'Opened photo must be above the paper'
             page.keyboard.press('Escape')
             assert button.get_attribute('aria-expanded') == 'false'
-            assert not page.locator('olivia-photo img').is_visible()
-            page.get_by_text('查看照片', exact=True).click()
+            open_corner()
             page.get_by_text('收起照片', exact=True).click()
             assert button.get_attribute('aria-expanded') == 'false'
-            page.get_by_text('查看照片', exact=True).click()
+            open_corner()
             page.locator('#next').click()
             assert button.get_attribute('aria-expanded') == 'false'
         if status == 'FAILED':

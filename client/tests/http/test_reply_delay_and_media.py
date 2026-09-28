@@ -815,11 +815,13 @@ def test_run_reply_pipeline_scopes_letter_generation_for_bounded_reasoning(
 @pytest.mark.parametrize("model", ["qwen3.8-flash", "qwen3.8-max", "deepseek-v4-flash"])
 @pytest.mark.parametrize("planning", [False, True])
 def test_proactive_completion_uses_gateway_reasoning_deadline(monkeypatch, model, planning):
+    from datetime import datetime, timezone
     from types import SimpleNamespace
     from llm_gateway import OpenAICompatibleAdapter
 
     gateway = OpenAICompatibleAdapter(GatewayConfig(
         provider="openai_compatible", model=model, reasoning_timeout_seconds=720,
+        persona_v2_enabled=False,
     ))
     seen = []
 
@@ -835,14 +837,22 @@ def test_proactive_completion_uses_gateway_reasoning_deadline(monkeypatch, model
     monkeypatch.setattr(gateway, "complete_scoped", complete)
     monkeypatch.setattr(local_server, "store", SimpleNamespace(letters=[{
         "letter_id": "fixture", "content": "synthetic previous letter", "reply_text": "synthetic previous reply",
-    }]))
-    monkeypatch.setattr(local_server, "letters_adapter", SimpleNamespace(
-        gateway=gateway, _messages=lambda _: [{"role": "system", "content": "synthetic persona"}],
-    ))
+        "reply_revision": 1, "letter_status": "COMPLETED",
+    }], personal_chats=[]))
+    adapter = local_server.LetterAdapter(gateway.config)
+    adapter.gateway = gateway
+    adapter.persona_provider = SimpleNamespace(
+        snapshot=lambda: SimpleNamespace(system_prompt="synthetic persona"),
+        messages_for=lambda content, **kwargs: (
+            {"role": "system", "content": "synthetic persona"},
+            {"role": "user", "content": content}))
+    monkeypatch.setattr(local_server, "letters_adapter", adapter)
     monkeypatch.setattr(local_server.asyncio, "wait_for", wait_for)
-    result = asyncio.run(local_server._proactive_complete(
-        {"id": "intent", "source_id": "reply:fixture:1"}, planning=planning,
-    ))
+    async def exercise():
+        intent = {"id": "intent", "source_id": "reply:fixture:1"}
+        turn = await local_server._prepare_proactive_turn(intent, now=datetime.now(timezone.utc))
+        return await local_server._proactive_complete(intent, planning=planning, turn=turn)
+    result = asyncio.run(exercise())
     assert result == "synthetic final reply"
     assert seen == [180 if planning else 720]
 

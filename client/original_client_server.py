@@ -1312,6 +1312,11 @@ def create_configured_original_client_server_runtime(
         history_import_provider=history_import_snapshot,
         cloud_service=cloud_service,
     )
+    life_runtime = getattr(server_module, 'daily_life_runtime', None)
+    if life_runtime is not None:
+        from runtime.reply.character_emotion_context import latest_qq_reply_basis
+        life_runtime.reply_basis_provider = lambda: latest_qq_reply_basis(
+            [dict(row) for row in getattr(getattr(server_module, 'store', None), 'personal_chats', ())])
     install_reply_task_lifecycle = getattr(
         server_module,
         "install_reply_task_lifecycle",

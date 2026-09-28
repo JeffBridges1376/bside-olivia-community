@@ -389,7 +389,9 @@ async def prepare_recall_messages(messages, gateway, *, max_input_chars, request
         question = next((m['content'] for m in reversed(messages) if m.get('role') == 'user'), '')
         current = {'source': 'current', 'scope': 'current_user_statement', 'text': question}
         sources.append(current)
-        enabled = getattr(getattr(gateway, 'config', None), 'provider', None) in {'openai_compatible', 'openai'}
+        from runtime.reply.jev_questions import configured_questions
+        jev_port = configured_questions()
+        enabled = jev_port is not None or getattr(getattr(gateway, 'config', None), 'provider', None) in {'openai_compatible', 'openai'}
         if not has_history or not enabled:
             return _project(messages, {'status': 'skipped', 'reason': 'no_history' if not has_history else 'not_enabled',
                                       'findings': []}, sources, max_input_chars=max_input_chars)
@@ -398,6 +400,11 @@ async def prepare_recall_messages(messages, gateway, *, max_input_chars, request
         phase = 'input_capacity'
         if len(packet) + len(_INSTRUCTION) > max_input_chars:
             raise ValueError('RECALL_CHECK_INPUT_BUDGET_EXCEEDED')
+        if jev_port is not None:
+            from .jev_history import check_recall
+            phase = 'jev_provider'
+            value = await check_recall(jev_port, question, sources)
+            return _project(messages, value, sources, max_input_chars=max_input_chars)
         from llm_gateway import GatewayRequestScope
         kwargs = {'request_id': 'recall-check:' + str(request_id or 'reply'), 'scope': GatewayRequestScope.RECALL_CHECK}
         prompt = ({'role': 'system', 'content': _INSTRUCTION}, {'role': 'user', 'content': packet})
@@ -413,7 +420,8 @@ async def prepare_recall_messages(messages, gateway, *, max_input_chars, request
             raise ValueError('RECALL_CHECK_INVALID')
         value = _validate(json.loads(response.text), sources)
     except Exception as error:
-        reason = 'timeout' if isinstance(error, TimeoutError) else phase
+        reason = ('timeout' if isinstance(error, TimeoutError) else
+                  str(error) if isinstance(error, ValueError) and str(error).startswith('JEV_') else phase)
         value = {'status': 'unavailable', 'reason': reason, 'findings': [],
                  'meaning': '来源核实暂未完成；可回应当前消息，不把未知或冲突说成确定经历，也不以读取失败否定过去。'}
     return _project(messages, value, sources, max_input_chars=max_input_chars)

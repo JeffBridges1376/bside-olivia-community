@@ -46,10 +46,12 @@ def test_short_character_background_is_available_without_wording_gate(query):
     snapshot = load_persona(RELEASE_PERSONA).snapshot
     result = assemble_persona(snapshot, ReplyContext.create(ReplyMode.TEXT_LETTER, trusted_time=NOW),
         user_input=query, max_units=GatewayConfig().max_input_chars)
-    expected = {d.declaration_id: d.statement for d in snapshot.declarations if d.declaration_id.startswith("anchor.")}
+    expected = {d.declaration_id: d.statement for d in snapshot.declarations
+                if d.declaration_id.startswith("anchor.") and d.inclusion != "phase"}
     actual = {block["declaration_id"]: block["statement"] for block in (
         json.loads(raw) for raw in re.findall(r"<community_soft_canon>\s*(.*?)\s*</community_soft_canon>", result.system_content, re.S))}
     assert {k: v for k, v in actual.items() if k.startswith("anchor.")} == expected
+    assert "anchor.current_piece" not in actual
     assert result.to_messages()[-1] == {"role": "user", "content": query}
     assert query not in actual.values()
     assert not result.budget_report.dropped_ids

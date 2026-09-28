@@ -35,8 +35,9 @@ def _usual_user_gap(rows):
 
 
 class Initiative:
-    def __init__(self, rows, clock=time.time, interval=None):
+    def __init__(self, rows, clock=time.time, interval=None, *, profile_provider=None):
         self.rows, self.clock = rows, clock
+        self.profile_provider = profile_provider
         # Tests and explicit callers may pin a deterministic interval. Normal
         # runtime derives cadence from the persisted relationship profile.
         self.interval = interval
@@ -45,7 +46,7 @@ class Initiative:
         self.due = clock() + self._next_interval()
 
     def profile(self):
-        return profile_from_rows(self.rows)
+        return self.profile_provider() if self.profile_provider is not None else profile_from_rows(self.rows)
 
     @staticmethod
     def _profile_key(profile):
@@ -91,8 +92,8 @@ class Initiative:
 
     def ready(self):
         now = self.clock()
-        latest_user = next((r for r in reversed(self.rows) if r.get('origin') != 'proactive'), None)
-        if latest_user and latest_user.get('delivery_status') in {'FAILED','GENERATING','GENERATED','SENDING','DELIVERY_UNCONFIRMED'}:
+        latest_user = next((r for r in reversed(self.rows) if r.get('origin') != 'proactive' and not r.get('superseded_by')), None)
+        if latest_user and latest_user.get('delivery_status') in {'RECEIVED','FAILED','GENERATING','GENERATED','MEDIA_PENDING','SENDING','DELIVERY_UNCONFIRMED'}:
             return False  # Do not initiate over an unresolved user request (possibly a cancellation).
         followup = self.pending_followup()
         scheduled = followup is not None and now >= followup['followup_at']

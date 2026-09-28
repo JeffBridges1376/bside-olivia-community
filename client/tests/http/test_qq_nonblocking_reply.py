@@ -35,16 +35,22 @@ def test_unknown_pipeline_error_does_not_expose_private_exception_text():
     assert backend._generation_failure_code('private user content and key') == 'PERSONAL_CHAT_GENERATION_FAILED'
 
 
-@pytest.mark.parametrize('tier', ['reserved', 'familiar', 'trusted', 'close', 'committed'])
-def test_queue_notice_uses_relationship_once_and_keeps_reply(tier):
-    from runtime.personal_chat.service import QUEUE_NOTICE, queue_notice_text
+def test_waiting_for_voice_sends_only_completed_reply(monkeypatch, tmp_path):
+    from runtime.remote_pipeline import PROGRESS_CALLBACK
+    monkeypatch.setenv('OLIVIA_GPU_ROUTE', 'remote')
+    sent = []
+    def render(*args, **kwargs):
+        progress = PROGRESS_CALLBACK.get()
+        if progress:
+            progress('generation', {'status': 'queued'})
+            progress('generation', {'status': 'running'})
+        assert sent == []
+        return {'duration_seconds': 1}
     async def scenario():
-        rows = [{'initiative_tier': tier, 'initiative_caution': 'normal'}]
-        expected = queue_notice_text(rows)
-        sent = []
+        rows = []
         async def generate(event, row):
-            await QUEUE_NOTICE.get()()
-            await QUEUE_NOTICE.get()()
+            await backend.prepare_chat_audio(SimpleNamespace(render_reply_audio=render), 'hello', tmp_path / 'voice.wav')
+            assert sent == []
             return 'normal reply'
         async def commit(row): pass
         async def send(text):
@@ -52,42 +58,8 @@ def test_queue_notice_uses_relationship_once_and_keeps_reply(tier):
             return 'ack'
         service = PersonalChatService(rows, lambda: None, generate, commit, {'qq': ('100', '200')})
         await service.handle(PersonalMessage('qq', '100', '200', '1', 'hello'), send)
-        assert sent == [expected, 'normal reply']
-        assert rows[-1]['queue_notice'] == 'DELIVERED'
-        assert rows[-1]['reply_text'] == 'normal reply'
-    asyncio.run(scenario())
-
-
-def test_tense_relationship_notice_stays_restrained():
-    from runtime.personal_chat.service import queue_notice_text
-    message = queue_notice_text([{'initiative_tier': 'committed', 'initiative_caution': 'high'}])
-    assert '你先忙自己的' in message
-    assert '陪你' not in message
-
-
-def test_remote_gpu_queued_progress_notifies_from_worker(monkeypatch, tmp_path):
-    from runtime.personal_chat.service import QUEUE_NOTICE
-    from runtime.remote_pipeline import PROGRESS_CALLBACK
-    monkeypatch.setenv('OLIVIA_TTS_CONFIG', str(tmp_path / 'config.json'))
-    release = threading.Event()
-    def render(*args, **kwargs):
-        assert kwargs['environment']['OLIVIA_MEDIA_CHANNEL'] == 'qq'
-        PROGRESS_CALLBACK.get()('generation', {'status': 'queued'})
-        assert release.wait(2)
-        return {'duration_seconds': 1}
-    async def scenario():
-        notified = asyncio.Event()
-        async def notice():
-            notified.set()
-        token = QUEUE_NOTICE.set(notice)
-        server = SimpleNamespace(media_semaphore=asyncio.Semaphore(1), render_reply_audio=render)
-        try:
-            task = asyncio.create_task(backend.prepare_chat_audio(server, 'hello', tmp_path / 'voice.wav'))
-            await asyncio.wait_for(notified.wait(), 1)
-        finally:
-            release.set()
-            QUEUE_NOTICE.reset(token)
-        assert await task == {'duration_seconds': 1}
+        assert sent == ['normal reply']
+        assert 'queue_notice' not in rows[-1]
     asyncio.run(scenario())
 
 

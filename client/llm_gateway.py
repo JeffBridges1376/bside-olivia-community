@@ -926,6 +926,8 @@ class OpenAICompatibleAdapter(Gateway):
             ))
         elif scope in {GatewayRequestScope.SONG_CONTENT, GatewayRequestScope.PROACTIVE_PLANNING}:
             body.update(capabilities.reasoning_parameters(False))
+        from runtime.reply.web_search import apply_search
+        body = apply_search(body, self.config.base_url, scope.value if scope is not None else None)
         return body
 
     async def _retry_wait(self, attempt: int, response=None) -> None:
@@ -946,6 +948,7 @@ class OpenAICompatibleAdapter(Gateway):
         max_reasoning: bool = False,
         background_reasoning: bool = False,
         endpoint: str | None = None,
+        allow_redirects: bool = True,
     ) -> dict[str, Any]:
         try:
             key = self._ensure_configured()
@@ -969,6 +972,7 @@ class OpenAICompatibleAdapter(Gateway):
                         ssl=client_tls_context(),
                         json=body,
                         headers=self._headers(key, request_id),
+                        allow_redirects=allow_redirects,
                     ) as response:
                         status = response.status
                         response_status = status
@@ -1077,6 +1081,8 @@ class OpenAICompatibleAdapter(Gateway):
         response_format: Mapping[str, Any] | None = None,
     ) -> GatewayResponse:
         request = request_id or uuid.uuid4().hex
+        from runtime.reply.web_search import prepare_search
+        messages = await prepare_search(self, messages, scope.value if scope is not None else None, request)
         max_reasoning = self._uses_max_reasoning(scope)
         # Persona review scopes already own their format and empty-result retry
         # contract. Keep that existing wire protocol and caller validation.
@@ -1337,6 +1343,8 @@ class OpenAICompatibleAdapter(Gateway):
         scope: GatewayRequestScope | None,
     ) -> AsyncIterator[GatewayDelta]:
         request = request_id or uuid.uuid4().hex
+        from runtime.reply.web_search import prepare_search
+        messages = await prepare_search(self, messages, scope.value if scope is not None else None, request)
         max_reasoning = self._uses_max_reasoning(scope)
         body = self._body(
             messages,

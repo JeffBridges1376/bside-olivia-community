@@ -83,6 +83,19 @@ class LocalSongLibrary:
             row['name'] = name.strip()
             self._write(rows)
 
+    def reveal(self, song_id):
+        with _LOCK:
+            if not any(row['id'] == song_id for row in self._read()):
+                raise LocalSongError('LOCAL_SONG_NOT_FOUND')
+            path = self.media_path(song_id)
+        if os.name != 'nt':
+            raise LocalSongError('LOCAL_SONG_REVEAL_UNSUPPORTED')
+        try:
+            explorer = Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'explorer.exe'
+            subprocess.Popen([str(explorer), '/select,', str(path)], shell=False)
+        except OSError:
+            raise LocalSongError('LOCAL_SONG_REVEAL_FAILED') from None
+
     def delete(self, song_id):
         with _LOCK:
             rows = self._read()

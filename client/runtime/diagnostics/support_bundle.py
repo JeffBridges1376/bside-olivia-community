@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import datetime, timezone
+import hashlib
 import io
 import json
 import re
@@ -231,11 +233,53 @@ def project_chat_task(value: Mapping[str, object]) -> dict[str, object]:
     result = {}
     if value.get('channel') in ('qq', 'wechat'):
         result['channel'] = value['channel']
-    if value.get('delivery_status') in ('GENERATING', 'GENERATED', 'SENDING', 'DELIVERY_UNCONFIRMED', 'DELIVERED', 'FAILED', 'SKIPPED'):
+    if value.get('delivery_status') in ('RECEIVED', 'GENERATING', 'GENERATED', 'MEDIA_PENDING', 'SENDING', 'DELIVERY_UNCONFIRMED', 'DELIVERED', 'FAILED', 'SKIPPED'):
         result['delivery_status'] = value['delivery_status']
     code = value.get('consumer_error_code')
     if isinstance(code, str) and _CODE_RE.fullmatch(code):
         result['consumer_error_code'] = code
+    if 'channel' in result:
+        if value.get('quality_status') in ('not_checked', 'accepted', 'accepted_degraded', 'accepted_with_warnings', 'blocked'):
+            result['quality_status'] = value['quality_status']
+        for field, maximum in (('reviewer_calls', 2), ('rewrite_calls', 1)):
+            count = value.get(field)
+            if type(count) is int and 0 <= count <= maximum:
+                result[field] = count
+        # The exchange ID is already an application hash, never a QQ account or
+        # platform message ID. Domain-separate it again for support correlation.
+        identifier = value.get('letter_id')
+        reference = value.get('turn_ref')
+        if isinstance(identifier, str) and re.fullmatch(r'im-[0-9a-f]{64}', identifier):
+            result['turn_ref'] = 'chat-' + hashlib.sha256(
+                ('diagnostic-chat:' + identifier).encode()).hexdigest()[:24]
+        elif isinstance(reference, str) and re.fullmatch(r'chat-[0-9a-f]{24}', reference):
+            result['turn_ref'] = reference
+        attempts = value.get('generation_attempts')
+        if type(attempts) is int and 0 <= attempts <= 2:
+            result['generation_attempts'] = attempts
+        projected_times = value.get('timeline')
+        if not isinstance(projected_times, Mapping):
+            projected_times = {}
+        timeline = {}
+        for target, source in (('platform_sent_at', 'user_sent_at'),
+                               ('processing_started_at', 'life_received_at'),
+                               ('delivered_at', 'private_world_occurred_at')):
+            if target == 'delivered_at' and result.get('delivery_status') != 'DELIVERED':
+                continue
+            raw = value.get(source, projected_times.get(target))
+            if not isinstance(raw, str) or len(raw) > 40:
+                continue
+            try:
+                stamp = datetime.fromisoformat(raw.replace('Z', '+00:00'))
+                if stamp.tzinfo is None:
+                    continue
+                stamp = stamp.astimezone(timezone.utc)
+            except (ValueError, OverflowError):
+                continue
+            if 2000 <= stamp.year <= 2100:
+                timeline[target] = stamp.isoformat().replace('+00:00', 'Z')
+        if timeline:
+            result['timeline'] = timeline
     return result
 
 

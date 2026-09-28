@@ -36,16 +36,27 @@ def high_count(snapshot):
 
 
 def observe(row, snapshot, events):
-    if row.get("origin") == "proactive" or "contact_qualification" in row:
+    if row.get("origin") == "proactive":
         return
     delivery = row.get("private_world_delivery_id")
     event = next((event for event in events if event.payload.get("canonical_delivery_id") == delivery
-           and event.payload.get("applied") is True
-           and type(event.payload.get("contact_qualification")) is bool
+           and type((getattr(event, 'projection_result', None) or event.payload).get("contact_qualification")) is bool
            and event.event_type in {"meaningful_exchange", "shared_experience", "support_received",
                                    "boundary_respected", "repair", "conflict"}), None)
     if event:
-        row["contact_qualification"] = event.payload["contact_qualification"]
+        derived = getattr(event, 'projection_result', None)
+        if derived is None and ('contact_qualification' in row or event.payload.get('applied') is not True):
+            return
+        assessment = derived or event.payload
+        revision = assessment.get('revision')
+        if derived is not None and row.get('contact_projection_revision') == revision:
+            return
+        row["contact_qualification"] = assessment["contact_qualification"]
+        if derived is not None:
+            row['contact_projection_revision'] = revision
+            row['initiative_tier'] = assessment.get('initiative_tier', 'reserved')
+            row['initiative_caution'] = assessment.get('initiative_caution', 'normal')
+            return
         # Persist only a behavioral projection, never the hidden raw scores. Both
         # proactive letters and IM can then share the same relationship-driven
         # initiative policy without another relationship store.

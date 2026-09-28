@@ -1,7 +1,24 @@
 from datetime import datetime, timedelta, timezone
 
 from runtime.private_world.daily_life import DailyLifeStore
-from runtime.private_world.life_rhythm import rest_timeline, rhythm
+from runtime.private_world.life_rhythm import rest_timeline, rhythm, with_recovery
+
+
+def test_recovery_cannot_erase_new_night_load_or_active_illness():
+    now = datetime(2026, 9, 28, 3, tzinfo=timezone.utc)
+    state = rhythm(now, [])
+    state['historical_rest']['load_minutes'] = 180
+    event = {'source_id': 'day:rest', 'occurred_at': (now-timedelta(minutes=30)).isoformat(),
+        'activity_kind': 'rest', 'result': {'status': 'completed'},
+        'effects': {'body_recovery': {'rest': 'rested', 'baseline_load_minutes': 180}}}
+    assert with_recovery(state, [event], now)['recovery']['source_id'] == 'day:rest'
+    state['historical_rest']['load_minutes'] = 181
+    assert 'recovery' not in with_recovery(state, [event], now)
+    state['historical_rest']['load_minutes'] = 180
+    state['wellbeing']['state'] = 'unwell'
+    assert 'recovery' not in with_recovery(state, [event], now)
+    state['wellbeing']['state'] = 'well'
+    assert 'recovery' not in with_recovery(state, [event], now+timedelta(days=1))
 import asyncio
 import json
 from types import SimpleNamespace

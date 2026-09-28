@@ -471,6 +471,36 @@ class DeleteContinuationFact(PrivateWorldCommand):
         return {"fact_id": self.fact_id}
 
 
+def command_from_record(record: dict) -> PrivateWorldCommand:
+    """Decode a previously authorized command, without authorizing new input."""
+    kinds = (RecordBoundaryRespected, RecordConflict, RecordRepair,
+             ConfirmRelationshipStage, GrantIntimacy, InitializeHistoricalRelationship,
+             ApplyHistoricalRelationshipEvidence, GrantNickname, RevokeNickname,
+             SetHomeAccess, UpsertContinuationFact, SetContinuationAwareness,
+             DeleteContinuationFact)
+    constructors = {item.kind.value: item for item in kinds}
+    value = dict(record)
+    constructor = constructors[value.pop('kind')]
+    payload = value.pop('payload')
+    if set(value) != {'command_id', 'idempotency_key', 'actor', 'source',
+                      'occurred_at', 'reason', 'evidence_refs'} or not isinstance(payload, dict):
+        raise PrivateWorldCommandError('stored command is invalid')
+    if set(payload) & set(value):
+        raise PrivateWorldCommandError('stored command fields overlap')
+    value.update(payload)
+    value['occurred_at'] = datetime.fromisoformat(value['occurred_at'])
+    for key, enum in (('actor', PrivateWorldActor), ('source', PrivateWorldCommandSource),
+                      ('target_stage', RelationshipStage), ('relationship_stage', RelationshipStage),
+                      ('tier', IntimacyTier), ('home_access', HomeAccess),
+                      ('awareness', ContinuationAwareness)):
+        if value.get(key) is not None:
+            value[key] = enum(value[key])
+    result = constructor(**value)
+    if result.to_dict() != record:
+        raise PrivateWorldCommandError('stored command is not canonical')
+    return result
+
+
 PrivateWorldMutation: TypeAlias = (
     RecordBoundaryRespected
     | RecordConflict

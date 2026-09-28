@@ -151,7 +151,9 @@ PAYLOAD_REQUIRED_RELATIVE_FILES = {
     "control_center/runtime.py",
     "installer/version_launcher.py",
     "installer/patch_native_user_settings.py",
+    "installer/patch_native_splash.py",
     "installer/start_hidden.vbs.txt",
+    "installer/startup_animation.ps1",
     "installer/assets/olivia.ico",
     "installer/assets/wechat-payment.jpeg",
     "installer/mem0-capability-manifest.json",
@@ -178,6 +180,29 @@ PAYLOAD_EXCLUDED_ROOT_FILES = {
 
 class PatchInstallError(RuntimeError):
     """Stable user-facing installation error code."""
+
+
+def stage_startup_video(destination: Path, source: Path | None, digest: str | None) -> None:
+    """Explicit distributor input; never discover ignored workstation media."""
+    if source is None and digest is None:
+        return
+    if source is None or not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest):
+        raise PatchInstallError('STARTUP_VIDEO_INPUT_INVALID')
+    source = Path(source).expanduser()
+    if not source.is_file() or source.suffix.lower() != '.mp4' or _managed_entry_is_reparse(source.lstat()):
+        raise PatchInstallError('STARTUP_VIDEO_INPUT_INVALID')
+    target = destination / 'installer' / 'assets' / 'startup.mp4'
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, target)
+    if _sha256(target) != digest:
+        raise PatchInstallError('STARTUP_VIDEO_HASH_MISMATCH')
+    with target.open('rb') as stream:
+        if stream.read(12)[4:8] != b'ftyp':
+            raise PatchInstallError('STARTUP_VIDEO_INPUT_INVALID')
+    target.with_suffix('.json').write_text(json.dumps({
+        'schema_version': 'olivia.startup-video.v1', 'path': 'installer/assets/startup.mp4',
+        'sha256': digest, 'size_bytes': target.stat().st_size,
+    }, sort_keys=True) + '\n', encoding='utf-8')
 
 
 def _sha256(path: Path) -> str:

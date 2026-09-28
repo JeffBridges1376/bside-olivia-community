@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from runtime.private_world.daily_life import DailyLifeStore
 from runtime.private_world.daily_life_runtime import DailyLifeRuntime
+from tests.private_world.decisions import life_decision
 
 
 def test_refresh_receives_recent_character_observations_after_restart(tmp_path):
@@ -21,8 +22,7 @@ def test_refresh_receives_recent_character_observations_after_restart(tmp_path):
     class Gateway:
         async def complete(self, messages, **kwargs):
             calls.append(messages)
-            return SimpleNamespace(text=json.dumps({'current': {'location': '家里', 'activity': '休息',
-                                                       'note': '暂时歇一会儿。'}, 'projects': []}))
+            return SimpleNamespace(text=json.dumps(life_decision(messages)))
 
     runtime = DailyLifeRuntime(DailyLifeStore(path), Gateway, lambda: '口味偏清淡。')
     asyncio.run(runtime.refresh(now))
@@ -33,4 +33,4 @@ def test_refresh_receives_recent_character_observations_after_restart(tmp_path):
     assert all(x['actor'] == 'linli' and x['evidence_kind'] == 'character_statement' for x in observations)
     assert 'PRIVATE_USER_TEXT' not in json.dumps(data)
     assert 'reply:future:1' not in json.dumps(data)
-    assert runtime.snapshot(now)['current']['note'] == '暂时歇一会儿。'
+    assert runtime.snapshot(now)['current']['note'] == '在住处休息。'

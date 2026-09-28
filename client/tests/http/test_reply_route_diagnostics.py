@@ -56,6 +56,9 @@ def test_qwen_route_validation_reason_survives_export(change, detail):
 
 
 @pytest.mark.parametrize("reason,expected", [
+    ("JEV_TIMEOUT", "JEV_TIMEOUT"),
+    ("JEV_PROVIDER_HTTP_503", "JEV_PROVIDER_HTTP_503"),
+    ("JEV_PLAN_CONTRACT_INVALID", "JEV_PLAN_CONTRACT_INVALID"),
     ("router_quota_exhausted", "LLM_QUOTA_EXHAUSTED"),
     ("router_auth_failed", "LLM_AUTH_FAILED"),
     ("router_timeout", "LLM_TIMEOUT"),

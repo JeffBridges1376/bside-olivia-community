@@ -46,6 +46,9 @@ class PersonaDeclaration:
     statement: str
     mode: str | None
     facet: str | None = None
+    inclusion: Literal["core", "contextual", "phase"] = "contextual"
+    phase_seed: dict[str, str] | None = None
+    development: tuple[dict[str, str | bool], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -118,6 +121,9 @@ def load_persona(
         Draft202012Validator(schema).validate(payload)
     except ValidationError:
         return _draft_result(PersonaLoadErrorCode.SCHEMA_INVALID)
+    ids = [row["declaration_id"] for row in payload["declarations"]]
+    if len(ids) != len(set(ids)):
+        return _draft_result(PersonaLoadErrorCode.SCHEMA_INVALID)
     exemplars = payload.get("style_exemplars", ())
     provenance = payload.get("style_exemplar_provenance")
     synthetic_provenance = payload.get("synthetic_style_exemplar_provenance")
@@ -152,6 +158,9 @@ def load_persona(
             statement=row["statement"],
             mode=row.get("mode"),
             facet=row.get("facet"),
+            inclusion=row.get("inclusion", "core" if row["tier"] in {"CONSTITUTION", "MODE_STYLE"} else "contextual"),
+            phase_seed=dict(row["phase_seed"]) if row.get("phase_seed") is not None else None,
+            development=tuple(dict(item) for item in row.get("development", ())),
         )
         for row in payload["declarations"]
     )

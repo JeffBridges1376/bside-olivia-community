@@ -34,8 +34,11 @@ def _restore(value, duration, style=""):
                            render_minimax_caption(semantic), duration, semantic_plan=semantic, suno_style=style)
 
 
-def cached_song_plan(path: Path, content: str, reply: str, duration: int, planner):
-    identity = hashlib.sha256(json.dumps([content, reply, duration],
+def cached_song_plan(path: Path, content: str, reply: str, duration: int, planner, *, expression_context=None):
+    inputs = [content, reply, duration]
+    if expression_context is not None:
+        inputs.append(expression_context)
+    identity = hashlib.sha256(json.dumps(inputs,
         ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
     expected = {"schema_version": _SCHEMA, "planner_version": 3 if duration == 110 else 2 if duration == 240 else _PLANNER_VERSION,
                 "input_sha256": identity}

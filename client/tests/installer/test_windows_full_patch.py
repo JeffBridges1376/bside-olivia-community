@@ -373,7 +373,7 @@ def test_shortcut_refresh_repairs_arguments_and_uses_the_active_patch_icon(
     assert metadata["arguments"] == f'//B //Nologo "{start_hidden}"'
     assert metadata["icon"] == f"{active_icon},0"
     refreshed_launcher = start_hidden.read_text(encoding="utf-16")
-    assert "Olivia 正在启动，请稍候" in refreshed_launcher
+    assert "Olivia 正在启动，请稍候" not in refreshed_launcher
     assert "If exitCode <> 0 Then" in refreshed_launcher
 
 
@@ -1966,14 +1966,14 @@ def test_install_isolated_copy_activates_original_client_surfaces(
     assert start_hidden_path.read_bytes().startswith(codecs.BOM_UTF16_LE)
     start_hidden = start_hidden_path.read_text(encoding="utf-16")
     assert "START.cmd" in start_hidden
-    assert 'WScript.Arguments.Named.Exists("notice")' in start_hidden
+    assert 'WScript.Arguments.Named.Exists("notice")' not in start_hidden
     assert 'WScript.Arguments.Named.Exists("error")' in start_hidden
-    assert "Olivia 正在启动，请稍候" in start_hidden
-    assert 'WScript.ScriptFullName & Chr(34) & " /notice"' in start_hidden
+    assert "Olivia 正在启动，请稍候" not in start_hidden
+    assert 'WScript.ScriptFullName & Chr(34) & " /notice"' not in start_hidden
     assert 'exitCode <> -1' in start_hidden
     assert 'CStr(exitCode) <> "4294967295"' in start_hidden
     assert 'shell.Run errorCommand' not in start_hidden
-    assert "shell.Run noticeCommand, 0, False" in start_hidden
+    assert "shell.Run noticeCommand, 0, False" not in start_hidden
     assert "On Error Resume Next" in start_hidden
     assert "exitCode = shell.Run" in start_hidden
     assert "launchErrorNumber = Err.Number" in start_hidden
@@ -1983,9 +1983,7 @@ def test_install_isolated_copy_activates_original_client_surfaces(
     assert "If exitCode <> 0 Then" in start_hidden
     assert "Olivia 启动失败（错误码" in start_hidden
     assert start_hidden.count("MsgBox") == 2
-    assert start_hidden.index("shell.Run noticeCommand, 0, False") < start_hidden.index(
-        "exitCode = shell.Run"
-    )
+    assert "shell.Run noticeCommand" not in start_hidden
     start = (installed / "START.cmd").read_text(encoding="utf-8")
     assert "launcher\\version_launcher.py" in start
     assert "runtime\\python-3.12.10-embed-amd64\\python.exe" in start

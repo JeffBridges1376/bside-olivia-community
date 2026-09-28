@@ -15,6 +15,17 @@ from runtime.reply.reply_context import IntimacyTier
 NOW = datetime(2026, 8, 22, tzinfo=timezone.utc)
 
 
+@pytest.mark.parametrize('kind', [ReducerEventKind.SUPPORT_RECEIVED, ReducerEventKind.BOUNDARY_RESPECTED])
+@pytest.mark.parametrize('tension,expected', [(10,9),(1,0),(0,0)])
+def test_acknowledged_support_and_respected_boundaries_relieve_tension_at_cap(kind, tension, expected):
+    before = PrivateWorldSnapshot(trust=30, comfort=30, tension=tension,
+                                  growth_window_start=NOW.isoformat(), growth_used=21)
+    result = reduce_private_world(before, _event(kind))
+    assert result.snapshot.tension == expected
+    assert result.snapshot.trust == before.trust
+    assert result.snapshot.comfort == before.comfort
+
+
 def _event(kind: ReducerEventKind, **changes: object) -> ReducerEvent:
     values: dict[str, object] = {
         "kind": kind,

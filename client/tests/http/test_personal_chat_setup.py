@@ -29,6 +29,32 @@ class _Server:
         self.persist_calls += 1
 
 
+@pytest.mark.parametrize('change,expected', [('', 'CONNECTED'), ('owner','READY_RESTART'),
+    ('url','READY_RESTART'), ('token','READY_RESTART'), ('unverified','READY_RESTART')])
+def test_connected_setup_clears_restart_only_for_exact_loaded_binding(tmp_path, monkeypatch, change, expected):
+    from types import SimpleNamespace
+    from runtime.personal_chat import setup, backend, napcat_installer
+    config = dict(account='12345', owner='54321', url='ws://127.0.0.1:3001')
+    token = 'synthetic-token-123456'
+    active = dict(status={'qq':'CONNECTED'}, service=SimpleNamespace(bindings={'qq':('12345','54321')}),
+                  qq_binding_fingerprint=setup._qq_binding_fingerprint(config, token))
+    if change == 'owner': config['owner'] = '65432'
+    if change == 'url': config['url'] = 'ws://127.0.0.1:3002'
+    if change == 'token': token += '-changed'
+    if change == 'unverified': active.pop('qq_binding_fingerprint')
+    monkeypatch.setenv('OLIVIA_PERSONAL_QQ_TOKEN', token)
+    monkeypatch.setattr(setup, '_read_config', lambda _server: {'qq':config})
+    monkeypatch.setattr(setup, '_selected_channels', lambda _server: {'qq'})
+    monkeypatch.setattr(setup, '_contact_access', lambda _server: {})
+    monkeypatch.setattr(backend, 'reply_errors', lambda *args: {'qq':'PERSONAL_CHAT_GENERATION_FAILED'})
+    monkeypatch.setattr(napcat_installer, 'public_status', lambda *args: {})
+    request = SimpleNamespace(app={backend._RUNTIME:active, setup._SETUP:{'qq':{'state':'READY_RESTART'}}})
+    body = setup._public_status(request, _Server(tmp_path))
+    assert body['qq']['state'] == expected
+    assert body['reply_errors']['qq'] == 'PERSONAL_CHAT_GENERATION_FAILED'
+    assert token not in json.dumps(body) and 'fingerprint' not in json.dumps(body)
+
+
 def test_qq_start_returns_while_dependencies_are_preparing(tmp_path, monkeypatch):
     import threading
     from runtime.personal_chat import setup, napcat_installer
@@ -283,6 +309,11 @@ def test_managed_qq_only_needs_owner_after_napcat_login(
             )
             assert response.status == 200
             assert (await response.json())["status"] == "READY_RESTART"
+            from types import SimpleNamespace
+            public = setup._public_status(SimpleNamespace(app=app), server)
+            assert public["qq"]["owner_masked"] == "*****4321"
+            assert "987654321" not in json.dumps(public)
+            assert "managed-synthetic-token-123456" not in json.dumps(public)
 
     asyncio.run(scenario())
     config = json.loads((tmp_path / "personal-chat" / "config.json").read_text(encoding="utf-8"))

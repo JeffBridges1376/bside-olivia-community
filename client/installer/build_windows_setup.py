@@ -173,6 +173,7 @@ RELEASE_INSTALLER_FILES = {
     "installer/Install.ps1",
     "installer/activate_private_video.py",
     "installer/patch_native_navigation.py",
+    "installer/patch_native_splash.py",
     "installer/mem0-capability-manifest.json",
     "installer/mem0-runtime-artifacts.json",
     "installer/mem0-runtime-requirements.txt",
@@ -186,6 +187,7 @@ RELEASE_INSTALLER_FILES = {
     "installer/breeze-runtime-requirements.txt",
     "installer/start_local.py",
     "installer/start_hidden.vbs.txt",
+    "installer/startup_animation.ps1",
     "installer/uninstall.py",
     "installer/uninstall_safety.py",
     "installer/verify_mem0_runtime.py",
@@ -1044,6 +1046,8 @@ def prepare_setup_payload(
     video_runtime: Path | None = None,
     video_offline_root: Path | None = None,
     native_navigation_manifest: Path | None = None,
+    startup_video: Path | None = None,
+    startup_video_sha256: str | None = None,
     validate_schema: bool = True,
 ) -> None:
     source = source.expanduser().resolve()
@@ -1109,6 +1113,11 @@ def prepare_setup_payload(
             target = staging.joinpath(*PurePosixPath(relative).parts)
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_path, target)
+        from installer.full_patch import PatchInstallError, stage_startup_video
+        try:
+            stage_startup_video(staging, startup_video, startup_video_sha256)
+        except PatchInstallError as exc:
+            raise SetupBuildError(str(exc)) from exc
         if native_navigation_manifest is not None:
             navigation_source = _native_navigation_manifest_source(
                 native_navigation_manifest
@@ -1219,6 +1228,8 @@ def build_windows_setup(
     video_runtime: Path | None = None,
     video_offline_root: Path | None = None,
     native_navigation_manifest: Path | None = None,
+    startup_video: Path | None = None,
+    startup_video_sha256: str | None = None,
 ) -> dict[str, object]:
     source = source.expanduser().resolve()
     output = output.expanduser().resolve()
@@ -1272,6 +1283,8 @@ def build_windows_setup(
                 offline_sidecar if video_offline_root is not None else None
             ),
             native_navigation_manifest=native_navigation_manifest,
+            startup_video=startup_video,
+            startup_video_sha256=startup_video_sha256,
         )
         command = [
             os.fspath(compiler),
@@ -1434,6 +1447,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--video-runtime", type=Path)
     parser.add_argument("--video-offline-root", type=Path)
     parser.add_argument("--native-navigation-manifest", type=Path)
+    parser.add_argument("--startup-video", type=Path)
+    parser.add_argument("--startup-video-sha256")
     args = parser.parse_args(argv)
     try:
         result = build_windows_setup(
@@ -1448,6 +1463,8 @@ def main(argv: list[str] | None = None) -> int:
             video_runtime=args.video_runtime,
             video_offline_root=args.video_offline_root,
             native_navigation_manifest=args.native_navigation_manifest,
+            startup_video=args.startup_video,
+            startup_video_sha256=args.startup_video_sha256,
         )
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0

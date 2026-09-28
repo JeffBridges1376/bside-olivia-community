@@ -8,7 +8,7 @@ import re
 
 import pytest
 
-from llm_gateway import Gateway, GatewayConfig, GatewayDelta, GatewayResponse
+from llm_gateway import Gateway, GatewayConfig, GatewayDelta, GatewayResponse, GatewayRequestScope
 from memory_port import NullMemoryPort
 from reply_orchestrator import ReplyOrchestrator, ReplyRequest, ReplyState
 from runtime.reply.reply_context import (
@@ -24,28 +24,50 @@ AXES = {"familiarity", "trust", "comfort", "closeness", "tension"}
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-@pytest.mark.parametrize("letter", ["讲讲外婆吧。", "那台钢琴是怎么来的？", "最爱吃什么？"])
-def test_real_bridge_delivers_background_details_without_keyword_selection(streaming, letter):
+@pytest.mark.parametrize("letter,selected,markers", [
+    ("讲讲外婆吧。", ("anchor.grandmother_traces", "anchor.grandmother_piano"),
+     ("九岁时外婆去世", "毛线球滚到踏板下", "外婆也是她的钢琴启蒙老师")),
+    ("那台钢琴是怎么来的？", ("anchor.grandmother_piano",),
+     ("外婆留下的一台老钢琴", "外婆也是她的钢琴启蒙老师")),
+    ("最爱吃什么？", ("anchor.everyday_taste",), ("喜甜、不吃辣", "小馄饨店")),
+])
+def test_real_bridge_delivers_selected_background_details(streaming, letter, selected, markers):
     _, provider, pipeline = _configured(streaming)
+    provider.persona_ids = selected
     result = asyncio.run(pipeline.run(
         ReplyRequest(content=letter, request_id="synthetic-background"),
         _context(ReplyMode.TEXT_LETTER, PrivateBehaviorView()),
     ))
     assert result.state is ReplyState.COMPLETED
     assert len(provider.requests) == 1
+    assert len(provider.selection_requests) == 1
     messages = provider.requests[0]
     assert messages[-1] == {"role": "user", "content": letter}
     system = messages[0]["content"]
-    assert "九岁时外婆去世" in system
-    assert "毛线球滚到踏板下" in system
-    assert "外婆也是她的钢琴启蒙老师" in system
-    assert '"declaration_id":"anchor.grandmother_piano"' in system
+    assert all(marker in system for marker in markers)
+    assert all(f'"declaration_id":"{item}"' in system for item in selected)
+    assert '"declaration_id":"anchor.cat"' not in system
+    assert '"declaration_id":"anchor.current_piece"' not in system
+    assert '"declaration_id":"identity.linli_name"' in system
 
 
 class RecordingProvider(Gateway):
     def __init__(self, streaming):
         self.stream_enabled = streaming
         self.requests = []
+        self.selection_requests = []
+        self.persona_ids = ()
+
+    async def complete_structured_scoped(self, messages, *, response_format, scope, request_id=None):
+        assert scope is GatewayRequestScope.RECALL_CHECK
+        packet = json.loads(messages[-1]["content"])
+        offered = {item["id"] for item in packet["persona_candidates"]}
+        assert set(self.persona_ids) <= offered
+        assert "anchor.current_piece" not in offered
+        assert "identity.linli_name" not in offered
+        self.selection_requests.append(packet)
+        return GatewayResponse(json.dumps({"selected_ids": [], "dependencies": [],
+            "persona_ids": list(self.persona_ids)}), request_id, "synthetic", "synthetic")
 
     async def complete(self, messages, *, request_id=None):
         self.requests.append(tuple(dict(message) for message in messages))
@@ -119,6 +141,7 @@ def test_real_bridge_delivers_current_relationship_without_reassembly(monkeypatc
         assert result.state is ReplyState.COMPLETED
         assert result.text == "合成回信。"
         assert len(provider.requests) == i + 1
+        assert len(provider.selection_requests) == i + 1
         assert behavior.to_dict() == before
         messages = provider.requests[-1]
         assert messages[-1] == {"role": "user", "content": "今天聊音乐吧。"}
@@ -140,7 +163,7 @@ def test_real_bridge_delivers_current_relationship_without_reassembly(monkeypatc
 def test_direct_adapter_generation_also_uses_relationship_projection(monkeypatch):
     adapter, _, _ = _configured()
     behavior = PrivateBehaviorView(familiarity=BehaviorLevel.HIGH, trust=BehaviorLevel.LOW)
-    monkeypatch.setattr(adapter, "build_reply_context", lambda mode: _context(mode, behavior))
+    monkeypatch.setattr(adapter, "build_reply_context", lambda mode, *, as_of=None: _context(mode, behavior))
     payload = _block(adapter._persona_v2_messages("今天聊音乐吧。"), "private_behavior")
     assert payload["expression_context"]
     assert not AXES.intersection(payload)
@@ -149,6 +172,7 @@ def test_direct_adapter_generation_also_uses_relationship_projection(monkeypatch
 @pytest.mark.parametrize("streaming", [False, True])
 def test_real_bridge_discloses_school_and_scopes_nickname_history(streaming):
     _, provider, pipeline = _configured(streaming)
+    provider.persona_ids = ("anchor.school_timeline",)
     letter = "你是从哪所学校毕业的？我能叫你小青吗？你叫我阿岚就好。"
     for index, permission in enumerate((NicknamePermission.NOT_ALLOWED, NicknamePermission.ALLOWED, NicknamePermission.NOT_ALLOWED)):
         behavior = PrivateBehaviorView(
@@ -162,6 +186,7 @@ def test_real_bridge_discloses_school_and_scopes_nickname_history(streaming):
         ))
         assert result.state is ReplyState.COMPLETED
         assert len(provider.requests) == index + 1
+        assert len(provider.selection_requests) == index + 1
         messages = provider.requests[-1]
         assert messages[-1] == {"role": "user", "content": letter}
         assert '"declaration_id":"anchor.school_timeline"' in messages[0]["content"]

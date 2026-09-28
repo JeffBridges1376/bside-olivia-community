@@ -352,6 +352,7 @@ ROUTES: dict[str, dict[str, Any]] = {
     "/toy/local-songs/from-letter": _route(["POST"], "music.local_library"),
     "/toy/local-songs/rename": _route(["POST"], "music.local_library"),
     "/toy/local-songs/delete": _route(["POST"], "music.local_library"),
+    "/toy/local-songs/reveal": _route(["POST"], "music.local_library"),
     "/toy/midi/importShareCode": _route(
         ["POST"],
         "music.midi_import",

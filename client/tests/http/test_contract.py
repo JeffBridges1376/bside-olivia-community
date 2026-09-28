@@ -1237,7 +1237,8 @@ def test_http_rejects_a_new_letter_until_the_current_reply_is_delivered(
                 },
             )
             first = await first_response.json()
-            assert reply_started.wait(timeout=0.2)
+            # The background pipeline must keep its event loop to reach reply().
+            assert await asyncio.to_thread(reply_started.wait, timeout=0.2)
 
             duplicate_response = await client.post(
                 "/toy/letter/send",

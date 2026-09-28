@@ -382,6 +382,31 @@ def _repair_native_letter_refresh(source: str) -> str:
     return source
 
 
+def _repair_native_silent_reply(source: str) -> str:
+    """Add one terminal outcome to the supported native mailbox components."""
+    source = source.replace('e[e.FAILED=5]="FAILED",e))(bt||{})',
+        'e[e.FAILED=5]="FAILED",e[e.NO_REPLY=6]="NO_REPLY",e))(bt||{})')
+    source = source.replace('function Wn(e,t,s){return t===bt.FAILED?',
+        'function Wn(e,t,s){return t===bt.NO_REPLY?"no_reply":t===bt.FAILED?')
+    if 'e.letterStatus===bt.NO_REPLY||' not in source:
+        source = source.replace('e.letterStatus===bt.FAILED||e.replyType',
+            'e.letterStatus===bt.NO_REPLY||e.letterStatus===bt.FAILED||e.replyType')
+    source = source.replace('isUnread:e.isRead===0,',
+        'isUnread:e.letterStatus!==bt.NO_REPLY&&e.isRead===0,')
+    source = source.replace('l=j(()=>i.value?t("mailbox_audit_rejected_title"):s.mail.sent.subject)',
+        'l=j(()=>s.mail.letterStatus===bt.NO_REPLY?"本轮不回复 · "+s.mail.sent.subject:'
+        'i.value?t("mailbox_audit_rejected_title"):s.mail.sent.subject)')
+    source = source.replace('return i.value?{iconType:"circledWarning",',
+        'return s.mail.letterStatus===bt.NO_REPLY?{iconType:"send",iconClass:"text-text-tertiary",'
+        'iconBgClass:"bg-grey-2",titleClass:"text-text-secondary",dateClass:"text-text-tertiary"}:'
+        'i.value?{iconType:"circledWarning",')
+    if 'A.type==="no_reply"?' not in source:
+        source = source.replace('A.type==="error"?',
+            'A.type==="no_reply"?n("div",{class:"h-full flex items-center justify-center text-title-m text-text-secondary",'
+            'role:"status"},"本轮不回复"):A.type==="error"?', 1)
+    return source
+
+
 def _repair_mailbox_write_access(root: Path) -> str:
     from runtime.personal_chat._patch_music_playback import patch_music_playback
 
@@ -500,6 +525,7 @@ def _repair_mailbox_write_access(root: Path) -> str:
     )
     source = _repair_native_letter_audio(source)
     source = _repair_native_proactive_collection(source)
+    source = _repair_native_silent_reply(source)
     anchor_count = source.count(MAILBOX_WRITE_ANCHOR_0627)
     replacement_count = source.count(MAILBOX_WRITE_REPLACEMENT_0627)
     if anchor_count == 1 and replacement_count == 0:

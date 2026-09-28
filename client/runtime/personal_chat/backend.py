@@ -1,5 +1,7 @@
 """Opt-in lifecycle inside the existing local server, not a second data writer."""
 import asyncio
+from contextlib import nullcontext
+from copy import deepcopy
 from datetime import datetime
 import json
 import os
@@ -9,7 +11,7 @@ from pathlib import Path
 
 from aiohttp import web
 
-from .service import PersonalChatService, persist_state
+from .service import JEV_ERROR_CODES, PersonalChatService, persist_state
 from runtime.private_world.life_rhythm import LOCAL
 
 
@@ -19,69 +21,118 @@ _CONSUMER_TIMEOUT_SECONDS = 15
 _VOICE_RENDER_TIMEOUT_SECONDS = 20 * 60
 
 
+async def _record_semantic_shadow(server, row, task, revision=None):
+    revision = revision or (row.get('input_revision', 0), row.get('generation_attempts', 0))
+    try:
+        result = await task
+        if result is not None and revision == (row.get('input_revision', 0), row.get('generation_attempts', 0)):
+            row['semantic_shadow'] = result
+            await persist_chat(server)
+    except Exception:
+        # Diagnostic collection cannot fail or delay a user reply.
+        pass
+
+
+def _start_semantic_shadow_recorder(server, row, shadow):
+    tasks = getattr(server, '_semantic_shadow_tasks', None)
+    if tasks is None:
+        tasks = server._semantic_shadow_tasks = set()
+    revision = (row.get('input_revision', 0), row.get('generation_attempts', 0))
+    recorder = asyncio.create_task(_record_semantic_shadow(server, row, shadow, revision))
+    for task in (shadow, recorder):
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+
+
+async def _stop_semantic_shadow(server):
+    tasks = tuple(getattr(server, '_semantic_shadow_tasks', ()))
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _recover_chat_loop(server, runtime, *, interval_seconds=30):
+    from runtime.image_understanding import commit_image_memory
+    stop = runtime['stop']
+    while not stop.is_set():
+        failure = None
+        try:
+            await runtime['service'].recover()
+        except Exception as exc:
+            failure = _failure_code(exc)
+        for row in tuple(server.store.personal_chats):
+            if row.get('image_world_status') == 'PENDING':
+                try:
+                    await commit_image_memory(server, row)
+                except Exception as exc:
+                    failure = _failure_code(exc)
+        if failure:
+            runtime['status']['recovery'] = 'FAILED'
+            runtime['errors']['recovery'] = failure
+            server._safe_log('personal_chat_recovery_failed', error_code=failure)
+        else:
+            runtime['status']['recovery'] = 'READY'
+            runtime['errors'].pop('recovery', None)
+        _publish_status(server, runtime)
+        try:
+            await asyncio.wait_for(stop.wait(), interval_seconds)
+        except asyncio.TimeoutError:
+            pass
+
+
 async def prepare_chat_audio(server, text, path):
     """Submit chat speech independently of letter and photo media work."""
     from runtime.media.voice_direction import TextOnlyVoicePlan
-    from runtime.remote_pipeline import PROGRESS_CALLBACK
-    from .service import QUEUE_NOTICE
-    config_path = Path(os.environ['OLIVIA_TTS_CONFIG'])
-    notice = QUEUE_NOTICE.get()
-    loop = asyncio.get_running_loop()
-    queued = asyncio.Event()
-    active = True
-    def progress(phase, task):
-        if active and task.get('status') == 'queued':
-            loop.call_soon_threadsafe(queued.set)
-    token = PROGRESS_CALLBACK.set(progress)
-    try:
-        worker = asyncio.create_task(asyncio.to_thread(server.render_reply_audio, text, path,
-            tts_config_path=config_path,
-            voice_performance_plan=TextOnlyVoicePlan(text),
-            environment={**os.environ, 'OLIVIA_MEDIA_CHANNEL': 'qq'}))
-    finally:
-        PROGRESS_CALLBACK.reset(token)
+    from runtime.media.media_paths import configured_media_path
+    from runtime.remote_pipeline import enabled as remote_enabled
+    config_path = configured_media_path(os.environ, 'OLIVIA_TTS_CONFIG')
+    if config_path is None and not remote_enabled(os.environ):
+        raise RuntimeError('PERSONAL_CHAT_TTS_UNAVAILABLE')
+    worker = asyncio.create_task(asyncio.to_thread(server.render_reply_audio, text, path,
+        tts_config_path=config_path,
+        voice_performance_plan=TextOnlyVoicePlan(text),
+        environment={**os.environ, 'OLIVIA_MEDIA_CHANNEL': 'qq'}))
     def finished(task):
         if not task.cancelled():
             task.exception()
     worker.add_done_callback(finished)
-    async def notify_queue():
-        await queued.wait()
-        if notice is not None:
-            await notice()
-    notification = asyncio.create_task(notify_queue())
-    try:
-        return await asyncio.wait_for(asyncio.shield(worker), _VOICE_RENDER_TIMEOUT_SECONDS)
-    finally:
-        active = False
-        notification.cancel()
-        await asyncio.gather(notification, return_exceptions=True)
+    return await asyncio.wait_for(asyncio.shield(worker), _VOICE_RENDER_TIMEOUT_SECONDS)
 
 
 def _failure_code(exc):
     code = str(exc)
-    return code if re.fullmatch(r"(?:PERSONAL_CHAT|WECHAT|QQ|LLM|IMAGE)_[A-Z0-9_]{1,80}", code) else "PERSONAL_CHAT_UNAVAILABLE"
+    return code if code in JEV_ERROR_CODES or re.fullmatch(r"(?:PERSONAL_CHAT|WECHAT|QQ|LLM|IMAGE)_[A-Z0-9_]{1,80}", code) else "PERSONAL_CHAT_UNAVAILABLE"
 
 
 def _generation_failure_code(code):
+    if isinstance(code, str) and code in JEV_ERROR_CODES:
+        return code
     from runtime.diagnostics.failure_context import CODES
     known = CODES | {'INPUT_TOO_LONG', 'RECALL_CONTEXT_BUDGET_EXCEEDED',
                      'PERSONA_NOT_READY', 'IDEMPOTENCY_CONFLICT',
-                     'LLM_TIMEOUT', 'LLM_INTERNAL'}
+                     'LLM_TIMEOUT', 'LLM_INTERNAL',
+                     'CURRENT_TURN_INTERPRETATION_FAILED', 'REVIEW_FAILED',
+                     'REPLY_QUALITY_BLOCKED', 'REWRITE_FAILED', 'REVIEWER_UNAVAILABLE',
+                     'REVIEWER_RESPONSE_INVALID', 'REVIEWER_DISABLED',
+                     'FRESH_INTIMACY_CLAIMS_REQUIRED', 'INTIMACY_CLAIM_SOURCE_CONFLICT',
+                     'INTIMACY_REQUEST_INCONSISTENT', 'PERSONAL_CHAT_DECISION_INVALID'}
+    if isinstance(code, str) and code.startswith('PERSONAL_CHAT_') and code.removeprefix('PERSONAL_CHAT_') in known:
+        return code
     if isinstance(code, str) and code in known:
-        return code if code.startswith('LLM_') else 'PERSONAL_CHAT_' + code
+        return code if code.startswith(('LLM_', 'PERSONAL_CHAT_')) else 'PERSONAL_CHAT_' + code
     return 'PERSONAL_CHAT_GENERATION_FAILED'
 
 
 def reply_errors(server, runtime):
     errors = {channel: _failure_code(RuntimeError(code))
-              for channel, code in runtime.get('errors', {}).items() if channel in ('qq', 'wechat')}
+              for channel, code in runtime.get('errors', {}).items() if channel in ('qq', 'wechat', 'recovery')}
     latest = {row.get('channel'): row for row in getattr(server.store, 'personal_chats', [])}
     for channel, row in latest.items():
         if channel in runtime.get('status', {}) and (row.get('delivery_status') in {'FAILED', 'DELIVERY_UNCONFIRMED'}
                 or row.get('delivery_status') == 'SENDING' and row.get('error_code')):
             code = row.get('error_code', '')
             errors.setdefault(channel, code if isinstance(code, str) and
-                              re.fullmatch(r'(?:PERSONAL_CHAT|IMAGE|LLM)_[A-Z0-9_]{1,80}', code)
+                              (code in JEV_ERROR_CODES or re.fullmatch(r'(?:PERSONAL_CHAT|IMAGE|LLM)_[A-Z0-9_]{1,80}', code))
                               else 'PERSONAL_CHAT_GENERATION_FAILED')
     return errors
 
@@ -91,7 +142,7 @@ def _publish_status(server, runtime):
     counts = {}
     for row in server.store.personal_chats:
         state = row.get("delivery_status")
-        if state in {"GENERATING", "GENERATED", "SENDING", "DELIVERY_UNCONFIRMED", "DELIVERED", "FAILED"}:
+        if state in {"RECEIVED", "GENERATING", "GENERATED", "MEDIA_PENDING", "SENDING", "DELIVERY_UNCONFIRMED", "DELIVERED", "FAILED"}:
             counts[state] = counts.get(state, 0) + 1
     errors = reply_errors(server, runtime)
     value = {"channels": dict(runtime["status"]), "errors": errors,
@@ -103,14 +154,99 @@ def _publish_status(server, runtime):
              "consumer_pending": sum(bool(r.get("consumer_error_code")) for r in server.store.personal_chats)}
     writer = getattr(server, "_atomic_write_store_file", None)
     if callable(writer):
-        writer(server._state_root() / "personal-chat-status.json", json.dumps(value, sort_keys=True))
+        try:
+            writer(server._state_root() / "personal-chat-status.json", json.dumps(value, sort_keys=True))
+        except OSError:
+            # This diagnostic projection is not the durable conversation store.
+            # A failed status write must not stop listeners or recovery work.
+            server._safe_log('personal_chat_status_write_failed',
+                             error_code='PERSONAL_CHAT_STATUS_WRITE_FAILED')
 
 
 async def persist_chat(server):
     await persist_state(getattr(server, '_persist_store_state_async', server._persist_store_state))
 
 
+def _contact_basis(state):
+    snapshot, profile = state['snapshot'], state['profile']
+    current = snapshot.get('current') or {}
+    return deepcopy({'tier': profile.tier, 'caution': profile.caution,
+        'current': {key: current.get(key) for key in ('source_id', 'occurred_at', 'activity_kind')},
+        'stale': snapshot.get('stale'),
+        'current_class': snapshot.get('world', {}).get('schedule', {}).get('current_class')})
+
+
+def _contact_opportunities(state, now, row):
+    from runtime.reply.proactive_runtime import opportunities
+    offered = opportunities(state, now)
+    source = next((r for r in state['rows'] if r.get('letter_id') == row.get('followup_source_id')
+                   and r.get('origin') != 'proactive' and r.get('delivery_status') == 'DELIVERED'), None)
+    if (source and source.get('followup_at') is not None
+            and source['followup_at'] <= now.timestamp() < source['followup_at'] + 7200
+            and source.get('followup_quote') == row.get('followup_quote')):
+        offered.insert(0, {'id': 'followup:' + source['letter_id'], 'kind': 'followup',
+            'description': json.dumps({'source_id': source['letter_id'], 'quote': source['followup_quote'],
+                                      'due_at': source['followup_at']}, ensure_ascii=False, separators=(',', ':'))})
+    return offered[:16]
+
+
+def _contact_eligible(server, event):
+    from runtime.reply.proactive_runtime import live_state
+    now = datetime.now(LOCAL)
+    state = live_state(server, channel=event.channel, now=now, exclude_id=event.exchange_id)
+    if state['gates']['paused'] or state['gates']['blocked_reasons']:
+        return False
+    row = next((r for r in server.store.personal_chats if r.get('letter_id') == event.exchange_id), {})
+    if row.get('proactive_basis') is not None and row['proactive_basis'] != _contact_basis(state):
+        return False
+    decision = row.get('proactive_decision', {}).get('decision', {})
+    if decision.get('action') == 'defer':
+        return False
+    if decision.get('opportunity_id') is not None:
+        return row.get('proactive_opportunity') in _contact_opportunities(state, now, row)
+    return True
+
+
+async def _proactive_contact(server, runtime, initiative):
+    from .events import PersonalMessage
+    from runtime.reply import proactive_runtime
+    import uuid
+    enabled = proactive_runtime.enabled()
+    with (proactive_runtime.contact_slot(server, 'im') if enabled else nullcontext(True)) as acquired:
+        if not acquired or not initiative.ready():
+            return
+        old, sender = initiative.target
+        def channel_ready():
+            return (old.channel in selected_channels(server)
+                and runtime['status'].get(old.channel) == 'CONNECTED'
+                and (not callable(getattr(sender, 'is_available', None)) or sender.is_available()))
+        if not channel_ready():
+            return
+        event = PersonalMessage(old.channel, old.account_id, old.owner_id, 'proactive-' + uuid.uuid4().hex, '')
+        fresh = sender.for_exchange(event) if callable(getattr(sender, 'for_exchange', None)) else sender
+        def eligible():
+            if initiative.target[0] is not old or not channel_ready():
+                return False
+            if enabled:
+                return _contact_eligible(server, event)
+            return (any(r.get('letter_id') == event.exchange_id for r in server.store.personal_chats)
+                    or initiative.ready())
+        try:
+            followup = initiative.pending_followup()
+            if followup and followup['followup_at'] > datetime.now().timestamp():
+                followup = None
+            await runtime['service'].proactive(event, fresh, eligible, followup=followup)
+        finally:
+            initiative.attempted()
+
+
 async def generate(server, event, row):
+    from runtime.reply.jev_billing import billing_scope
+    with billing_scope('personal-chat:' + event.exchange_id + ':' + str(row.get('input_revision', 0))):
+        return await _generate_billed(server, event, row)
+
+
+async def _generate_billed(server, event, row):
     from persona_loader import load_persona
     from reply_context import ReplyMode
     from reply_orchestrator import ReplyRequest, ReplyState
@@ -133,7 +269,8 @@ async def generate(server, event, row):
         await persist_chat(server)
     from runtime.image_understanding import understand_incoming, incoming_context
     await understand_incoming(server, event, row)
-    content = event.text + incoming_context(row)
+    observation_context = incoming_context(row)
+    content = event.text + observation_context
     source = server._CURRENT_LETTER_MEMORY_SOURCE.set(f"reply:{event.exchange_id}:1")
     receipt = server._CURRENT_LETTER_RECEIPT.set(datetime.fromisoformat(row["life_received_at"]))
     from .presentation import CURRENT, parse, parse_social, recent_delivery_formats
@@ -141,6 +278,10 @@ async def generate(server, event, row):
     allowed = letter_invitation_allowed(server.store.personal_chats, getattr(server.store, 'letters', []),
                                          datetime.now().timestamp())
     voice_available = event.channel != 'wechat' and bool(row.get('voice_available')) and server._voice_reply_configured(os.environ)
+    semantic_kinds = ['text'] + (['audio_speech'] if voice_available else [])
+    if (event.channel == 'qq' and row.get('image_available') and row['image_reply_settings'].get('enabled')
+            and os.environ.get('OLIVIA_GPU_API_URL') and os.environ.get('OLIVIA_GPU_API_KEY')):
+        semantic_kinds.append('image')
     context = adapter.build_reply_context(ReplyMode.FUTURE_IM, future_im_enabled=True)
     from runtime.image_reply import photo_reply_context
     context = photo_reply_context(context, row['image_reply_settings'], channel=event.channel)
@@ -153,19 +294,77 @@ async def generate(server, event, row):
         delayed_delivery = sent_at is not None and (received_at - sent_at).total_seconds() > 60
     except (TypeError, ValueError):
         pass
+    revision = row.get('input_revision', 0)
+    from .service import TURN_IS_CURRENT
+    def turn_is_current():
+        current = TURN_IS_CURRENT.get()
+        return revision == row.get('input_revision', 0) and (not callable(current) or current())
+    async def save_companion_decision(record):
+        if not turn_is_current():
+            raise RuntimeError('JEV_INPUT_SUPERSEDED')
+        row['companion_decision'] = deepcopy(record)
+        await persist_chat(server)
+    async def proactive_decide(messages, world, emotion):
+        from runtime.reply import proactive_runtime
+        from runtime.reply.companion_runtime import CompanionRuntimeError
+        now = context.trusted_time.instant
+        state = proactive_runtime.live_state(server, channel=event.channel, now=now, exclude_id=event.exchange_id)
+        if not isinstance(world, dict) or world.get('kind') != 'character_life_reference':
+            raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE')
+        observed = world.get('current') or world.get('last_observation') or {}
+        current = state['snapshot'].get('current') or {}
+        if (any(observed.get(key) != current.get(key) for key in ('source_id', 'occurred_at'))
+                or 'schedule' in world and world['schedule'].get('current_class') !=
+                state['snapshot'].get('world', {}).get('schedule', {}).get('current_class')):
+            raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE')
+        offered = _contact_opportunities(state, now, row)
+        value = proactive_runtime.packet(channel=event.channel, now=now, profile=state['profile'],
+            world=world, rhythm=state['snapshot'].get('rhythm', {}), emotion=emotion,
+            messages=messages, opportunities=offered, rows=state['rows'],
+            available_media=['text'] + (['audio_speech'] if voice_available else []), hard_gates=state['gates'])
+        try:
+            result = await proactive_runtime.decide(value)
+        except ValueError:
+            raise CompanionRuntimeError('JEV_CONFIG_INVALID') from None
+        if not turn_is_current():
+            raise CompanionRuntimeError('JEV_INPUT_SUPERSEDED')
+        row['proactive_decision'] = proactive_runtime.record_decision(result)
+        row['proactive_basis'] = _contact_basis(state)
+        row['proactive_opportunity'] = next((item for item in offered
+            if item['id'] == result.decision['opportunity_id']), None)
+        try:
+            await persist_chat(server)
+        except Exception:
+            raise CompanionRuntimeError('JEV_DECISION_NOT_SAVED') from None
+        return result
+    from runtime.reply.proactive_runtime import enabled as proactive_enabled
+    proactive_metadata = ({'proactive_decide': proactive_decide}
+                          if row.get('origin') == 'proactive' and proactive_enabled() else {})
     presentation = CURRENT.set({'voice_available': voice_available, 'listening_preference': 'voice_ok',
                                 'recent_delivery_formats': recent_delivery_formats(server.store.personal_chats,
                                     channel=event.channel, binding_id=event.binding_id),
-                                'structured': True, 'decision_now': datetime.now(LOCAL).isoformat(),
+                                'structured': True, 'raw_user_text': event.text,
+                                'incoming_observation_context': observation_context,
+                                'semantic_kinds': semantic_kinds,
+                                'received_source_id': f'reply:{event.exchange_id}:user',
+                                'input_revision': revision,
+                                'companion_decision': row.get('companion_decision'),
+                                'save_companion_decision': save_companion_decision,
+                                'decision_now': datetime.now(LOCAL).isoformat(),
                                 'due_followup': row.get('followup_quote'),
                                 'channel': event.channel, 'incoming_format': event.input_kind,
                                 'user_sent_at': row.get('user_sent_at'), 'received_at': row['life_received_at'],
                                 'delayed_delivery': delayed_delivery,
                                 'letter_invitation_allowed': allowed,
                                 'sticker_choices': sticker_choices,
-                                'proactive': row.get('origin') == 'proactive'})
+                                'proactive': row.get('origin') == 'proactive', **proactive_metadata})
+    from .context import READ_WINDOW, freeze_read_window
+    read_window = None
     try:
-        attempt_id = event.exchange_id + ':' + str(row.get('generation_attempts', 1))
+        read_window = READ_WINDOW.set(freeze_read_window(
+            [*getattr(server.store, 'letters', []), *server.store.personal_chats],
+            channel=event.channel, binding_id=event.binding_id, current_id=event.exchange_id))
+        attempt_id = event.exchange_id + (f':input-{revision}' if revision else '') + ':' + str(row.get('generation_attempts', 1))
         request = ReplyRequest(content=content or '应用主动聊天检查：现在是否有值得和对方分享的话？没有则跳过。', request_id="personal-chat:" + attempt_id,
             idempotency_key=attempt_id,
             max_input_chars=min(adapter.config.max_input_chars, 40000 + len(content or '')),
@@ -177,8 +376,40 @@ async def generate(server, event, row):
                 server._reply_pipeline_timeout_seconds(ReplyMode.FUTURE_IM.value))
         except TimeoutError:
             raise RuntimeError('PERSONAL_CHAT_GENERATION_TIMEOUT') from None
+        companion = getattr(result, 'companion_decision', None)
+        contact = getattr(result, 'proactive_decision', None)
+        if not turn_is_current() and (companion is not None or row.get('companion_decision') is not None
+                                      or getattr(result, 'error_code', None) in JEV_ERROR_CODES):
+            return None  # The service refreshes intake before using this result.
+        if companion is not None:
+            await save_companion_decision(companion)
+            row.update(companion_timing=getattr(result, 'companion_timing', None),
+                       companion_delivery=getattr(result, 'companion_delivery', None))
+            row.pop('sticker_id', None)
+            row.pop('mailbox_notice_letter_id', None)
+        elif result.state is ReplyState.COMPLETED:
+            for key in ('companion_decision', 'companion_timing', 'companion_delivery'):
+                row.pop(key, None)
+        shadow = getattr(result, 'semantic_shadow_task', None)
+        if shadow is not None:
+            _start_semantic_shadow_recorder(server, row, shadow)
+        from runtime.diagnostics.support_bundle import project_chat_task
+        quality_fields = ('quality_status', 'reviewer_calls', 'rewrite_calls')
+        quality = project_chat_task({'channel': event.channel, **{
+            field: getattr(result, field, None) for field in quality_fields}})
+        for field in quality_fields:
+            row.pop(field, None)
+            if field in quality:
+                row[field] = quality[field]
+        if proactive_metadata and result.error_code == 'JEV_DECISION_NOT_SAVED':
+            raise RuntimeError('JEV_DECISION_NOT_SAVED')
+        await persist_chat(server)
         if result.state is not ReplyState.COMPLETED:
             raise RuntimeError(_generation_failure_code(result.error_code))
+        if contact is not None and contact['decision']['action'] == 'defer':
+            return '[[skip]]'
+        if companion is not None and row['companion_timing'] in {'wait_user', 'defer', 'no_reply'}:
+            return None
         from .decision import decode
         try:
             decision = decode(result.text, user=event.text, now=datetime.now().timestamp(), proactive=row.get('origin') == 'proactive')
@@ -190,27 +421,46 @@ async def generate(server, event, row):
                 missing_fields=getattr(exc, 'missing_fields', []),
                 extra_field_count=getattr(exc, 'extra_field_count', 0))
             raise
+        if contact is not None and decision['skip']:
+            raise RuntimeError('JEV_PLAN_UNSUPPORTED')
         if decision['skip']:
             return '[[skip]]'
         text, mode = decision['text'].strip(), decision['delivery']
+        if companion is not None:
+            delivery = row['companion_delivery']
+            if delivery not in semantic_kinds:
+                raise RuntimeError('JEV_PLAN_UNSUPPORTED')
+            mode = 'voice' if delivery == 'audio_speech' else 'text'
+        if contact is not None:
+            delivery = contact['decision']['medium']
+            if delivery not in {'text', 'audio_speech'} or delivery == 'audio_speech' and not voice_available:
+                raise RuntimeError('JEV_PLAN_UNSUPPORTED')
+            mode = 'voice' if delivery == 'audio_speech' else 'text'
+            row.pop('sticker_id', None)
+            row.pop('mailbox_notice_letter_id', None)
         from .mailbox_notice import attach_notice
-        text = attach_notice(getattr(server.store, 'letters', []), row, text)
+        if companion is None and contact is None:
+            text = attach_notice(getattr(server.store, 'letters', []), row, text)
         for kind, until in [('initiative', 'pause_until'), ('letter', 'letter_until')]:
             if decision[kind] != 'keep':
                 row[kind + '_preference'] = decision[kind]
                 row[until] = decision[until]
-        row['letter_invitation'] = allowed and decision.get('letter_invitation', False)
+        row['letter_invitation'] = contact is None and allowed and decision.get('letter_invitation', False)
         if decision['followup_at'] is not None:
             row.update(followup_at=decision['followup_at'], followup_quote=decision['evidence'])
         elif decision['followup_cancel'] or decision['initiative'] == 'pause' and decision['pause_until'] is None:
             row['followup_at'] = None
         sticker = decision['sticker'] if decision['sticker'] in sticker_choices else None
-        if sticker:
+        if sticker and companion is None and contact is None:
             row['sticker_id'] = sticker
         if not voice_available:
             mode = 'text'
         row['presentation_status'] = 'VALIDATED'
         row.update(requested_format=mode, listening_preference='voice_ok')
+        if not turn_is_current():
+            return text  # The service merges new input before any draft is sent.
+        from runtime.reply.character_emotion_context import store_expression_context
+        store_expression_context(row, getattr(result, 'expression_context', None), text)
         if mode == 'voice' and voice_available and text != '[[skip]]':
             path = server._state_root() / 'media' / (event.exchange_id + '.wav')
             try:
@@ -219,8 +469,12 @@ async def generate(server, event, row):
             except Exception:
                 row.pop('prepared_audio', None)
                 row['voice_fallback'] = 'PERSONAL_CHAT_TTS_UNAVAILABLE'
+                if companion is not None or contact is not None:
+                    raise RuntimeError('JEV_PLAN_UNSUPPORTED') from None
         return text
     finally:
+        if read_window is not None:
+            READ_WINDOW.reset(read_window)
         server._CURRENT_LETTER_MEMORY_SOURCE.reset(source)
         server._CURRENT_LETTER_RECEIPT.reset(receipt)
         CURRENT.reset(presentation)
@@ -250,7 +504,9 @@ async def prepare_chat_photo(server, row, send):
 async def deliver_photo(server, row, send):
     from runtime.image_reply import prepare
     from runtime.image_understanding import commit_image_memory
-    if row.get('delivery_status') != 'DELIVERED':
+    from runtime.image_reply import is_companion_image
+    primary_image = is_companion_image(row)
+    if row.get('delivery_status') != ('MEDIA_PENDING' if primary_image else 'DELIVERED'):
         return
     await prepare_chat_photo(server, row, send)
     if row.get('image_status') != 'COMPLETED' or not row.get('prepared_image'):
@@ -269,6 +525,23 @@ async def deliver_photo(server, row, send):
         raise
     row.update(image_delivery_status='DELIVERED', image_delivery_receipt=str(receipt),
                image_world_status='PENDING')
+    if primary_image:
+        # The planner's scene draft was never spoken. Conversation records contain only the
+        # acknowledged artifact; its visual description has its own consumer.
+        from runtime.reply.character_emotion_context import rebind_expression_context
+        previous_text = row['reply_text']
+        row['reply_text'] = '[已发送图片]'
+        rebind_expression_context(row, previous_text=previous_text)
+        previous_revision = row.get('reply_revision')
+        row.update(delivery_status='DELIVERED', letter_status='COMPLETED', delivered_format='image',
+                   reply_revision=1, private_world_status='PENDING', daily_life_status='PENDING',
+                   private_world_delivery_id=row['letter_id'] + ':1',
+                   private_world_occurred_at=datetime.now().astimezone().isoformat())
+        rebind_expression_context(row, previous_revision=previous_revision)
+        import hashlib
+        row['private_world_reply_sha256'] = hashlib.sha256(row['reply_text'].encode()).hexdigest()
+        row['private_world_semantic_key'] = 'canonical.' + hashlib.sha256(row['letter_id'].encode()).hexdigest()
+        row.pop('error_code', None)
     await persist_chat(server)
     await commit_image_memory(server, row)
 
@@ -470,10 +743,15 @@ def install_personal_chat(app, server):
             runtime = {"stop": stop_event, "tasks": [], "service": service, "status": {},
                        "errors": {}, "roundtrips": {}, "last_seen_at": {}, "journal": journal,
                        "delivery_health": {}, "e2e_verified_at": {}, "connection_tests": {}}
+            if 'qq' in config:
+                from .setup import _qq_binding_fingerprint
+                runtime['qq_binding_fingerprint'] = _qq_binding_fingerprint(config['qq'], token)
             runtime['status'].update({name: 'SETUP_REQUIRED' for name in missing})
             application[_RUNTIME] = runtime
             from .initiative import Initiative
-            initiative = Initiative(server.store.personal_chats)
+            from runtime.reply import proactive_runtime
+            initiative = Initiative(server.store.personal_chats,
+                profile_provider=(lambda: proactive_runtime.live_profile(server)) if proactive_runtime.enabled() else None)
 
             async def handle_connection_test(event, send):
                 # Connection diagnostics are never persona/memory inputs. The first
@@ -566,6 +844,15 @@ def install_personal_chat(app, server):
 
             handle.is_control_message = is_control_message
             handle.handle_control = handle_connection_test
+            async def ingest(event):
+                if event.channel not in selected_channels(server):
+                    runtime['errors'][event.channel] = 'PERSONAL_CHAT_CONTACT_NOT_ACCEPTED'
+                    _publish_status(server, runtime)
+                    return False
+                return await service.ingest(event)
+
+            handle.ingest = ingest
+            handle.pending = lambda channel: service.pending(channel) if channel in selected_channels(server) else ()
 
             async def run(name, factory):
                 def on_state(state):
@@ -623,55 +910,17 @@ def install_personal_chat(app, server):
                 # Listener liveness does not depend on slow/failed extraction.
                 for name, factory in jobs:
                     runtime["tasks"].append(asyncio.create_task(run(name, factory)))
-                try:
-                    while not stop_event.is_set():
-                        await service.recover()
-                        from runtime.image_understanding import commit_image_memory
-                        for row in server.store.personal_chats:
-                            if row.get('image_world_status') == 'PENDING':
-                                await commit_image_memory(server, row)
-                        _publish_status(server, runtime)
-                        try:
-                            await asyncio.wait_for(stop_event.wait(), 30)
-                        except asyncio.TimeoutError:
-                            pass
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    runtime["status"]["recovery"] = "FAILED"
-                    runtime["errors"]["recovery"] = _failure_code(exc)
-                    _publish_status(server, runtime)
-                    server._safe_log("personal_chat_recovery_failed", error_code="PERSONAL_CHAT_UNAVAILABLE")
+                await _recover_chat_loop(server, runtime)
             async def proactive_loop():
-                from .events import PersonalMessage
-                import uuid
                 while not stop_event.is_set():
                     await asyncio.sleep(15)
-                    if not initiative.ready():
-                        continue
-                    old, sender = initiative.target
-                    if old.channel not in selected_channels(server):
-                        continue
-                    if runtime['status'].get(old.channel) != 'CONNECTED':
-                        continue
-                    if callable(getattr(sender, 'is_available', None)) and not sender.is_available():
-                        continue
-                    event = PersonalMessage(old.channel, old.account_id, old.owner_id,
-                                            'proactive-' + uuid.uuid4().hex, '')
-                    fresh = sender.for_exchange(event) if callable(getattr(sender, 'for_exchange', None)) else sender
                     try:
-                        followup = initiative.pending_followup()
-                        if followup and followup['followup_at'] > datetime.now().timestamp():
-                            followup = None
-                        await service.proactive(event, fresh,
-                            lambda: initiative.ready() and initiative.target[0] is old,
-                            followup=followup)
+                        await _proactive_contact(server, runtime, initiative)
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:
                         runtime['errors']['initiative'] = _failure_code(exc)
                     finally:
-                        initiative.attempted()
                         _publish_status(server, runtime)
             runtime['tasks'].append(asyncio.create_task(proactive_loop()))
             runtime["tasks"].append(asyncio.create_task(boot()))
@@ -681,12 +930,19 @@ def install_personal_chat(app, server):
     async def stop(application):
         runtime = application.get(_RUNTIME)
         if runtime is None:
+            await _stop_semantic_shadow(server)
             return
         runtime["stop"].set()
-        tasks = [*runtime["tasks"], *runtime['service'].photo_tasks.values()]
+        tasks = list(runtime["tasks"])
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        tasks = [*runtime['service'].photo_tasks.values(),
+                 *getattr(runtime['service'], 'consumer_tasks', {}).values()]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await _stop_semantic_shadow(server)
         runtime["journal"].db.close()
 
     activation_lock = asyncio.Lock()

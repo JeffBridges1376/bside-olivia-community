@@ -416,7 +416,11 @@ def test_prepare_setup_payload_copies_only_tracked_release_files_and_offline_ass
         "installer.build_windows_setup._git_dirty_files", lambda _source: set()
     )
 
-    prepare_setup_payload(source, offline, destination, validate_schema=False)
+    video = tmp_path / 'approved.mp4'
+    video.write_bytes(b'\x00\x00\x00\x18ftypisom' + b'synthetic')
+    prepare_setup_payload(source, offline, destination, validate_schema=False,
+        startup_video=video, startup_video_sha256=hashlib.sha256(video.read_bytes()).hexdigest())
+    assert (destination / 'installer/assets/startup.mp4').read_bytes() == video.read_bytes()
 
     assert (destination / "installer" / "Install.ps1").read_text() == "install"
     assert (destination / "installer" / "assets" / "olivia.ico").read_bytes() == b"icon"

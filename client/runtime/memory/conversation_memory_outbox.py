@@ -173,10 +173,18 @@ class CanonicalMemoryOutbox:
         async with self._scan_lock:
             try:
                 letters = self._read_letters()
+                received = self._read_received_rows()
             except ConversationMemoryOutboxError as exc:
                 return OutboxScanResult("unavailable", error_code=exc.code)
 
             discovered = delivered = duplicates = pending = ignored = 0
+            try:
+                from .received_user_originals import index_received_rows
+                await asyncio.to_thread(index_received_rows, getattr(self.committer, 'memory', None), received,
+                    user_id=self.user_id, memory_lifecycle=getattr(self.committer, 'memory_lifecycle', None))
+            except Exception:
+                # Canonical delivery remains independent; retry from durable state.
+                pending += 1
             indexed = 0
             for row in letters:
                 delivery = _delivery_from_row(row, user_id=self.user_id)
@@ -348,6 +356,24 @@ class CanonicalMemoryOutbox:
         except (OSError, sqlite3.Error) as exc:
             raise ConversationMemoryOutboxError("MEMORY_OUTBOX_STORAGE_UNAVAILABLE") from exc
         return row is not None and bool(row[0])
+
+    def _read_received_rows(self):
+        """Read durable user intake without changing canonical delivery eligibility."""
+        try:
+            payload = json.loads(self.state_path.read_text(encoding='utf-8'))
+        except FileNotFoundError:
+            return ()
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ConversationMemoryOutboxError('MEMORY_OUTBOX_STATE_UNAVAILABLE') from exc
+        if not isinstance(payload, Mapping):
+            raise ConversationMemoryOutboxError('MEMORY_OUTBOX_STATE_INVALID')
+        rows = []
+        for key in ('letters', 'personal_chats'):
+            values = payload.get(key, ())
+            if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
+                raise ConversationMemoryOutboxError('MEMORY_OUTBOX_STATE_INVALID')
+            rows.extend(row for row in values if isinstance(row, Mapping))
+        return tuple(rows)
 
     def _read_letters(self) -> tuple[Mapping[str, object], ...]:
         try:

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -195,6 +196,27 @@ def _qr_data_url(value: object) -> str:
     return "data:image/svg+xml;base64," + encoded
 
 
+def _qq_binding_fingerprint(config, token):
+    return hashlib.sha256(json.dumps([str(config.get(key, '')) for key in ('url', 'account', 'owner')]
+                         + [token], ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+
+
+def _qq_config_active(config, active):
+    if not isinstance(active, dict) or not active.get('qq_binding_fingerprint'):
+        return False
+    binding = getattr(active.get('service'), 'bindings', {}).get('qq')
+    if binding != (str(config.get('account', '')), str(config.get('owner', ''))):
+        return False
+    try:
+        token = os.environ.get('OLIVIA_PERSONAL_QQ_TOKEN', '')
+        if not token:
+            from original_client_setup_api import _dpapi_unprotect
+            token = json.loads(_dpapi_unprotect(Path(config['credentials_file']).read_text(encoding='utf-8')))['token']
+        return _qq_binding_fingerprint(config, token) == active['qq_binding_fingerprint']
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError):
+        return False
+
+
 def _public_status(request: web.Request, server) -> dict[str, object]:
     config = _read_config(server)
     selected = _selected_channels(server)
@@ -212,6 +234,13 @@ def _public_status(request: web.Request, server) -> dict[str, object]:
     wechat.pop("qrcode", None)
     wechat.pop("verify_code", None)
     qq = dict(runtime.get("qq", {"state": "IDLE"}))
+    if (qq.get('state') in {'READY_RESTART', 'CONNECTING'}
+            and listener.get('qq') in {'CONNECTED', 'LISTENING'}
+            and _qq_config_active(config.get('qq', {}), active)):
+        qq['state'] = listener['qq']
+    owner = str(config.get("qq", {}).get("owner", ""))
+    if _QQ_ID.fullmatch(owner):
+        qq["owner_masked"] = "*" * (len(owner) - 4) + owner[-4:]
     return {
         "contact_state": str(_contact_access(server).get("state", "locked")),
         "selected_channels": sorted(selected),
