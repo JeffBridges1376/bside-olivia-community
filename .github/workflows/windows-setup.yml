@@ -53,6 +53,8 @@ jobs:
 
       - name: Build single-file setup
         shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
           if (-not (Test-Path -LiteralPath $iscc -PathType Leaf)) {
@@ -64,11 +66,21 @@ jobs:
             throw 'SETUP_ISCC_SIGNATURE_INVALID'
           }
           $version = (Get-Content -Raw -LiteralPath 'installer/release-version.json' | ConvertFrom-Json).version
+          $startupArgs = @()
+          if ($env:GITHUB_EVENT_NAME -ne 'pull_request') {
+            $startup = Get-Content -Raw -LiteralPath 'installer/startup-video.json' | ConvertFrom-Json
+            $startupDir = Join-Path $env:RUNNER_TEMP 'olivia-startup'
+            New-Item -ItemType Directory -Force -Path $startupDir | Out-Null
+            gh release download $startup.release_tag --repo $env:GITHUB_REPOSITORY --pattern $startup.asset --dir $startupDir
+            if ($LASTEXITCODE -ne 0) { throw 'STARTUP_ASSET_DOWNLOAD_FAILED' }
+            $startupArgs = @('--startup-video', (Join-Path $startupDir $startup.asset), '--startup-video-sha256', $startup.sha256)
+          }
           python installer/build_windows_setup.py `
             --offline offline `
             --output dist `
             --version $version `
-            --iscc $iscc
+            --iscc $iscc @startupArgs
+          if ($LASTEXITCODE -ne 0) { throw 'SETUP_BUILD_FAILED' }
 
       - name: Exercise setup failure boundary
         shell: powershell
