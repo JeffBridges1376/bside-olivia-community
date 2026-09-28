@@ -48,6 +48,7 @@ ERROR_CODES: dict[str, dict[str, Any]] = {
     "INTERNAL_ERROR": {"http_status": 500, "retryable": False},
     "STORE_STATE_UNAVAILABLE": {"http_status": 503, "retryable": False},
     "LLM_UNAVAILABLE": {"http_status": 503, "retryable": True},
+    "OLIVIA_KEY_REQUIRED": {"http_status": 503, "retryable": False},
     "LLM_QUOTA_EXHAUSTED": {"http_status": 503, "retryable": False},
     "LLM_AUTH_FAILED": {"http_status": 503, "retryable": False},
     "LLM_USAGE_PENDING": {"http_status": 503, "retryable": False},
@@ -169,6 +170,7 @@ LETTER_DETAIL_GENERATION_ERROR_CODES: dict[str, dict[str, Any]] = {
     for code in (
         "MEMORY_UNAVAILABLE",
         "LLM_UNAVAILABLE",
+        "OLIVIA_KEY_REQUIRED",
         "LLM_QUOTA_EXHAUSTED",
         "LLM_AUTH_FAILED",
         "LLM_USAGE_PENDING",

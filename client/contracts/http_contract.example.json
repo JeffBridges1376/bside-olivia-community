@@ -181,6 +181,10 @@
       "LLM_REQUEST_DUPLICATE": {
         "status": "FAILED",
         "retryable": false
+      },
+      "OLIVIA_KEY_REQUIRED": {
+        "status": "FAILED",
+        "retryable": false
       }
     }
   },

@@ -181,6 +181,9 @@
             },
             "LLM_REQUEST_DUPLICATE": {
               "$ref": "#/$defs/generation_error"
+            },
+            "OLIVIA_KEY_REQUIRED": {
+              "$ref": "#/$defs/generation_error"
             }
           }
         }

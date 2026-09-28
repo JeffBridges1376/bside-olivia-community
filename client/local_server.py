@@ -4127,6 +4127,11 @@ async def route(
         missing = await asyncio.to_thread(_missing_memory_component)
         if missing:
             return err(503, missing, {'error_code': missing, 'retryable': True})
+        from runtime.reply.jev_billing import account_key_missing
+        if await asyncio.to_thread(account_key_missing):
+            return err(503, 'OLIVIA_KEY_REQUIRED', {
+                'status': 'FAILED', 'error_code': 'OLIVIA_KEY_REQUIRED', 'retryable': False,
+            })
         try:
             routes = video_reply_settings_store.routes_snapshot()
         except VideoReplySettingsError as exc:
@@ -4561,6 +4566,11 @@ async def route(
         missing = await asyncio.to_thread(_missing_memory_component)
         if missing:
             return err(503, missing, {'error_code': missing, 'retryable': True})
+        from runtime.reply.jev_billing import account_key_missing
+        if await asyncio.to_thread(account_key_missing):
+            return err(503, 'OLIVIA_KEY_REQUIRED', {
+                'status': 'FAILED', 'error_code': 'OLIVIA_KEY_REQUIRED', 'retryable': False,
+            })
         idempotency_key = _request_value(
             body,
             query,
@@ -5267,7 +5277,10 @@ async def _run_reply_job(
             content,
             idempotency_key=idempotency_key,
         )
-    except Exception:
+    except Exception as exc:
+        # The key can be removed after a letter was queued; say so plainly.
+        code = ("OLIVIA_KEY_REQUIRED" if str(exc) == "JEV_BILLING_ACCOUNT_UNAVAILABLE"
+                else "LLM_UNAVAILABLE")
         letter = next(
             (item for item in store.letters if item["letter_id"] == letter_id),
             None,
@@ -5277,10 +5290,10 @@ async def _run_reply_job(
             "PROCESSING",
         }:
             letter["letter_status"] = "FAILED"
-            letter["error_code"] = "LLM_UNAVAILABLE"
+            letter["error_code"] = code
             _mark_media_not_requested(letter)
             _persist_store_state()
-        _safe_log("letter_failed", error_code="LLM_UNAVAILABLE")
+        _safe_log("letter_failed", error_code=code)
         return False
 
 

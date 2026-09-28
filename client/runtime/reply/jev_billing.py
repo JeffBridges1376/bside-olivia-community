@@ -28,6 +28,18 @@ def configure_account(get_key):
     _account_key = get_key
 
 
+def account_key_missing():
+    """True when replies need the Olivia account key and none is usable."""
+    if os.environ.get('OLIVIA_JEV_BILLING_ENABLED') != '1':
+        return False
+    try:
+        key = _account_key() if callable(_account_key) else None
+    except Exception:
+        return True
+    return (not isinstance(key, str) or not key.startswith('olivia-')
+            or len(key) <= len('olivia-') or any(c.isspace() for c in key))
+
+
 @contextmanager
 def billing_scope(turn_id):
     if os.environ.get('OLIVIA_JEV_BILLING_ENABLED') != '1' or CURRENT.get() is not None:
