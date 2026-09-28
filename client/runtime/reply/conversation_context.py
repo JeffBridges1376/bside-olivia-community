@@ -18,18 +18,21 @@ def _time(value):
 
 
 def conversation_context(rows, *, query, now, excluded_sources=(), max_chars=6000):
-    rows = list(rows)
+    from runtime.personal_chat.context import READ_WINDOW
+    frozen = READ_WINDOW.get()
+    rows = list(rows if frozen is None else frozen)
     def delivered(row):
         if row.get('read_only') or not isinstance(row.get('letter_id'), str):
             return False
         if row.get('channel') in {'qq', 'wechat'}:
             return row.get('delivery_status') == 'DELIVERED'
         return row.get('letter_status') == 'COMPLETED'
-    rows = [r for r in rows if delivered(r)]
-    candidates = [r for r in rows
+    candidates = [r for r in rows if (delivered(r) or frozen is not None and r.get('_received_only'))
                   if not any(s.startswith(f"reply:{r['letter_id']}:") for s in excluded_sources)]
+    rows = [r for r in rows if delivered(r)]
     # Receive order is authoritative even if delivery or indexing completes later.
-    candidates.sort(key=lambda r: (float(r.get('created_at', 0)), r['letter_id']))
+    candidates.sort(key=lambda r: (r.get('_read_order', float(r.get('created_at', 0))),
+                                  r.get('received_sequence', 0)))
     packet = {'kind': 'recent_dialogue', 'current_time': now.astimezone(LOCAL).isoformat(), 'timezone': 'Asia/Shanghai',
               'meaning': '以下是按接收顺序排列的最近连续交流，信件和聊天跨渠道仍是同一个人；保留各渠道，不把聊天叫作信件。'
                          'received_at是程序接收时间，sent_at才是平台发送时间；未知时间不猜测。'
@@ -38,6 +41,10 @@ def conversation_context(rows, *, query, now, excluded_sources=(), max_chars=600
                          '截断前的消息未展示，不推断完整交流次数。当前用户消息在本轮输入中，只出现一次。'
                          'user_letter 是用户原话，linli_reply 是林离原话。' + FACT_ATTRIBUTION_BOUNDARY,
               'letters': []}
+    if frozen is not None:
+        packet['meaning'] = packet['meaning'].replace('按接收顺序排列', '按本轮冻结窗口排列') + (
+            '同对话尚未确认回复的输入按平台发送时间插入，发送时间未知时使用接收顺序；'
+            'user_received_reply_unconfirmed只有用户原话，不代表林离已经回应。')
     sources = []
     # Continuity gets first use of the existing budget; old retrieval only uses
     # spare capacity, never displacing a just-delivered answer.
@@ -49,6 +56,11 @@ def conversation_context(rows, *, query, now, excluded_sources=(), max_chars=600
                 'sent_at': _time(row.get('user_sent_at')),
                 'replied_at': _time(row.get('private_world_occurred_at')),
                 'user_letter': row.get('content', ''), 'linli_reply': row.get('reply_text', '')}
+        if row.get('_received_only'):
+            item['delivery_state'] = 'user_received_reply_unconfirmed'
+            item['source_message_ids'] = list(row.get('source_messages', {}))
+        if row.get('image_delivery_status') == 'DELIVERED':
+            item['image_delivery_confirmed'] = True
         deliveries = delivery_references(row)
         from runtime.image_understanding import image_evidence
         images = image_evidence(row)
@@ -61,13 +73,28 @@ def conversation_context(rows, *, query, now, excluded_sources=(), max_chars=600
         if len(json.dumps(packet, ensure_ascii=False)) > recent_budget:
             packet['letters'].pop(0)
             if not packet['letters']:
-                item['truncated'] = True
+                item['truncated'] = False
                 # Preserve both ends so corrections at the end remain visible.
                 for key in ('user_letter', 'linli_reply'):
                     value = item[key]
                     if len(value) > 1000:
+                        item['truncated'] = True
                         item[key] = value[:500] + '\n[中间原文省略]\n' + value[-500:]
                 packet['letters'].append(item)
+                # Optional observations must fit the remaining budget, not a
+                # fixed quota that can displace the latest correction.
+                images = item.get('image_observations', [])
+                for edge in (120, 60, 24):
+                    for image in images:
+                        summary = image['summary']
+                        if len(summary) > edge * 2:
+                            image['summary'] = summary[:edge] + '\n[中间观察省略]\n' + summary[-edge:]
+                            image['summary_truncated'] = True
+                    if len(json.dumps(packet, ensure_ascii=False, separators=(',', ':'))) <= recent_budget:
+                        break
+                while images and len(json.dumps(packet, ensure_ascii=False, separators=(',', ':'))) > recent_budget:
+                    images.pop(0)
+                    item['image_observations_omitted'] = True
                 sources.append(item['source_id'])
             break  # Never jump over a missing exchange and call the result continuous.
         sources.append(item['source_id'])

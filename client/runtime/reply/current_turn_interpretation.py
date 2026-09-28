@@ -99,6 +99,19 @@ class CurrentTurnInterpreter:
             "request_id": "current-turn-interpretation:" + uuid.uuid4().hex,
         }
         try:
+            from runtime.reply.jev_questions import configured_questions
+            semantic_port = configured_questions()
+            if semantic_port is not None:
+                import re
+                spans = [m.group() for m in re.finditer(r'[^。！？!?\n]+[。！？!?\n]*', user_text)]
+                if not spans or len(spans) > 64:
+                    raise CurrentTurnInterpretationError()
+                choices = await semantic_port.ask({'current_user_text': user_text, 'contract': _INSTRUCTION},
+                    {f'a{i}': {'instructions':'只按该原句的主体和情态判断言语行为，不猜角色反应；不明确选none。原句：'+quote,
+                              'criteria': {'none':'没有明确属于这些类别的行为', **{kind:kind for kind in _KINDS}}}
+                     for i,quote in enumerate(spans)}, purpose='current-turn-interpretation')
+                return _validated(user_text, {'acts': [dict(quote=quote, kind=choices[f'a{i}'], meaning=quote)
+                    for i,quote in enumerate(spans) if choices[f'a{i}'] != 'none']})
             structured = getattr(self.gateway, "complete_structured_scoped", None)
             if callable(structured):
                 call = structured(messages, response_format=deepcopy(INTERPRETATION_RESPONSE_FORMAT), **kwargs)

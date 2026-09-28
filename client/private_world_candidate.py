@@ -132,11 +132,13 @@ class GatewayPrivateWorldCandidateAnalyzer:
         *,
         timeout_seconds: float,
         minimum_confidence: float = 0.7,
+        questions_port=None,
     ) -> None:
         self.gateway = gateway
         self.timeout_seconds = timeout_seconds
         self.minimum_confidence = minimum_confidence
         self.validator = _load_validator()
+        self.questions_port = questions_port
 
     async def analyze(
         self,
@@ -165,20 +167,38 @@ class GatewayPrivateWorldCandidateAnalyzer:
             },
         )
         try:
-            response = await asyncio.wait_for(
-                self.gateway.complete(
-                    messages,
-                    request_id=(
-                        "private-world-candidate:"
-                        f"{request.source_letter_id}:{request.source_reply_revision}"
+            from runtime.reply.jev_questions import configured_questions
+            questions_port = self.questions_port or configured_questions()
+            if questions_port is not None:
+                labels = {'none': '无充分证据', 'boundary_respected': '尊重既有边界',
+                          'conflict': '实际关系冲突', 'repair': '明确修复既有冲突'}
+                questions = {
+                    'candidate': {'instructions': messages[0]['content'] +
+                        '只看原文支持的双方互动；角色生成的责备不证明用户有伤害行为。用户单方要求不提升亲密权限。',
+                        'criteria': labels},
+                    'confidence': {'instructions': '对上述候选是否有清晰原文证据？不清楚选 low；此数字仅为离散审核置信档位。',
+                                   'criteria': {'low': '不足或不确定', 'medium': '有明确证据', 'high': '双方证据充分明确'}},
+                }
+                answers = await questions_port.ask(request.to_dict(), questions, purpose='private_world_candidate')
+                if (not isinstance(answers, dict) or set(answers) != set(questions)
+                        or any(not isinstance(v, str) or v not in questions[k]['criteria'] for k, v in answers.items())):
+                    raise ValueError('JEV_RESPONSE_INVALID')
+                payload = {'schema_version': 'p03.private-world-candidate.v1',
+                           'candidate': answers['candidate'],
+                           'confidence': {'low': 0.3, 'medium': 0.7, 'high': 0.9}[answers['confidence']],
+                           'summary': '待人工审核：' + labels[answers['candidate']], 'evidence_spans': []}
+            else:
+                response = await asyncio.wait_for(
+                    self.gateway.complete(
+                        messages,
+                        request_id=(
+                            "private-world-candidate:"
+                            f"{request.source_letter_id}:{request.source_reply_revision}"
+                        ),
                     ),
-                ),
-                timeout=self.timeout_seconds,
-            )
-            payload = json.loads(
-                response.text.strip(),
-                parse_constant=_reject_json_constant,
-            )
+                    timeout=self.timeout_seconds,
+                )
+                payload = json.loads(response.text.strip(), parse_constant=_reject_json_constant)
             if list(self.validator.iter_errors(payload)):
                 raise ValueError("candidate response does not match schema")
             candidate = payload["candidate"]
@@ -259,7 +279,14 @@ def create_private_world_candidate_runtime(
             "PRIVATE_WORLD_CANDIDATES_DISABLED",
             False,
         )
-    if not gateway_ready:
+    from runtime.reply.jev_questions import JevQuestionsPort
+    endpoint = environ.get('OLIVIA_JEV_DECISION_URL', '').strip()
+    try:
+        questions_port = JevQuestionsPort(endpoint, token=environ.get('COMPANION_CLASSIFIER_TOKEN', '')) if endpoint else None
+    except ValueError:
+        return PrivateWorldCandidateRuntime(null, None, 'unavailable', 'none',
+                                            'PRIVATE_WORLD_CANDIDATE_GATEWAY_UNAVAILABLE', True)
+    if not gateway_ready and questions_port is None:
         return PrivateWorldCandidateRuntime(
             null,
             None,
@@ -281,6 +308,7 @@ def create_private_world_candidate_runtime(
         analyzer = GatewayPrivateWorldCandidateAnalyzer(
             gateway,
             timeout_seconds=10.0,
+            questions_port=questions_port,
         )
     except PrivateWorldCandidateAnalysisError:
         return PrivateWorldCandidateRuntime(
@@ -306,7 +334,7 @@ def create_private_world_candidate_runtime(
         analyzer,
         store,
         "available",
-        "llm_gateway",
+        "jev" if questions_port is not None else "llm_gateway",
         None,
         True,
     )

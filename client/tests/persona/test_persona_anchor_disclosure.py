@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 RELEASE_PERSONA = ROOT / "linli_character" / "persona_release_v2.json"
 NOW = TrustedTime(datetime(2026, 9, 4, tzinfo=timezone.utc))
 BACKGROUND_IDS = tuple(d.declaration_id for d in load_persona(RELEASE_PERSONA).snapshot.declarations
-                       if d.declaration_id.startswith("anchor."))
+                       if d.declaration_id.startswith("anchor.") and d.inclusion != "phase")
 
 
 def _assemble(user_input: str):
@@ -51,10 +51,13 @@ def _anchor_ids(user_input: str) -> tuple[str, ...]:
         "你知道自己最近在练琴吗？",
     ),
 )
-def test_current_piece_anchor_accepts_direct_questions(user_input: str) -> None:
+def test_direct_practice_questions_do_not_restore_phase_as_permanent_persona(user_input: str) -> None:
     assembled = _assemble(user_input)
 
-    assert '"declaration_id":"anchor.current_piece"' in assembled.system_content
+    assert '"declaration_id":"anchor.current_piece"' not in assembled.system_content
+    assert '"declaration_id":"public.background.music_memory_research"' not in assembled.system_content
+    assert "主科老师最近在抠这首的音色" not in assembled.system_content
+    assert assembled.to_messages()[-1] == {"role": "user", "content": user_input}
 
 
 def test_cat_anchor_accepts_a_natural_direct_question() -> None:

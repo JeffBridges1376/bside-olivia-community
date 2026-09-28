@@ -9,7 +9,7 @@ from pathlib import Path
 import tempfile
 import time
 
-from runtime.personal_chat.initiative_profile import profile_from_rows
+from runtime.personal_chat.initiative_profile import InitiativeProfile, profile_from_rows
 
 DEFAULTS = {'enabled': False, 'allow_voice': True, 'login_check_enabled': False}
 DAY = 86400
@@ -46,19 +46,60 @@ def _stamp(value) -> float:
     return float(value) if type(value) in (int, float) and value >= 0 else 0.0
 
 
-def make_context(rows: list[dict], *, now: float, world: dict | None = None) -> dict:
+def _is_im(row: dict) -> bool:
+    return row.get('channel') in {'qq', 'wechat'} or row.get('reply_mode') == 'future_im'
+
+
+def _life_opportunities(world: dict, profile: InitiativeProfile, latest: dict | None, now: float) -> list[dict]:
+    """Current choices only; never manufacture an observation or missed windows."""
+    if (profile.rank < 2 or (world.get('rhythm') or {}).get('availability') != 'open'
+            or ((world.get('world') or {}).get('schedule') or {}).get('current_class')):
+        return []
+    current = world.get('current') if world.get('stale') is False else None
+    if isinstance(current, dict):
+        try:
+            observed = datetime.fromisoformat(current['occurred_at'])
+            if observed.utcoffset() is None or observed.timestamp() > now or not current.get('source_id'):
+                current = None
+        except (KeyError, TypeError, ValueError):
+            current = None
+    else:
+        current = None
+    window = profile.letter_followup_delay
+    start = int(now // window) * window
+    result = []
+    if current is not None:
+        # Window deadlines can advance, but identity depends only on this source:
+        # a successful share cannot recycle the same observed activity next slot.
+        result.append({'source_id': current['source_id'], 'kind': 'life_share',
+                       'not_before': max(start, observed.timestamp()), 'expires_at': start + window})
+    if profile.rank >= 3:
+        item = {'source_id': current['source_id'] if current is not None else f'initiative:affection:{start}',
+                'kind': 'affection_checkin', 'window_start': start,
+                'not_before': start, 'expires_at': start + window}
+        if latest is not None:
+            item['previous_source_id'] = f"reply:{latest['letter_id']}:{latest.get('reply_revision', 1)}"
+        result.append(item)
+    return result
+
+
+def make_context(rows: list[dict], *, now: float, world: dict | None = None,
+                 profile: InitiativeProfile | None = None) -> dict:
     """App-owned opportunity projection; workers never write the mailbox."""
-    profile = profile_from_rows(rows)
+    profile = profile if profile is not None else profile_from_rows(rows)
     delivered = [row for row in rows if row.get('origin') == 'proactive'
-                 and row.get('letter_status') == 'COMPLETED']
+                 and not _is_im(row) and row.get('letter_status') == 'COMPLETED']
     remaining = max(0, profile.letter_daily_limit - sum(
         _stamp(row.get('published_at', row.get('created_at'))) > now - DAY for row in delivered))
-    blocked = any(row.get('letter_status') in {'PENDING', 'PROCESSING'} for row in rows)
+    blocked = any(row.get('letter_status') in {'PENDING', 'PROCESSING'} or (
+        _is_im(row) and row.get('delivery_status') in {'RECEIVED', 'GENERATING', 'GENERATED', 'SENDING', 'DELIVERY_UNCONFIRMED'})
+        for row in rows)
     unread = any(not row.get('is_read', 0) for row in delivered)
     latest = max((row for row in rows if row.get('origin') != 'proactive' and row.get('content')
-                  and row.get('letter_status') == 'COMPLETED'),
+                  and _stamp(row.get('created_at')) <= now
+                  and (row.get('delivery_status') == 'DELIVERED' if _is_im(row) else row.get('letter_status') == 'COMPLETED')),
                  key=lambda row: _stamp(row.get('created_at')), default=None)
-    candidates = []
+    candidates = _life_opportunities(world or {}, profile, latest, now)
     if latest:
         source = f"reply:{latest['letter_id']}:{latest.get('reply_revision', 1)}"
         candidates.append({'source_id': source, 'kind': 'correspondence_followup',
@@ -72,8 +113,8 @@ def make_context(rows: list[dict], *, now: float, world: dict | None = None) -> 
             candidates.append({'source_id': source, 'kind': 'relationship_checkin',
                                'not_before': quiet_at,
                                'expires_at': quiet_at + 7 * DAY})
-    # Only user-backed shared matters are triggers. Self-generated life updates
-    # are context for expression, not an engine that sends itself another letter.
+    # Shared matters retain their own evidence and identity alongside present
+    # life/affection opportunities; no generated message invents new life facts.
     for item in (world or {}).get('shared', []):
         if item.get('actor') == 'user' and item.get('status') in {'planned', 'ongoing', 'awaiting_user'}:
             try:
@@ -85,10 +126,15 @@ def make_context(rows: list[dict], *, now: float, world: dict | None = None) -> 
                                'not_before': changed_at + profile.letter_followup_delay,
                                'expires_at': changed_at + 7 * DAY,
                                'version': item.get('updated_at')})
-    used = {row.get('proactive_candidate_id') for row in delivered}
+    used = {row.get('proactive_candidate_id') for row in rows if row.get('origin') == 'proactive'
+            and (row.get('delivery_status') == 'DELIVERED' if _is_im(row) else row.get('letter_status') == 'COMPLETED')}
     for item in candidates:
         identity = {key: value for key, value in item.items()
                     if key not in {'not_before', 'expires_at', 'relationship_tier', 'relationship_caution'}}
+        if item['kind'] == 'affection_checkin':
+            # A refreshed life observation or new dialogue anchor is context,
+            # not permission to repeat the same current-window contact.
+            identity = {'kind': item['kind'], 'window_start': item['window_start']}
         item['id'] = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:32]
         item['relationship_tier'] = profile.tier
         item['relationship_caution'] = profile.caution

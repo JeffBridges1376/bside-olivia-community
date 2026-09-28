@@ -1,11 +1,13 @@
 """Delivery modes must not change the character's knowledge or repair behavior."""
 import json
 import re
+from datetime import datetime, timezone
 
 import pytest
 
 from llm_gateway import GatewayConfig
 from local_server import LetterAdapter
+from runtime.persona.persona_loader import load_persona
 from runtime.reply.reply_context import ReplyMode
 from runtime.media.song_content import _planning_messages
 from runtime.personal_chat.presentation import CURRENT
@@ -35,6 +37,8 @@ def test_social_presentation_and_song_keep_same_participation(channel, proactive
     token = CURRENT.set({'channel': channel, 'proactive': proactive, 'structured': True})
     try:
         assert participation(adapter.reply_context_messages(query, mode=ReplyMode.FUTURE_IM)) == expected
-        assert participation(_planning_messages(query, 110, adapter.config, reply_adapter=adapter)) == expected
+        assert participation(_planning_messages(query, 110, adapter.config, reply_adapter=adapter,
+            persona_snapshot=load_persona(adapter.persona_v2_path).snapshot,
+            as_of=datetime(2026, 9, 27, tzinfo=timezone.utc))) == expected
     finally:
         CURRENT.reset(token)

@@ -130,7 +130,9 @@ def test_song_lyrics_use_same_world_and_original_context(tmp_path):
     adapter = LetterAdapter(GatewayConfig(provider='mock'), memory_port=NullMemoryPort())
     adapter.memory_prompt_builder = CompanionMemoryPromptBuilder(NullMemoryPort(), memory)
     adapter.daily_life_fragments = lambda content: (UntrustedFragment('world.fixture', 'WORLD_STATE_FIXTURE'),)
-    messages = _planning_messages('。'.join(topics), 110, adapter.config, reply_adapter=adapter)
+    from persona_loader import load_persona
+    messages = _planning_messages('。'.join(topics), 110, adapter.config, reply_adapter=adapter,
+        as_of=datetime.now(timezone.utc), persona_snapshot=load_persona(adapter.persona_v2_path).snapshot)
     assert 'WORLD_STATE_FIXTURE' in messages[0]['content']
     for i in range(len(topics)):
         assert f'更正标记{i}' in messages[0]['content']

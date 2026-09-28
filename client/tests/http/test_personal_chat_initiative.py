@@ -23,6 +23,18 @@ def test_unconfirmed_followup_is_not_scheduled_again():
     assert not policy.ready()
 
 
+def test_received_input_and_merged_pending_turn_block_initiative():
+    now = datetime(2026, 9, 19, 12, tzinfo=LOCAL).timestamp()
+    rows = [dict(letter_id='current', delivery_status='RECEIVED', created_at=now)]
+    policy = Initiative(rows, clock=lambda: now, interval=lambda: 0)
+    policy.received(PersonalMessage('qq', 'bot', 'owner', 'current', 'hello'), None)
+    assert not policy.ready()
+    rows[0]['delivery_status'] = 'GENERATING'
+    rows.append(dict(letter_id='merged', delivery_status='SKIPPED', created_at=now,
+                     superseded_by='current'))
+    assert not policy.ready()
+
+
 def test_relationship_profile_uses_existing_state_not_a_new_score():
     reserved = profile_from_snapshot(SimpleNamespace(
         familiarity=10, trust=10, comfort=10, closeness=0, tension=0,
@@ -67,9 +79,9 @@ def test_cadence_rearms_once_when_committed_relationship_changes(monkeypatch):
                      initiative_tier='committed', initiative_caution='normal'))
     now[0] += 3600
     assert not policy.ready()
-    assert policy.due == now[0] + 15 * 60  # re-armed from the committed profile, not the old 6h cadence
+    assert policy.due == now[0] + 5 * 60  # re-armed from the committed profile, not the old 6h cadence
     due = policy.due
-    now[0] += 16 * 60
+    now[0] += 6 * 60
     assert policy.ready()
     assert policy.due == due  # stable profile does not keep moving the deadline on every poll
 
@@ -91,7 +103,7 @@ def test_cadence_shared_unanswered_budget_and_no_startup_backlog():
     rows.append(dict(delivery_status='DELIVERED', content='回来啦', origin='user', created_at=now[0],
                      initiative_tier='close', initiative_caution='normal'))
     assert policy.ready()  # A user reply ends the unanswered streak; close profile has room to initiate again.
-    rows.extend(dict(origin='proactive', delivery_status='SKIPPED', created_at=now[0]) for _ in range(10))
+    rows.extend(dict(origin='proactive', delivery_status='SKIPPED', created_at=now[0]) for _ in range(22))
     assert not policy.ready()  # Skipped model calls also consume the bounded relationship-specific budget.
 
 

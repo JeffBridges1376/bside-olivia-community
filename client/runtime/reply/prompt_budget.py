@@ -23,6 +23,7 @@ class PromptSection(str, Enum):
     CONSTITUTION = "constitution"
     FORBIDDEN = "forbidden"
     PERSONA_PROFILE = "persona_profile"
+    CORE_PERSONA = "core_persona"
     MODE_CONSTRAINTS = "mode_constraints"
     MODE_STYLE = "mode_style"
     STYLE_EXAMPLE = "style_example"
@@ -43,6 +44,7 @@ _REQUIRED = frozenset(
         PromptSection.CONSTITUTION,
         PromptSection.FORBIDDEN,
         PromptSection.PERSONA_PROFILE,
+        PromptSection.CORE_PERSONA,
         PromptSection.MODE_CONSTRAINTS,
         PromptSection.MODE_STYLE,
         PromptSection.USER_INPUT,

@@ -1823,6 +1823,7 @@ def render_musical_reply(
     voice_performance_plan: TextOnlyVoicePlan | VoicePerformancePlan | None = None,
     gateway: Gateway | None = None,
     reply_adapter=None,
+    expression_context=None,
     environment: Mapping[str, str] | None = None,
     include_spoken: bool = True,
     render_video: bool = True,
@@ -1873,9 +1874,12 @@ def render_musical_reply(
         planner_options = {"gateway": gateway} if gateway is not None else {}
         if reply_adapter is not None:
             planner_options['reply_adapter'] = reply_adapter
+        if expression_context is not None:
+            planner_options['expression_context'] = expression_context
         song_plan = cached_song_plan(
             stage_root / "song-plan.private.json", content, reply_text, duration_seconds,
             lambda: plan_song_content(content, reply_text, duration_seconds, **planner_options),
+            **({'expression_context':expression_context} if expression_context is not None else {}),
         )
     except Exception as exc:
         raise MusicReplyError("SONG_CONTENT_UNAVAILABLE") from exc

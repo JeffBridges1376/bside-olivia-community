@@ -54,6 +54,8 @@ class ReplyRequest:
     idempotency_key: str | None = None
     max_input_chars: int = 100000
     gateway_scope: GatewayRequestScope | None = None
+    # Local receipt identity only; never serialized into provider messages.
+    received_user_text: str | None = None
 
     def normalized_messages(self) -> tuple[dict[str, str], ...]:
         if self.messages is not None:

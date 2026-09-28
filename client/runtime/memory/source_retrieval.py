@@ -2,14 +2,33 @@
 from __future__ import annotations
 
 from contextlib import closing
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 import hashlib
+import json
 import re
 import sqlite3
 from pathlib import Path
 
 from .conversation_memory_port import ConversationMemoryRecord
+
+
+@dataclass(frozen=True)
+class SourceDependencies:
+    records: tuple[ConversationMemoryRecord, ...] = ()
+    relations: tuple[dict, ...] = ()
+    blocked_source_ids: tuple[str, ...] = ()
+
+
+def _aware_time(value):
+    stamp = datetime.fromisoformat(value) if isinstance(value, str) else value
+    if not isinstance(stamp, datetime) or stamp.utcoffset() is None:
+        raise ValueError('DEPENDENCY_TIME_UNKNOWN')
+    return stamp
+
+
+def _digest(text):
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
 
 
 def terms(text):
@@ -32,7 +51,209 @@ class SourceRetrieval:
         db.execute("CREATE TABLE IF NOT EXISTS forgotten (user TEXT, source TEXT, PRIMARY KEY(user,source))")
         db.execute("CREATE TABLE IF NOT EXISTS archive_targets (user TEXT, source TEXT, PRIMARY KEY(user,source))")
         db.execute("CREATE TABLE IF NOT EXISTS archive_scan (user TEXT PRIMARY KEY, stamp TEXT)")
+        db.execute('CREATE TABLE IF NOT EXISTS source_dependencies '
+                   '(user TEXT, dependency_id TEXT, payload TEXT NOT NULL, retracted INTEGER NOT NULL DEFAULT 0, '
+                   'PRIMARY KEY(user,dependency_id))')
+        db.execute('CREATE TABLE IF NOT EXISTS source_aliases '
+                   '(user TEXT, exchange_source TEXT, receipt_source TEXT, PRIMARY KEY(user,exchange_source,receipt_source))')
         return db
+
+    @staticmethod
+    def _aliases(db, user, sources):
+        found = set(sources)
+        pairs = db.execute('SELECT exchange_source,receipt_source FROM source_aliases WHERE user=?', (user,)).fetchall()
+        while True:
+            expanded = found | {node for a, b in pairs if a in found or b in found for node in (a, b)}
+            if expanded == found:
+                return found
+            found = expanded
+
+    @classmethod
+    def _forget_sources(cls, db, user, sources):
+        for source in cls._aliases(db, user, sources):
+            db.execute('INSERT OR IGNORE INTO forgotten VALUES (?,?)', (user, source))
+            db.execute('DELETE FROM originals WHERE user=? AND source=?', (user, source))
+            db.execute('DELETE FROM chunks WHERE user=? AND source=?', (user, source))
+
+    @classmethod
+    def _lineage(cls, db, user, source):
+        aliases = cls._aliases(db, user, [source]) - {source}
+        return {**({'source_aliases': json.dumps(sorted(aliases))} if aliases else {}),
+                **({'evidence_kind': 'received_user_statement'} if source.startswith('received-user:') else {})}
+
+    @classmethod
+    def _alias_received(cls, db, user, exchange_source, receipt_sources):
+        for receipt in receipt_sources:
+            db.execute('INSERT OR IGNORE INTO source_aliases VALUES (?,?,?)', (user, exchange_source, receipt))
+        family = cls._aliases(db, user, [exchange_source])
+        if any(db.execute('SELECT 1 FROM forgotten WHERE user=? AND source=?', (user, s)).fetchone() for s in family):
+            cls._forget_sources(db, user, family)
+
+    def alias_received(self, user, exchange_source, receipt_sources):
+        receipts = tuple(dict.fromkeys(receipt_sources))
+        if (not isinstance(exchange_source, str) or not exchange_source.startswith('reply:') or not receipts
+                or any(not isinstance(s, str) or not s.startswith('received-user:') for s in receipts)):
+            return False
+        with closing(self.connect()) as db, db:
+            db.execute('BEGIN IMMEDIATE')
+            if any(not db.execute('SELECT 1 FROM originals WHERE user=? AND source=? AND actor=?', (user, s, 'user')).fetchone()
+                   and not db.execute('SELECT 1 FROM forgotten WHERE user=? AND source=?', (user, s)).fetchone() for s in receipts):
+                return False
+            self._alias_received(db, user, exchange_source, receipts)
+            return True
+
+    def put_received(self, user, source, text, stamp, *, exchange_source=None):
+        """Index durable received user speech without implying assistant delivery."""
+        if (not isinstance(source, str) or not source.startswith('received-user:')
+                or not isinstance(text, str) or not text.strip()
+                or exchange_source is not None and (not isinstance(exchange_source, str) or not exchange_source.startswith('reply:'))):
+            return False
+        try:
+            stamp = _aware_time(stamp).isoformat()
+        except (TypeError, ValueError):
+            return False
+        with closing(self.connect()) as db, db:
+            db.execute('BEGIN IMMEDIATE')
+            old = db.execute('SELECT text FROM originals WHERE user=? AND source=? AND actor=?', (user, source, 'user')).fetchone()
+            if old and old[0] != text:
+                return False
+            if exchange_source is not None:
+                self._alias_received(db, user, exchange_source, [source])
+            if db.execute('SELECT 1 FROM forgotten WHERE user=? AND source=?', (user, source)).fetchone():
+                return False
+            if old:
+                return True
+            db.execute('INSERT INTO originals VALUES (?,?,?,?,?)', (user, source, 'user', stamp, text))
+            for start in range(0, len(text), 280):
+                chunk = text[start:start + 360]
+                db.execute('INSERT INTO chunks VALUES (?,?,?,?,?,?,?)', (user, source, 'user', stamp, start, chunk, ' '.join(terms(chunk))))
+            return True
+
+    @staticmethod
+    def _dependency_original(db, user, source, actor):
+        if db.execute('SELECT 1 FROM forgotten WHERE user=? AND source=?', (user, source)).fetchone():
+            return None
+        return db.execute('SELECT text,stamp FROM originals WHERE user=? AND source=? AND actor=?',
+                          (user, source, actor)).fetchone()
+
+    def save_dependency(self, user, earlier_source, later_source, earlier_actor, later_actor,
+                        earlier_quote, later_quote, kind):
+        """Store a proposed recall dependency, never a verified fact or permission."""
+        if (kind not in {'correction', 'state_change', 'challenge'} or earlier_source == later_source
+                or any(actor not in {'user', 'linli'} for actor in (earlier_actor, later_actor))
+                or any(not isinstance(q, str) or not q.strip() or not 2 <= len(q) <= 500
+                       for q in (earlier_quote, later_quote))):
+            return False
+        with closing(self.connect()) as db, db:
+            db.execute('BEGIN IMMEDIATE')
+            payload = {'kind': kind}
+            times = []
+            for prefix, source, actor, quote in (('earlier', earlier_source, earlier_actor, earlier_quote),
+                                                ('later', later_source, later_actor, later_quote)):
+                original = self._dependency_original(db, user, source, actor)
+                if original is None or quote not in original[0]:
+                    return False
+                try:
+                    times.append(_aware_time(original[1]))
+                except (ValueError, TypeError):
+                    return False
+                start = original[0].index(quote)
+                payload.update({prefix + '_source': source, prefix + '_actor': actor,
+                                prefix + '_start': start, prefix + '_end': start + len(quote),
+                                prefix + '_hash': _digest(original[0]), prefix + '_stamp': original[1]})
+            if times[1] < times[0]:
+                return False
+            encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+            identity = _digest(json.dumps([earlier_source, later_source, earlier_actor, later_actor,
+                                          earlier_quote, later_quote, kind], ensure_ascii=False))
+            existing = db.execute('SELECT retracted,payload FROM source_dependencies WHERE user=? AND dependency_id=?',
+                                  (user, identity)).fetchone()
+            if existing:
+                return not existing[0] and existing[1] == encoded
+            db.execute('INSERT INTO source_dependencies(user,dependency_id,payload) VALUES (?,?,?)',
+                       (user, identity, encoded))
+            return True
+
+    def retract_dependency(self, user, dependency_id):
+        with closing(self.connect()) as db, db:
+            return bool(db.execute('UPDATE source_dependencies SET retracted=1 WHERE user=? AND dependency_id=? AND retracted=0',
+                                   (user, dependency_id)).rowcount)
+
+    def dependencies(self, user, source_ids, exclude_source_ids=(), before=None):
+        """Read complete directed dependency groups, or block an incomplete seed.
+
+        Errors propagate: a caller must not treat an unavailable lookup as no edges.
+        Bounds count whole sources/edges per seed, including same-time cycles.
+        """
+        cutoff = _aware_time(before) if before is not None else None
+        excluded = set(exclude_source_ids)
+        records, relations, blocked = {}, {}, []
+        with closing(self.connect()) as db:
+            db.execute('BEGIN')
+            edges = {}
+            for identity, raw in db.execute('SELECT dependency_id,payload FROM source_dependencies WHERE user=? AND retracted=0', (user,)):
+                value = json.loads(raw)
+                edges.setdefault(value['earlier_source'], []).append((identity, value))
+            for seed in dict.fromkeys(source_ids):
+                pending, seen, group, links = [seed], set(), {}, {}
+                invalid = False
+                while pending and not invalid:
+                    source = pending.pop()
+                    if source in seen:
+                        continue
+                    seen.add(source)
+                    unrelated_seed = source == seed and source not in edges and not links
+                    original = self._source_records(db, user, source, {'retrieval_route': 'dependency'},
+                                                    unknown_time=unrelated_seed) if source not in excluded else ()
+                    if (source == seed and not original and source not in edges and source not in excluded
+                            and not db.execute('SELECT 1 FROM forgotten WHERE user=? AND source=?', (user, source)).fetchone()):
+                        continue  # An unindexed archive source has no dependency obligation yet.
+                    if (len(seen) > 32 or not original
+                            or cutoff is not None and any(
+                                (r.occurred_at is None and not unrelated_seed)
+                                or r.occurred_at is not None and _aware_time(r.occurred_at) > cutoff
+                                for r in original)):
+                        invalid = True
+                        break
+                    group.update((r.memory_id, r) for r in original)
+                    # Existing aliases expose receipt dependencies even when the
+                    # search hit is its delivered exchange. A future/unwritten
+                    # exchange alias is not evidence and creates no obligation.
+                    for alias in self._aliases(db, user, [source]) - seen:
+                        stamps = db.execute('SELECT stamp FROM originals WHERE user=? AND source=?', (user, alias)).fetchall()
+                        if not stamps:
+                            continue
+                        if cutoff is not None:
+                            try:
+                                if any(_aware_time(stamp) > cutoff for (stamp,) in stamps):
+                                    continue
+                            except (ValueError, TypeError):
+                                if alias in edges:
+                                    invalid = True
+                                    break
+                                continue
+                        pending.append(alias)
+                    for identity, edge in edges.get(source, ()):
+                        for prefix in ('earlier', 'later'):
+                            current = self._dependency_original(db, user, edge[prefix + '_source'], edge[prefix + '_actor'])
+                            if (current is None or current[1] != edge[prefix + '_stamp']
+                                    or _digest(current[0]) != edge[prefix + '_hash']):
+                                invalid = True
+                                break
+                        if invalid:
+                            break
+                        links[identity] = {'dependency_id': identity, **{k: v for k, v in edge.items()
+                                                                      if not k.endswith(('_hash', '_stamp'))}}
+                        if len(links) > 64:
+                            invalid = True
+                            break
+                        pending.append(edge['later_source'])
+                if invalid:
+                    blocked.append(seed)
+                else:
+                    records.update(group)
+                    relations.update(links)
+        return SourceDependencies(tuple(records.values()), tuple(relations.values()), tuple(blocked))
 
     def register_archive(self, user, sources):
         from datetime import timezone
@@ -78,10 +299,7 @@ class SourceRetrieval:
     def forget(self, user, source=None):
         with closing(self.connect()) as db, db:
             sources = [source] if source is not None else [r[0] for r in db.execute("SELECT DISTINCT source FROM originals WHERE user=?", (user,))]
-            for item in sources:
-                db.execute("INSERT OR IGNORE INTO forgotten VALUES (?,?)", (user, item))
-                db.execute("DELETE FROM originals WHERE user=? AND source=?", (user, item))
-                db.execute("DELETE FROM chunks WHERE user=? AND source=?", (user, item))
+            self._forget_sources(db, user, sources)
 
     def search(self, query, user, semantic=(), limit=5, exclude_source_ids=(), expanded=False):
         if expanded:
@@ -161,6 +379,7 @@ class SourceRetrieval:
                 selected.append(ConversationMemoryRecord(memory_id="original:" + digest, text=text, user_id=user,
                     source_id=source, score=min(1, scores[key]), occurred_at=datetime.fromisoformat(stamp) if stamp else None,
                     metadata={"verbatim": True, "speaker": actor, "start": start, "canonical": True,
+                              **self._lineage(db, user, source),
                               **({"history_actor": actor} if source.startswith("history:") else {}),
                               **({"origin": "proactive"} if source in proactive else {})}))
                 if len(selected) >= min(5, limit):
@@ -237,12 +456,16 @@ class SourceRetrieval:
             return tuple(result)
 
     @staticmethod
-    def _source_records(db, user, source, metadata):
+    def _source_records(db, user, source, metadata, *, unknown_time=False):
         if db.execute('SELECT 1 FROM forgotten WHERE user=? AND source=?', (user, source)).fetchone():
             return ()
         rows = db.execute('SELECT actor,stamp,text FROM originals WHERE user=? AND source=? ORDER BY actor DESC', (user, source)).fetchall()
+        metadata = {**metadata, **SourceRetrieval._lineage(db, user, source)}
         result = []
         for actor, stamp, text in rows:
+            occurred_at = datetime.fromisoformat(stamp) if stamp else None
+            if unknown_time and occurred_at is not None and occurred_at.utcoffset() is None:
+                occurred_at = None
             parts = []
             for offset in range(0, len(text), 2000):
                 raw = text[offset:offset + 2000]
@@ -254,7 +477,7 @@ class SourceRetrieval:
                 result.append(ConversationMemoryRecord(
                     memory_id='original:' + hashlib.sha256(f'{user}:{source}:{actor}:{start}:full'.encode()).hexdigest(),
                     text=part, user_id=user, source_id=source,
-                    occurred_at=datetime.fromisoformat(stamp) if stamp else None,
+                    occurred_at=occurred_at,
                     metadata={'verbatim': True, 'speaker': actor, 'canonical': True, 'complete_original': True,
                               'start': start, 'end': start + len(part), 'part_count': len(parts),
                               **metadata,
@@ -268,6 +491,18 @@ class SourceRetrieval:
             db.execute('BEGIN')
             return tuple(record for source in dict.fromkeys(source_ids) if source not in excluded
                          for record in self._source_records(db, user, source, {'retrieval_route': 'source'}))
+
+    def get_received_sources(self, user, source_ids, *, before=None):
+        """Resolve trusted exchange IDs to received user originals, never replies."""
+        cutoff = _aware_time(before) if before is not None else None
+        with closing(self.connect()) as db:
+            db.execute('BEGIN')
+            sources = self._aliases(db, user, source_ids)
+            return tuple(record for source in sorted(sources) if source.startswith('received-user:')
+                         for record in self._source_records(db, user, source, {'retrieval_route': 'receipt'})
+                         if record.metadata.get('speaker') == 'user'
+                         and record.occurred_at is not None
+                         and (cutoff is None or _aware_time(record.occurred_at) <= cutoff))
 
     def forgotten_sources(self, user):
         with closing(self.connect()) as db:

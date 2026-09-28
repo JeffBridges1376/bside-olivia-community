@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 import re
@@ -234,6 +234,44 @@ class ReducerEvent:
             )
 
 
+def reducer_event_record(event: ReducerEvent) -> dict:
+    """Freeze all reducer inputs; narrative extraction never runs during replay."""
+    def encode(value):
+        if isinstance(value, Enum):
+            return value.value
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, dict):
+            return {key: encode(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [encode(item) for item in value]
+        return value
+    return encode(asdict(event))
+
+
+def reducer_event_from_record(record: dict) -> ReducerEvent:
+    value = dict(record)
+    value['kind'] = ReducerEventKind(value['kind'])
+    for key in ('occurred_at', 'last_equivalent_at'):
+        if value.get(key) is not None:
+            value[key] = datetime.fromisoformat(value[key])
+    if value.get('boundary') is not None:
+        value['boundary'] = ActiveBoundary(**value['boundary'])
+    if value.get('intimacy_grant') is not None:
+        item = value['intimacy_grant']
+        value['intimacy_grant'] = IntimacyGrant(**{**item, 'tier': IntimacyTier(item['tier'])})
+    if value.get('acknowledged_affection') is not None:
+        item = value['acknowledged_affection']
+        value['acknowledged_affection'] = AcknowledgedAffection(
+            **{**item, 'intensity': AffectionIntensity(item['intensity']), 'scope': AffectionScope(item['scope'])})
+    if value.get('asserted_affection_scope') is not None:
+        value['asserted_affection_scope'] = AffectionScope(value['asserted_affection_scope'])
+    result = ReducerEvent(**value)
+    if reducer_event_record(result) != record:
+        raise ReducerInputError('stored reducer input is not canonical')
+    return result
+
+
 @dataclass(frozen=True)
 class FieldDelta:
     field: str
@@ -364,6 +402,7 @@ def reduce_private_world(
         updates = {
             "trust": _bounded(snapshot.trust, 1),
             "comfort": _bounded(snapshot.comfort, 1),
+            "tension": _bounded(snapshot.tension, -1),
         }
         growth_start, growth_used = _growth_window(
             snapshot,

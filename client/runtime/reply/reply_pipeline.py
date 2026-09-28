@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import hashlib
 import json
 import os
+import re
+from datetime import datetime
 from typing import Any, Mapping, Protocol
 
 from persona_assembly import UntrustedFragment, assemble_persona
 from persona_loader import load_persona
+from runtime.persona.persona_mode import persona_mode_for_reply_mode
 from reply_model_quality import create_model_quality_ports, resolve_model_quality_config
 from runtime.reply.reply_context import ReplyContext, ReplyMode
 from runtime.reply.current_turn_interpretation import (
@@ -21,6 +24,7 @@ from runtime.reply.reply_quality_gate import (
     DeliveryRepairDisposition,
     ReviewerPort,
     RewriterPort,
+    run_reply_quality_gate,
 )
 from runtime.reply.reply_reviewer import (
     NullReviewer,
@@ -32,6 +36,7 @@ from runtime.letter_stickers.selection import (
     allowed_stickers, selection_instruction, split_selection, weighted_candidates,
 )
 from runtime.reply.letter_presentation import LETTER_PRESENTATION_INSTRUCTION, split_signature
+from runtime.reply.prompt_budget import PromptBudgetExceeded
 
 
 _CHARACTER_REPLY_HISTORY_LIMIT = 1200
@@ -45,6 +50,10 @@ class _PersonaNotReadyError(RuntimeError):
 
 class _RecallBudgetExceeded(RuntimeError):
     code = 'RECALL_CONTEXT_BUDGET_EXCEEDED'
+
+
+class _WorldSelectionBudgetExceeded(_RecallBudgetExceeded):
+    code = 'JEV_WORLD_SELECTION_BUDGET'
 
 
 class OrchestratorPort(Protocol):
@@ -98,15 +107,23 @@ class PipelineResult:
     rewrite_calls: int = 0
     sticker_id: str | None = None
     signature: str | None = None
+    semantic_shadow_task: asyncio.Task | None = field(default=None, repr=False, compare=False)
     delivery_repair_disposition: DeliveryRepairDisposition = (
         DeliveryRepairDisposition.NONE
     )
+    expression_context: dict | None = None
+    companion_decision: dict | None = field(default=None, repr=False)
+    companion_timing: str | None = None
+    companion_delivery: str | None = None
+    proactive_decision: dict | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
 class _PreparedGeneration:
     request: object
     trusted_evidence: TrustedReviewEvidence = TrustedReviewEvidence()
+    adopted_world: dict | None = None
+    persona_snapshot: object | None = None
 
 
 @dataclass(frozen=True)
@@ -124,10 +141,15 @@ class ReplyPipeline:
         rewriter: RewriterPort,
         discover_runtime_ports: bool = True,
         current_turn_interpreter: CurrentTurnInterpreterPort | None = None,
+        companion_decision_port: object | None = None,
     ) -> None:
         self.orchestrator = orchestrator
+        self.companion_decision_port = companion_decision_port
+        self.discover_runtime_ports = discover_runtime_ports
         self.current_turn_interpreter = current_turn_interpreter or (
-            _runtime_current_turn_interpreter(orchestrator) if discover_runtime_ports else None
+            _runtime_current_turn_interpreter(orchestrator)
+            if discover_runtime_ports and companion_decision_port is None
+            and not os.environ.get('OLIVIA_JEV_DECISION_URL', '').strip() else None
         )
         runtime_reviewer, runtime_rewriter = (
             create_model_quality_ports(orchestrator)
@@ -157,8 +179,10 @@ class ReplyPipeline:
             )
         sticker_note = (LETTER_PRESENTATION_INSTRUCTION + '\n' + selection_instruction(sticker_choices)) if context.mode is ReplyMode.TEXT_LETTER else ""
         generation_note = sticker_note
+        chat_metadata = None
         if context.mode is ReplyMode.FUTURE_IM:
             from runtime.personal_chat.presentation import CURRENT, INSTRUCTION
+            chat_metadata = CURRENT.get()
             if CURRENT.get() is not None:
                 if CURRENT.get().get('structured'):
                     from runtime.personal_chat.decision import INSTRUCTION as DECISION_INSTRUCTION
@@ -166,14 +190,32 @@ class ReplyPipeline:
                 else:
                     generation_note = INSTRUCTION
         original_budget = request.max_input_chars if isinstance(request, ReplyRequest) else 0
+        companion_enabled = (context.mode in {ReplyMode.TEXT_LETTER, ReplyMode.FUTURE_IM}
+            and not (chat_metadata or {}).get('proactive')
+            and (self.companion_decision_port is not None or self.discover_runtime_ports
+                 and os.environ.get('OLIVIA_JEV_DECISION_URL', '').strip()))
         generation_request = request
-        if generation_note and isinstance(request, ReplyRequest) and request.messages is None and original_budget > len(generation_note) + 1000:
+        # The decision projection is measured after classification. An arbitrary
+        # worst-case reserve rejects otherwise valid persona/context inputs.
+        if isinstance(request, ReplyRequest) and request.messages is None and original_budget > len(generation_note) + 1000:
             generation_request = replace(request, max_input_chars=original_budget-len(generation_note)-2)
         try:
+            life_fragments = None
+            if isinstance(generation_request, ReplyRequest) and generation_request.messages is None:
+                adapter = getattr(getattr(self.orchestrator, 'gateway', None), 'adapter', None)
+                select_life = getattr(adapter, 'prepare_daily_life_fragments', None)
+                if callable(select_life) and getattr(adapter, 'daily_life', None) is not None:
+                    from .world_context_selection import WorldSelectionError
+                    try:
+                        life_fragments = await select_life(generation_request.content or '', now=context.trusted_time.instant)
+                    except WorldSelectionError as error:
+                        return PipelineResult(generation_request.request_id, ReplyState.FAILED,
+                                              error_code=str(error), retryable=True)
             preparation = _prepare_generation_request(
                 generation_request,
                 context,
                 self.orchestrator,
+                life_fragments=life_fragments,
             )
         except _PersonaNotReadyError:
             return PipelineResult(
@@ -187,14 +229,62 @@ class ReplyPipeline:
                 request.request_id if isinstance(request, ReplyRequest) else '',
                 ReplyState.FAILED, error_code=error.code, retryable=False,
             )
+        except PromptBudgetExceeded:
+            return PipelineResult(getattr(request, 'request_id', ''), ReplyState.FAILED,
+                error_code='JEV_CONTEXT_BUDGET_EXCEEDED' if companion_enabled else 'INPUT_TOO_LONG')
         prepared = preparation.request
-        if self.current_turn_interpreter is not None and context.mode is ReplyMode.TEXT_LETTER:
+        user_text = getattr(request, 'content', None)
+        received = getattr(request, 'received_user_text', None)
+        if received is not None:
+            user_text = received
+        if chat_metadata is not None:
+            user_text = chat_metadata.get('raw_user_text')
+        interpret_turn = context.mode in {ReplyMode.TEXT_LETTER, ReplyMode.FUTURE_IM}
+        if chat_metadata is not None and (chat_metadata.get('proactive') or user_text == ''):
+            interpret_turn = False
+        companion_port = self.companion_decision_port
+        if interpret_turn and self.discover_runtime_ports and companion_port is None:
             try:
-                if not isinstance(prepared, ReplyRequest) or not isinstance(request, ReplyRequest) or not isinstance(request.content, str):
-                    raise ValueError("current user input unavailable")
-                interpretation = await self.current_turn_interpreter.interpret(request.content)
+                from .companion_runtime import configured_port
+                companion_port = configured_port()
+            except ValueError:
+                return PipelineResult(getattr(request, 'request_id', ''), ReplyState.FAILED,
+                                      error_code='JEV_CONFIG_INVALID')
+        use_companion = interpret_turn and companion_port is not None
+        companion_decision = companion_timing = companion_delivery = None
+        proactive_decision = None
+        adapter = getattr(getattr(self.orchestrator, 'gateway', None), 'adapter', None)
+        appraise = getattr(adapter, 'prepare_character_emotion', None)
+
+        async def interpret_input():
+            if self.current_turn_interpreter is not None and interpret_turn and not use_companion:
+                if not isinstance(prepared, ReplyRequest) or not isinstance(user_text, str):
+                    raise ValueError('current user input unavailable')
+                return await self.current_turn_interpreter.interpret(user_text)
+
+        async def appraise_input():
+            if callable(appraise) and context.mode in {ReplyMode.TEXT_LETTER, ReplyMode.FUTURE_IM,
+                                                      ReplyMode.VOICE_REPLY, ReplyMode.SPOKEN_VIDEO}:
+                try:
+                    proactive = chat_metadata is not None and chat_metadata.get('proactive')
+                    return await appraise(None if proactive or user_text == '' else user_text,
+                                          now=context.trusted_time.instant)
+                except Exception:
+                    return None  # Optional subjective state cannot block received text.
+
+        # Separate contracts, concurrent work. Cancellation also cancels both
+        # children; no detached appraisal keeps running against an obsolete draft.
+        interpretation, emotion_view = await asyncio.gather(
+            interpret_input(), appraise_input(), return_exceptions=True)
+        if isinstance(interpretation, BaseException):
+            if not isinstance(interpretation, Exception):
+                raise interpretation
+            return PipelineResult(getattr(request, 'request_id', ''), ReplyState.FAILED,
+                                  error_code='CURRENT_TURN_INTERPRETATION_FAILED')
+        if self.current_turn_interpreter is not None and interpret_turn and not use_companion:
+            try:
                 messages = projection_messages(
-                    _generation_messages(prepared), request.content, interpretation,
+                    _generation_messages(prepared), user_text, interpretation,
                 )
                 if sum(len(str(message.get("content", ""))) for message in messages) > prepared.max_input_chars:
                     raise ValueError("interpretation exceeds request budget")
@@ -204,17 +294,78 @@ class ReplyPipeline:
                     request.request_id if isinstance(request, ReplyRequest) else "",
                     ReplyState.FAILED, error_code="CURRENT_TURN_INTERPRETATION_FAILED",
                 )
+        adopted = {}
         if isinstance(prepared, ReplyRequest) and prepared.messages:
             from runtime.memory.history_selection import select_history_messages as prepare_recall_messages
             adapter = getattr(getattr(self.orchestrator, 'gateway', None), 'adapter', None)
             gateway = getattr(adapter, 'gateway', None)
+            current_sources = getattr(adapter, '_memory_source_exclusions', lambda: ())()
             messages = await prepare_recall_messages(prepared.messages, gateway,
-                max_input_chars=prepared.max_input_chars, request_id=prepared.request_id)
+                max_input_chars=prepared.max_input_chars, request_id=prepared.request_id,
+                memory_builder=getattr(adapter, 'memory_prompt_builder', None),
+                as_of=context.trusted_time.instant,
+                exclude_source_ids=current_sources, current_source_ids=current_sources,
+                current_user_text=user_text, persona_snapshot=preparation.persona_snapshot,
+                persona_mode=persona_mode_for_reply_mode(context.mode),
+                persona_development=(preparation.adopted_world or {}).get('character_development'))
             prepared = replace(prepared, messages=messages)
         if isinstance(prepared, ReplyRequest) and prepared.messages:
             from .fact_attribution import prepare_dialogue_messages
             prepared = replace(prepared, messages=prepare_dialogue_messages(
                 prepared.messages, max_input_chars=prepared.max_input_chars))
+        if use_companion:
+            from .companion_runtime import prepare_decision, delivery_for, project_decision, CompanionRuntimeError, TURN_CONTEXT
+            metadata = chat_metadata if chat_metadata is not None else (TURN_CONTEXT.get() or {})
+            kinds = metadata.get('semantic_kinds', ['text'])
+            try:
+                if isinstance(prepared, ReplyRequest) and prepared.messages is None:
+                    prepared = replace(prepared, messages=prepared.normalized_messages())
+                decision = await prepare_decision(companion_port, _generation_messages(prepared), user_text,
+                    source_id=metadata.get('received_source_id') or getattr(request, 'request_id', ''),
+                    input_revision=metadata.get('input_revision', 0),
+                    as_of=context.trusted_time.instant.isoformat(), kinds=kinds,
+                    cached=metadata.get('companion_decision'))
+                companion_decision = decision.record()
+                save_decision = metadata.get('save_companion_decision')
+                if callable(save_decision):
+                    try:
+                        await save_decision(companion_decision)
+                    except Exception:
+                        raise CompanionRuntimeError('JEV_DECISION_NOT_SAVED') from None
+                companion_timing, companion_delivery = delivery_for(decision, kinds=kinds)
+                if companion_timing in {'wait_user', 'defer', 'no_reply'}:
+                    return PipelineResult(getattr(request, 'request_id', ''), ReplyState.COMPLETED,
+                        companion_decision=companion_decision, companion_timing=companion_timing)
+                prepared = replace(prepared, messages=project_decision(_generation_messages(prepared), decision,
+                    max_input_chars=original_budget-len(generation_note)-2,
+                    delivery=('letter_image' if context.mode is ReplyMode.TEXT_LETTER
+                              and companion_delivery == 'image' else companion_delivery)),
+                    max_input_chars=original_budget-len(generation_note)-2)
+            except CompanionRuntimeError as error:
+                return PipelineResult(getattr(request, 'request_id', ''), ReplyState.FAILED,
+                    error_code=str(error), companion_decision=companion_decision)
+        if isinstance(prepared, ReplyRequest) and prepared.messages:
+            from .character_emotion_context import project_emotion
+            prepared = replace(prepared, messages=project_emotion(prepared.messages, emotion_view,
+                max_input_chars=prepared.max_input_chars, adopted=adopted))
+        proactive_decide = (chat_metadata or {}).get('proactive_decide')
+        if (chat_metadata or {}).get('proactive') and callable(proactive_decide):
+            from .proactive_runtime import project_decision, record_decision
+            from .companion_runtime import CompanionRuntimeError
+            try:
+                world = (_assembled_life_projection(_generation_messages(prepared))
+                         if preparation.adopted_world is not None else None)
+                decision = await proactive_decide(_generation_messages(prepared), world, adopted.get('emotion'))
+                proactive_decision = record_decision(decision)
+                if decision.decision['action'] == 'defer':
+                    return PipelineResult(getattr(request, 'request_id', ''), ReplyState.COMPLETED,
+                                          proactive_decision=proactive_decision)
+                prepared = replace(prepared, messages=project_decision(
+                    _generation_messages(prepared), decision,
+                    max_input_chars=original_budget-len(generation_note)-2))
+            except CompanionRuntimeError as error:
+                return PipelineResult(getattr(request, 'request_id', ''), ReplyState.FAILED,
+                                      error_code=str(error), proactive_decision=proactive_decision)
         if generation_note and isinstance(prepared, ReplyRequest) and prepared.messages:
             # Finalize the delivery contract after dialogue/recall projection.
             # The current user input stays last; evidence cannot become the
@@ -227,6 +378,14 @@ class ReplyPipeline:
                 return PipelineResult(prepared.request_id, ReplyState.FAILED,
                                       error_code='INPUT_TOO_LONG', retryable=False)
             prepared = replace(prepared, messages=messages, max_input_chars=original_budget)
+        from .character_emotion_context import freeze_expression_context
+        # Local assembly establishes provenance; later recall may legitimately
+        # replace duplicated notes with source references. Freeze that final
+        # retained projection, never revive a block omitted by local assembly.
+        world = (_assembled_life_projection(_generation_messages(prepared))
+                 if preparation.adopted_world is not None else None)
+        expression_context = freeze_expression_context(getattr(request, 'request_id', ''),
+            context.trusted_time.instant, world=world, emotion=adopted.get('emotion'))
         candidate = await self.orchestrator.run(prepared)
         if candidate.state is not ReplyState.COMPLETED:
             return PipelineResult(
@@ -239,13 +398,100 @@ class ReplyPipeline:
         clean_text, signature = split_signature(clean_text) if sticker_note else (clean_text, None)
         if not clean_text.strip():
             return PipelineResult(candidate.request_id, ReplyState.FAILED, error_code="PROVIDER_PROTOCOL")
+        quality = None
+        if not isinstance(self.reviewer, NullReviewer) and context.mode in {ReplyMode.TEXT_LETTER, ReplyMode.FUTURE_IM}:
+            envelope = None
+            review_text = clean_text
+            if chat_metadata is not None and chat_metadata.get('structured'):
+                try:
+                    from runtime.personal_chat.decision import decode
+                    now = datetime.fromisoformat(chat_metadata['decision_now']).timestamp()
+                    options = dict(user=user_text, now=now, proactive=bool(chat_metadata.get('proactive')))
+                    decision = decode(clean_text, **options)
+                    fenced = re.fullmatch(r'\s*```(?:json)?\s*\n(.*?)\n```\s*', clean_text, re.DOTALL | re.IGNORECASE)
+                    envelope = json.loads(fenced.group(1) if fenced else clean_text)
+                    review_text = decision['text']
+                except (ValueError, TypeError, KeyError):
+                    return PipelineResult(candidate.request_id, ReplyState.FAILED, error_code='PERSONAL_CHAT_DECISION_INVALID')
+            # A validated proactive skip has no outgoing text to review.
+            if envelope is None or not decision['skip']:
+                # Delivery JSON / sticker instructions are not prose rewrite instructions.
+                review_messages = tuple(m for m in _generation_messages(prepared)
+                    if not (m.get('role') == 'system' and m.get('content') == generation_note))
+                if envelope is not None:
+                    review_messages = [dict(m) for m in review_messages]
+                    for message in reversed(review_messages):
+                        if message.get('role') == 'user':
+                            message['content'] = user_text
+                            break
+                    evidence = []
+                    observation = chat_metadata.get('incoming_observation_context')
+                    if observation:
+                        evidence.append('<evidence_summary>' + json.dumps({
+                            'text': observation, 'evidence_kind': 'incoming_observation',
+                            'untrusted': True}, ensure_ascii=False).replace('<', r'\u003c') + '</evidence_summary>')
+                    plan = {key: value for key, value in envelope.items() if key in decision and key != 'text'}
+                    evidence.append('<reply_delivery_plan>' + json.dumps({
+                        'text': json.dumps(plan, ensure_ascii=False),
+                        'evidence_kind': 'planned_delivery', 'untrusted': True,
+                        'meaning': 'Frozen delivery plan, not an occurred event; rewrite only the reply text.'
+                    }, ensure_ascii=False).replace('<', r'\u003c') + '</reply_delivery_plan>')
+                    # Keep current user last for both review and prose-only rewrite.
+                    position = next((i for i in range(len(review_messages)-1, -1, -1)
+                                     if review_messages[i].get('role') == 'user'), len(review_messages))
+                    review_messages.insert(position, {'role': 'system', 'content': '\n'.join(evidence)})
+                    review_messages = tuple(review_messages)
+                if not review_messages and isinstance(user_text, str):
+                    review_messages = ({'role': 'user', 'content': user_text},)
+                try:
+                    from runtime.persona.persona_selection import snapshot_for_messages
+                    from .reply_model_quality import using_persona_snapshot
+                    with using_persona_snapshot(snapshot_for_messages(preparation.persona_snapshot, review_messages)):
+                        quality = await asyncio.to_thread(run_reply_quality_gate, review_text, context,
+                            reviewer=self.reviewer, rewriter=self.rewriter,
+                            generation_messages=review_messages, trusted_evidence=preparation.trusted_evidence)
+                except Exception:
+                    return PipelineResult(candidate.request_id, ReplyState.FAILED, error_code='REVIEW_FAILED',
+                                          quality_status='blocked', reviewer_calls=1)
+                if not quality.accepted:
+                    return PipelineResult(candidate.request_id, ReplyState.FAILED,
+                        error_code=quality.error_code or 'REPLY_QUALITY_BLOCKED', quality_status=quality.status.value,
+                        violation_codes=quality.violation_codes, reviewer_calls=quality.reviewer_calls,
+                        rewrite_calls=quality.rewrite_calls)
+                clean_text = quality.text
+                if envelope is not None:
+                    # Preserve wire-format timestamps, preferences, and media selections.
+                    # decode's normalized timestamps are not the generation JSON contract.
+                    envelope['text'] = clean_text
+                    clean_text = json.dumps(envelope, ensure_ascii=False)
+                    try:
+                        decode(clean_text, **options)
+                    except ValueError:
+                        return PipelineResult(candidate.request_id, ReplyState.FAILED,
+                            error_code='PERSONAL_CHAT_DECISION_INVALID', quality_status='blocked',
+                            reviewer_calls=quality.reviewer_calls, rewrite_calls=quality.rewrite_calls)
+        shadow = None
+        if (os.environ.get('OLIVIA_SEMANTIC_SHADOW_URL', '').strip()
+                and not use_companion and chat_metadata is not None and not chat_metadata.get('proactive') and user_text):
+            from runtime.reply.semantic_shadow import observe
+            shadow = asyncio.create_task(observe(_generation_messages(prepared), user_text,
+                                                chat_metadata.get('semantic_kinds', ['text'])))
         return PipelineResult(
             candidate.request_id,
             ReplyState.COMPLETED,
             text=clean_text,
             sticker_id=sticker_id,
             signature=signature,
-            quality_status="not_checked",
+            quality_status=quality.status.value if quality else "not_checked",
+            violation_codes=quality.violation_codes if quality else (),
+            reviewer_calls=quality.reviewer_calls if quality else 0,
+            rewrite_calls=quality.rewrite_calls if quality else 0,
+            semantic_shadow_task=shadow,
+            expression_context=expression_context,
+            companion_decision=companion_decision,
+            companion_timing=companion_timing,
+            companion_delivery=companion_delivery,
+            proactive_decision=proactive_decision,
         )
 
 
@@ -254,6 +500,7 @@ def _prepare_generation_request(
     request: object,
     context: ReplyContext,
     orchestrator: OrchestratorPort,
+    *, life_fragments=None,
 ) -> _PreparedGeneration:
     """Attach Persona messages before provider generation when the local bridge is used."""
 
@@ -285,33 +532,71 @@ def _prepare_generation_request(
     if loaded.snapshot.status != "READY":
         raise _PersonaNotReadyError(_PERSONA_NOT_READY)
     messages, evidence = assemble_reply_messages(adapter, loaded.snapshot, context,
-        request.content, max_input_chars=request.max_input_chars)
-    return _PreparedGeneration(replace(request, content=None, messages=messages), evidence)
+        request.content, max_input_chars=request.max_input_chars, life_fragments=life_fragments)
+    if (life_fragments is not None and any(f.fragment_id == 'linli.daily-life' for f in life_fragments)
+            and _assembled_life_projection(messages) is None):
+        raise _WorldSelectionBudgetExceeded()
+    return _PreparedGeneration(replace(request, content=None, messages=messages), evidence,
+                               _assembled_life_projection(messages), loaded.snapshot)
 
 
-def assemble_reply_messages(adapter, snapshot, context, content, *, max_input_chars, user_input=None):
+def _assembled_life_projection(messages):
+    """Read the bounded block from our own assembly, never a caller's prompt.
+
+    Used first at the trusted local assembly boundary, then to capture its final
+    projection. User messages (including quoted lookalike tags) cannot seed it.
+    """
+    try:
+        for message in messages:
+            if message.get('role') != 'system':
+                continue
+            for match in re.finditer(r'<evidence_summary>\s*(.*?)\s*</evidence_summary>',
+                                     message.get('content', ''), re.DOTALL):
+                wrapper = json.loads(match.group(1))
+                if wrapper.get('fragment_id') == 'linli.daily-life':
+                    value = json.loads(wrapper['text'])
+                    if isinstance(value, dict) and value.get('kind') == 'character_life_reference':
+                        return value
+    except (TypeError, ValueError, KeyError, AttributeError, RecursionError):
+        pass
+    return None
+
+
+def assemble_reply_messages(adapter, snapshot, context, content, *, max_input_chars, user_input=None, life_fragments=None):
     """One memory/world assembly for every user-facing reply and media plan."""
     from .fact_attribution import prepare_dialogue_messages
     messages, evidence, assembly_limit = _assemble_reply_evidence(adapter, snapshot, context, content,
-        max_input_chars=max_input_chars, user_input=user_input)
+        max_input_chars=max_input_chars, user_input=user_input, life_fragments=life_fragments)
     return prepare_dialogue_messages(messages, max_input_chars=assembly_limit), evidence
 
 
-def _assemble_reply_evidence(adapter, snapshot, context, content, *, max_input_chars, user_input=None):
-    life = getattr(adapter, 'daily_life_fragments', None)
+def _assemble_reply_evidence(adapter, snapshot, context, content, *, max_input_chars, user_input=None, life_fragments=None):
+    from inspect import signature
+    life = getattr(adapter, 'daily_life_fragments', None) if life_fragments is None else None
     recent = getattr(adapter, 'recent_letter_fragments', None)
-    recent = recent(content) if callable(recent) else ()
+    if callable(recent):
+        try:
+            accepts_now = 'now' in signature(recent).parameters
+        except (TypeError, ValueError):
+            accepts_now = False
+        recent = recent(content, now=context.trusted_time.instant) if accepts_now else recent(content)
+    else:
+        recent = ()
     if callable(life):
         # Older adapters expose only content; the local adapter accepts this
         # request's frozen recent window instead of reading the mailbox again.
-        from inspect import signature
         try:
-            accepts_recent = 'recent_fragments' in signature(life).parameters
+            parameters = signature(life).parameters
         except (TypeError, ValueError):
-            accepts_recent = False
-        life = life(content, recent_fragments=recent) if accepts_recent else life(content)
+            parameters = {}
+        kwargs = {}
+        if 'recent_fragments' in parameters:
+            kwargs['recent_fragments'] = recent
+        if 'now' in parameters:
+            kwargs['now'] = context.trusted_time.instant
+        life = life(content, **kwargs)
     else:
-        life = ()
+        life = () if life_fragments is None else life_fragments
     # All modes retain the same minimum turn context, including when the
     # interpreter is disabled. Reserve the frozen current state as well.
     reserve = 512
@@ -327,7 +612,7 @@ def _assemble_reply_evidence(adapter, snapshot, context, content, *, max_input_c
     options = dict(snapshot=snapshot, context=context,
         user_input=content if user_input is None else user_input,
         max_units=assembly_limit, evidence_summaries=life,
-        relationship_expression_enabled=snapshot.status == 'READY')
+        relationship_expression_enabled=snapshot.status == 'READY', selected_declaration_ids=())
     limit = getattr(adapter, '_memory_context_limit', None)
     disabled = callable(limit) and limit() == 0
     from runtime.memory.history_continuity import plan_history_query, HistoryQuery

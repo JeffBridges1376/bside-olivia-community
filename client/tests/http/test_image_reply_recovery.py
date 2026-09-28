@@ -1,6 +1,8 @@
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
+from datetime import datetime, timezone
 
 import pytest
 from PIL import Image
@@ -10,6 +12,27 @@ from runtime.cloud_service import CloudError
 
 
 PLAN = dict(attach=True, photo_type='snapshot', room='music-workstation', time_of_day='night', prompt='Coffee on a wooden desk')
+
+
+def test_completed_photo_survives_state_save_failure_without_new_charge(tmp_path, monkeypatch):
+    async def scenario():
+        server, row, calls = setup(tmp_path, monkeypatch, failure='none')
+        saves = []
+        def persist():
+            if row.get('image_phase') == 'ready':
+                saves.append(row['image_status'])
+                if len(saves) == 1:
+                    raise OSError('synthetic state write failure')
+        server._persist_store_state = persist
+        with pytest.raises(OSError):
+            await image_reply.prepare(server, row, 'photo', 'Okay')
+        assert row['image_status'] == 'COMPLETED'
+        assert Path(row['prepared_image']).is_file()
+        assert 'image_error_code' not in row
+        await image_reply.prepare(server, row, 'photo', 'Okay')
+        assert saves == ['COMPLETED', 'COMPLETED']
+        assert len(calls['submits']) == 1
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize('kind', ['timeout', 'busy', 'unavailable'])
@@ -69,7 +92,7 @@ def test_missing_pillow_fails_before_paid_submission(tmp_path, monkeypatch):
 def setup(tmp_path, monkeypatch, failure='download'):
     monkeypatch.setenv('OLIVIA_GPU_API_URL', 'http://127.0.0.1:9')
     monkeypatch.setenv('OLIVIA_GPU_API_KEY', 'synthetic-only')
-    calls = {'submits': [], 'downloads': 0, 'plans': []}
+    calls = {'submits': [], 'downloads': 0, 'plans': [], 'submissions': []}
     async def tools(**kwargs):
         calls['plans'].append(kwargs['request_id'])
         return [SimpleNamespace(name='plan_reply_photo', arguments=dict(PLAN))]
@@ -78,6 +101,7 @@ def setup(tmp_path, monkeypatch, failure='download'):
             if action == 'capabilities': return {'kinds': ['image'], 'shared_assets': []}
             assert action == 'submit'
             calls['submits'].append(data['request_id'])
+            calls['submissions'].append(data)
             if failure == 'balance': raise CloudError('GPU_INSUFFICIENT_BALANCE', 402)
             if failure == 'terminal': return dict(task_id='saved-task', status='failed', outputs=[])
             return dict(task_id='saved-task', status='succeeded', outputs=[{'url': 'http://invalid.example/photo.png'}])
@@ -195,6 +219,7 @@ def test_fresh_world_location_blocks_conflicting_photo_before_gpu_charge(tmp_pat
         server, row, calls = setup(tmp_path, monkeypatch)
         server.daily_life_runtime = SimpleNamespace(store=SimpleNamespace(snapshot=lambda now: {
             'stale': False, 'current': {'location': '家中厨房'}}))
+        bind_photo_view(row, location='家中厨房', text='我在厨房。')
         await image_reply.prepare(server, row, '发张现在的照片', '我在厨房。')
         assert row['image_status'] == 'SKIPPED' and row['image_skip_reason'] == 'SCENE_CONFLICT'
         assert calls['plans'] and calls['submits'] == []
@@ -209,12 +234,125 @@ def test_scene_location_matching_uses_catalog_ids_and_home_boundary():
     assert not image_reply._scene_matches_location('kitchen', 'record_shop')
 
 
-def test_photo_planner_ignores_historical_life_location_after_new_reply():
-    store = SimpleNamespace(
-        reply_context=lambda query, *, now: json.dumps({'stale': True, 'current': None}),
-        snapshot=lambda now: {'stale': False, 'current': {'location': '家中厨房'}})
-    server = SimpleNamespace(daily_life_runtime=SimpleNamespace(store=store))
-    assert image_reply._current_location(server) is None
+PHOTO_TIME = datetime(2026, 9, 27, 3, tzinfo=timezone.utc)
+
+
+def bind_photo_view(row, *, location='music_room', text='给你看看桌上的咖啡。', world=True, emotion=None):
+    from runtime.reply.character_emotion_context import freeze_expression_context, store_expression_context
+    row.update(reply_text=text, reply_revision=1)
+    view = {'kind': 'character_life_reference', 'stale': False,
+            'current': {'location': location, 'evidence_kind': 'published_life',
+                        'source_id': 'PRIVATE_WORLD_SOURCE', 'note': 'PRIVATE_WORLD_NOTE'}} if world else None
+    snapshot = freeze_expression_context('synthetic-photo-reply', PHOTO_TIME, world=view, emotion=emotion)
+    store_expression_context(row, snapshot, text)
+
+
+def test_delayed_photo_and_planning_retry_use_reply_view_without_private_state(tmp_path, monkeypatch):
+    from llm_gateway import ProviderTimeout
+    async def scenario():
+        server, row, calls = setup(tmp_path, monkeypatch, failure='none')
+        live_reads = []
+        server.daily_life_runtime = SimpleNamespace(store=SimpleNamespace(snapshot=lambda now:
+            live_reads.append(now) or {'stale': False, 'current': {'location': '家中厨房'}}))
+        bind_photo_view(row, emotion={'reaction_subject': 'character', 'interpretation_only': True,
+            'reactions': [{'reaction': 'relieved', 'source_id': 'PRIVATE_EMOTION_SOURCE',
+                          'quote': 'PRIVATE_QUOTE', 'goal_or_need': 'PRIVATE_GOAL'}],
+            'concerns': [{'summary': 'PRIVATE_CONCERN'}],
+            'reported_affects': [{'subject': 'user', 'quote': 'PRIVATE_USER_AFFECT'}]})
+        planned = []
+        async def plan(**kwargs):
+            planned.append(kwargs)
+            if len(planned) == 1:
+                raise ProviderTimeout()
+            return [SimpleNamespace(name='plan_reply_photo', arguments=dict(PLAN))]
+        server.letters_adapter.gateway.complete_with_tools = plan
+        await image_reply._prepare_once(server, row, '发张随手拍', row['reply_text'])
+        assert row['image_status'] == 'RETRY_PENDING'
+        row['image_retry_at'] = 0
+        await image_reply.prepare(server, row, '发张随手拍', row['reply_text'])
+        packets = [json.loads(call['messages'][-1]['content']) for call in planned]
+        assert [p['world_current_location'] for p in packets] == ['music_room', 'music_room']
+        assert [p['reply_as_of'] for p in packets] == [PHOTO_TIME.isoformat()] * 2
+        assert all(p['expression_options'] == ['relieved'] for p in packets)
+        assert live_reads == [] and row['image_status'] == 'COMPLETED'
+        assert 'PRIVATE_' not in json.dumps(planned + calls['submissions'])
+        payload = calls['submissions'][0]['input']
+        assert set(payload) == {'photo_type', 'room', 'time_of_day', 'prompt', 'resolution'}
+        assert payload['photo_type'] == 'snapshot' and payload['prompt'] == PLAN['prompt']
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('missing', ['legacy', 'corrupt', 'omitted', 'stale', 'statement', 'body', 'revision', 'argument'])
+def test_unavailable_photo_view_never_fills_from_live_world(tmp_path, monkeypatch, missing):
+    async def scenario():
+        server, row, calls = setup(tmp_path, monkeypatch, failure='none')
+        bind_photo_view(row, world=missing != 'omitted')
+        if missing == 'legacy':
+            row.pop('expression_context')
+        elif missing == 'corrupt':
+            row['expression_context']['view_sha256'] = 'damaged'
+        elif missing in {'stale', 'statement'}:
+            from runtime.reply.character_emotion_context import freeze_expression_context, store_expression_context
+            world = row['expression_context']['world']
+            if missing == 'stale':
+                world['stale'] = True
+            else:
+                world['current']['evidence_kind'] = 'character_statement'
+            store_expression_context(row, freeze_expression_context('synthetic', PHOTO_TIME, world=world), row['reply_text'])
+        elif missing == 'body':
+            row['reply_text'] += '换一条正文'
+        elif missing == 'revision':
+            row['reply_revision'] += 1
+        live_reads = []
+        server.daily_life_runtime = SimpleNamespace(store=SimpleNamespace(snapshot=lambda now:
+            live_reads.append(now) or {'stale': False, 'current': {'location': '家中厨房'}}))
+        packets = []
+        async def plan(**kwargs):
+            packets.append(json.loads(kwargs['messages'][-1]['content']))
+            return [SimpleNamespace(name='plan_reply_photo', arguments=dict(PLAN))]
+        server.letters_adapter.gateway.complete_with_tools = plan
+        text = '另一条正文' if missing == 'argument' else row['reply_text']
+        await image_reply.prepare(server, row, '发张随手拍', text)
+        assert packets[0]['world_current_location'] is None and live_reads == []
+        assert row['image_status'] == 'COMPLETED'
+        assert calls['submissions'][0]['input']['room'] == 'none'
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('emotion', [
+    {'reaction_subject': 'character', 'interpretation_only': True, 'pending_current_input': True,
+     'reactions': [{'reaction': 'hurt'}]},
+    {'reaction_subject': 'character', 'interpretation_only': True, 'reactions': None},
+    {'reaction_subject': 'character', 'interpretation_only': True, 'reactions': [{'reaction': {'bad': 1}}]},
+])
+def test_photo_ignores_pending_or_malformed_emotion_without_blocking(tmp_path, monkeypatch, emotion):
+    async def scenario():
+        server, row, calls = setup(tmp_path, monkeypatch, failure='none')
+        bind_photo_view(row, emotion=emotion)
+        packets = []
+        async def plan(**kwargs):
+            packets.append(json.loads(kwargs['messages'][-1]['content']))
+            return [SimpleNamespace(name='plan_reply_photo', arguments=dict(PLAN))]
+        server.letters_adapter.gateway.complete_with_tools = plan
+        await image_reply.prepare(server, row, '随手拍', row['reply_text'])
+        assert packets[0]['expression_options'] == []
+        assert row['image_status'] == 'COMPLETED' and len(calls['submits']) == 1
+    asyncio.run(scenario())
+
+
+def test_saved_paid_photo_recovers_identically_after_expression_metadata_lost(tmp_path, monkeypatch):
+    async def scenario():
+        server, row, calls = setup(tmp_path, monkeypatch)
+        bind_photo_view(row)
+        await image_reply._prepare_once(server, row, '随手拍', row['reply_text'])
+        assert row['image_status'] == 'RETRY_PENDING' and row['image_receipt_required']
+        row.pop('expression_context')
+        row['reply_text'] = '另一条文字也不能让已付费照片重开订单'
+        row['image_retry_at'] = 0
+        await image_reply.prepare(server, row, '随手拍', row['reply_text'])
+        assert row['image_status'] == 'COMPLETED' and len(calls['plans']) == 1
+        assert len(calls['submissions']) == 2 and calls['submissions'][0] == calls['submissions'][1]
+    asyncio.run(scenario())
 
 
 def test_cancel_after_local_result_recovers_without_remote_submit(tmp_path, monkeypatch):

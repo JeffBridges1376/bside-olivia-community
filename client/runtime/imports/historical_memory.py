@@ -8,6 +8,7 @@ from datetime import datetime
 import hashlib
 import json
 import re
+from types import SimpleNamespace
 
 from conversation_memory_port import (
     ConversationMemoryPort,
@@ -185,10 +186,28 @@ async def assess_historical_relationship(
         previous_state=previous_state,
     )
     try:
-        response = await gateway.complete(
-            messages,
-            request_id=historical_relationship_command_id(ordered),
-        )
+        from runtime.reply.jev_questions import configured_questions
+        semantic_port = configured_questions()
+        if semantic_port is not None:
+            state = {'policy': messages[0]['content'], 'history': json.loads(messages[1]['content'])}
+            questions = {field: {'instructions': '依照policy和有来源的双方历史判断' + field + '，0到100的绝对值；证据不明保守，不因信件数量加分。',
+                                'criteria': {str(i): i for i in range(101)}}
+                         for field in ('familiarity', 'trust', 'comfort', 'closeness', 'tension')}
+            questions['stage'] = {'instructions': '双方原文确认的关系阶段，不凭单方表白、亲密分数或昵称推断身份或权限。',
+                                  'criteria': {s:s for s in ('unknown', 'acquaintance', 'familiar', 'close')}}
+            for index in sorted(evidence_indexes):
+                questions['e' + str(index)] = {'instructions': '历史序号' + str(index) + '是否是本次关系判断的必要证据？',
+                                                'criteria': {'yes':'是','no':'否'}}
+            choices = await semantic_port.ask(state, questions, purpose='historical-relationship')
+            payload = {k:int(choices[k]) for k in ('familiarity', 'trust', 'comfort', 'closeness', 'tension')}
+            payload.update(relationship_stage=choices['stage'],
+                           evidence_indexes=[i for i in sorted(evidence_indexes) if choices['e'+str(i)] == 'yes'])
+            response = SimpleNamespace(text=json.dumps(payload))
+        else:
+            response = await gateway.complete(
+                messages,
+                request_id=historical_relationship_command_id(ordered),
+            )
     except Exception as exc:
         suffix = {
             "PROVIDER_QUOTA_EXHAUSTED": "QUOTA_EXHAUSTED",

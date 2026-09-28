@@ -13,6 +13,7 @@ import sqlite3
 from private_world_ledger import LedgerEvent, LedgerWriteError, SQLitePrivateWorldLedger
 from private_world_port import AcknowledgedAffection, ActiveBoundary, AffectionScope
 from private_world_reducer import ReducerEvent, ReducerEventKind, reduce_private_world
+from runtime.private_world.reducer import _DEDUPLICATION_WINDOW
 
 
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,96}$")
@@ -223,8 +224,13 @@ class PrivateWorldRelationshipCommitter:
             previous = [datetime.fromisoformat(event.occurred_at.replace("Z", "+00:00"))
                         for event in self.ledger.events()
                         if event.payload.get("semantic_key") in equivalent_keys
-                        and event.payload.get("applied") is True]
-            last_equivalent = max(previous, default=None)
+                        and (event.projection_result or event.payload).get("applied") is True]
+            last_equivalent = max((at for at in previous if at <= occurred_at), default=None)
+            if any(occurred_at < at < occurred_at + _DEDUPLICATION_WINDOW for at in previous):
+                # A later consumer already applied this evidence inside the same
+                # cooldown. Record the late event through canonical validation as
+                # a no-op, rather than passing an invalid future predecessor.
+                last_equivalent = occurred_at
             result = self.commit(RelationshipFactCommand(
                 command_id="exchange." + hashlib.sha256(delivery_id.encode()).hexdigest(),
                 kind=ReducerEventKind(signal["kind"]), occurred_at=occurred_at,
@@ -296,13 +302,8 @@ class PrivateWorldRelationshipCommitter:
         )
         try:
             snapshot = self.ledger.snapshot()
-            if command.kind is ReducerEventKind.STAGE_CONFIRMED and any(
-                prior.event_type == ReducerEventKind.STAGE_CONFIRMED.value
-                and datetime.fromisoformat(prior.occurred_at.replace('Z', '+00:00')) > command.occurred_at
-                for prior in self.ledger.events()
-            ):
-                event = replace(event, target_stage=snapshot.relationship_stage)
             reduced = reduce_private_world(snapshot, event)
+            from runtime.private_world.reducer import reducer_event_record
             digest = hashlib.sha256(command.command_id.encode("utf-8")).hexdigest()
             applied = self.ledger.apply_once(
                 LedgerEvent(
@@ -325,6 +326,7 @@ class PrivateWorldRelationshipCommitter:
                            if command.kind in {ReducerEventKind.CHARACTER_BOUNDARY_SET, ReducerEventKind.CHARACTER_BOUNDARY_WITHDRAWN} else {}),
                     },
                     occurred_at=command.occurred_at.isoformat(),
+                    reducer_input={'schema': 1, 'kind': 'event', 'value': reducer_event_record(event)},
                 ),
                 reduced.snapshot,
                 expected_snapshot_version=snapshot.version,

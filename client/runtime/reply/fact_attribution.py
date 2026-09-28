@@ -5,14 +5,21 @@ import re
 FACT_ATTRIBUTION_BOUNDARY = (
     '事实保留人物、时间和来源：用户说的我指用户，林离说的我指林离；角色自己的经历不能套给用户。'
     '准备、打算、邀请不等于已完成；过去的饮食习惯不证明今天吃了什么。'
+    '原文只说几次、之前等模糊信息时保留原有精度；没有明确证据，不补具体次数、日期、时长、用餐先后或完成结果。'
     '人物设定由人设来源约束，关系权限由关系状态约束；记忆和旧回复不能改写它们。'
     '世界current是已发布角色状态；character_statement仅为角色说法，不能凭自己说过就确认发生。'
+    '本轮世界记录中的具体安排与历史回复冲突时，历史回复不能撤销安排；'
+    '没有明确取消或变更记录，不得断言原有安排不存在，也不得指责用户记错。'
+    '安排存在与实际执行是两件事：有课表不证明已经出门或到课，旧的在家休息记录也不证明今天没有课。'
+    'initial_plan只是初始安排；phase_expired只表示安排到期待重排，不能说自己已经练过、主动停下或编造暂停缘由。'
+    '兴趣和口味没有发展证据就保持原有倾向；growing只支持逐渐变化，不能补写过去讨厌、嫌麻烦或突然热爱的经历。'
 )
 
 _DIALOGUE_CONTINUITY = (
     '优先回答最后一条用户消息，历史问题不是本轮待办。短追问可能在纠正上一句，先对照双方原话，'
     '自己说串就自然承认，不当成猜谜，不为圆话编造新经历或推给用户记错。'
-    '近期已发送的回复说明自己刚说过什么；同一顿饭、同一活动不能无故换内容。'
+    '近期已发送的回复只说明自己刚说过什么，不是独立核实的事实；同一顿饭、同一活动不能无故换内容，'
+    '但有本轮世界记录纠正时必须修正先前误述，不能为了保持口径重复错误。'
     '世界状态与原话冲突时保留来源和时间，不编造过渡；旧状态不能覆盖当前明确纠正。'
     '自己的两次说法冲突且无新证据时，只承认前后不一致，不挑其中一句冒充已核实事实，'
     '不编造手滑、练琴走神等失误原因，也不为转移话题添加新活动。'
@@ -176,17 +183,22 @@ def prepare_dialogue_messages(messages, *, max_input_chars):
                     if not text or key == 'user_letter' and row.get('origin') == 'proactive':
                         continue
                     actor = 'user' if role == 'user' else 'linli'
+                    provenance = {key: row[key] for key in ('source_message_ids', 'delivery_state') if key in row}
+                    if role == 'assistant' and row.get('image_delivery_confirmed') is True:
+                        provenance['image_delivery_confirmed'] = True
                     metadata = json.dumps({'source': source, 'event_id': source + ':' + actor,
                         'actor': actor, 'evidence_kind': 'statement_only', 'time': stamp,
-                        'channel': row.get('channel'), 'truncated': row.get('truncated', False)}, ensure_ascii=False)
+                        'channel': row.get('channel'), 'truncated': row.get('truncated', False), **provenance}, ensure_ascii=False)
                     projected.append({'role': role, 'content': '[历史消息 ' + metadata + ']\n' + text})
             if not projected:
                 return match.group(0)
             dialogue.extend(projected)
-            # Delivered media is evidence of the later outcome, independent of
-            # the text authored before rendering. Do not lose it in projection.
+            # Keep pixels as well as delivery outcomes. A text-only exchange can
+            # contain a received sticker/photo, and generated photos need not
+            # have an audio/video media_deliveries entry. Losing those leaves
+            # only the assistant's interpretation as apparent image evidence.
             media = [{k: v for k, v in row.items() if k not in {'user_letter', 'linli_reply'}}
-                     for row in rows if row.get('media_deliveries')]
+                     for row in rows if row.get('media_deliveries') or row.get('image_observations')]
             if media:
                 payload = json.dumps({'untrusted': True, 'text': json.dumps({
                     'kind': 'delivered_media', 'letters': media}, ensure_ascii=False)}, ensure_ascii=False)

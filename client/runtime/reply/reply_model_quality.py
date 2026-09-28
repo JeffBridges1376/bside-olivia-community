@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -25,6 +26,23 @@ from llm_gateway import (
 )
 from persona_loader import PersonaDeclaration, PersonaSnapshot, load_persona
 from runtime.persona.persona_assembly import runtime_reply_rules
+
+
+_ACTIVE_PERSONA_SNAPSHOT = ContextVar('quality_persona_snapshot', default=None)
+
+
+@contextmanager
+def using_persona_snapshot(snapshot):
+    token = _ACTIVE_PERSONA_SNAPSHOT.set(snapshot)
+    try:
+        yield
+    finally:
+        _ACTIVE_PERSONA_SNAPSHOT.reset(token)
+
+
+def _review_persona(path):
+    return _ACTIVE_PERSONA_SNAPSHOT.get() or load_persona(path).snapshot
+
 from runtime.reply.reply_context import (
     IntimacyRequest,
     IntimacyTier,
@@ -429,6 +447,9 @@ class _LayerResult:
     hard_evidence: tuple[_HardReviewEvidence, ...] = ()
     rejected_evidence: tuple[_HardReviewEvidence, ...] = ()
     independent_soft_issue: bool = False
+    # Internal only: validated decisions from the same JEV evaluation, never
+    # accepted from a model-authored layer result or used as factual evidence.
+    preadjudicated: tuple[_AdjudicationDecision, ...] | None = None
 
     @property
     def passed(self) -> bool:
@@ -546,7 +567,7 @@ class GatewayReviewTransport:
             else timeout_seconds
         )
         authorities = _build_release_layer_authorities(
-            load_persona(self.persona_path).snapshot,
+            _review_persona(self.persona_path),
             mode=mode,
         )
         current_user_input = _reference_text(request, "current.user_excerpt")
@@ -568,6 +589,12 @@ class GatewayReviewTransport:
                 separators=(",", ":"),
             ),
         }
+        recent_dialogue = _reference_text(request, "current.recent_dialogue")
+        frozen_world = _reference_text(request, 'current.frozen_world')
+        if frozen_world:
+            memory_evidence['frozen_world'] = frozen_world
+        if recent_dialogue:
+            memory_evidence["recent_dialogue"] = recent_dialogue
         if request.get("world_state_available") is False:
             memory_evidence["world_state"] = WORLD_STATE_UNAVAILABLE
         results = _complete_layer_reviews(
@@ -654,6 +681,11 @@ class GatewayPersonaReviewer:
             persona_path,
             reasoning_timeout_seconds,
         )
+        # The reviewer and prose rewriter may use different providers. Never
+        # label Jev judgments with the text gateway's generation model.
+        if os.environ.get('OLIVIA_JEV_DECISION_URL', '').strip():
+            from .companion_decision import MODEL
+            model = MODEL
         self.adapter = JsonReviewerAdapter(
             self._transport,
             ReviewerConfig(
@@ -700,11 +732,14 @@ class GatewayPersonaReviewer:
         )
         references = (
             *_reference_chunks("current.user_excerpt", user_text),
+            *_reference_chunks("current.recent_dialogue", json.dumps(
+                _recent_dialogue(generation_messages), ensure_ascii=False)),
             *_reference_chunks(
                 "current.character_reply_history",
                 character_reply_history,
             ),
             *_reference_chunks("current.memory_evidence", memory_evidence),
+            *_reference_chunks('current.frozen_world', _assembled_world_evidence(generation_messages)),
             *_reference_chunks(
                 "current.selected_persona_facts", _selected_persona_facts(generation_messages)
             ),
@@ -834,6 +869,9 @@ class GatewayPersonaRewriter:
             ),
             "confirmed_violation_evidence": confirmed_violation_evidence,
         }
+        recent = _recent_dialogue(generation_messages)
+        if recent:
+            payload["recent_dialogue"] = recent
         payload["relationship_context"]["intimacy_request"] = context.intimacy_request.value
         if not generation_messages:
             payload["persona"] = _persona_review_profile(
@@ -884,7 +922,11 @@ class GatewayPersonaRewriter:
                     "Rewrite the candidate once as Linli. Preserve the user's meaning "
                     "and the useful content, but remove every listed violation. Keep her "
                     "autonomy, selective attention, knowledge limits, and current mode "
-                    "style. Do not invent history or facts. Return only the replacement "
+                    "style. Do not invent history or facts. "
+                    "修正事实时只说证据支持的内容。课表支持有课程安排，不支持已经到课或缺席；"
+                    "last_observation只支持过去的观察，不能补成现在仍在家、没出门或刚吃完。"
+                    "旧回复错误就简短纠正，不补新的当前位置、行动计划或出错原因来圆话。"
+                    "简短回答即可，不表态、不点评自己的回答方式、不解释修复过程。Return only the replacement "
                     "plain-text reply: no analysis, JSON, Markdown heading, stage direction, "
                     "speaker prefix, or control markup."
                     " Before returning, silently self-check with these five questions: "
@@ -921,6 +963,14 @@ class GatewayPersonaRewriter:
                 )},
                 *messages[1:],
             )
+        if recent:
+            # Retain frozen persona/media evidence, but put the rewrite contract
+            # last. A generation-only JSON contract must not govern this output.
+            # The exact prior conversation is already present once in the payload.
+            projected = {row["event_id"] for row in recent}
+            retained = tuple(message for index, message in enumerate(generation_messages)
+                             if not (_recent_row(message, index, generation_messages) or {}).get("event_id") in projected)
+            messages = (*retained, messages[0], messages[-1])
         if sum(len(str(item.get("content", ""))) for item in messages) > _REVIEW_INPUT_CHARACTER_LIMIT:
             raise RuntimeError("REWRITE_INPUT_TOO_LARGE")
         reasoning_scope = (
@@ -939,6 +989,14 @@ class GatewayPersonaRewriter:
             ),
             gateway_scope=reasoning_scope,
         ).strip()
+        if not fact_sentences:
+            try:
+                envelope = json.loads(rewritten)
+            except ValueError:
+                envelope = None
+            if (isinstance(envelope, dict) and "text" in envelope
+                    or re.fullmatch(r"```(?:json)?\s*\n.*\n```", rewritten, re.S)):
+                raise RuntimeError("REWRITE_OUTPUT_INVALID")
         return (
             _apply_fact_sentence_edits(candidate, fact_sentences, rewritten)
             if fact_sentences else rewritten
@@ -1054,6 +1112,9 @@ def create_model_quality_ports(
     provider = str(
         getattr(config, "provider", "none")
     ).strip().lower()
+    # This factory supplies a paired reviewer/rewriter for the text generation
+    # pipeline. Jev itself needs no text gateway, but the optional prose rewrite
+    # still does; do not imply that this readiness check selects its judgments.
     if provider in {
         "",
         "none",
@@ -1064,7 +1125,7 @@ def create_model_quality_ports(
         return None, None
     if not _env_bool(
         "OLIVIA_REPLY_REVIEW_ENABLED",
-        False,
+        bool(os.environ.get('OLIVIA_JEV_DECISION_URL', '').strip()),
     ):
         return None, None
 
@@ -1136,6 +1197,7 @@ def _release_authority_text(
         item
         for item in declarations
         if item.allowed_public_release
+        and item.inclusion != 'phase'
         and (facets is None or item.facet in facets)
         and (item.tier != "MODE_STYLE" or item.mode == mode)
     )
@@ -1175,6 +1237,8 @@ def _build_release_layer_authorities(
         grounding,
         "仅有这些感受表达不能判为STAGE_DRIFT。仍须拦截未经确认的具体关系身份、权限和共同经历。",
         RHYTHM_FACT_AUTHORITY,
+        '人格statement保留初始基线与历史；实际本轮资料的current_development只更新对应key当前倾向。'
+        '不能用旧基线强制改回已有依据的新倾向，也不能改写其他切面、核心、生平或关系权限。',
     ))
     return tuple(
         _LayerAuthority(
@@ -1292,7 +1356,18 @@ def _layer_messages(
         payload["world_state_available"] = False
         payload["world_state_meaning"] = memory_evidence["world_state"]
     if layer.name in _MEMORY_EVIDENCE_LAYERS:
-        payload["memory_evidence"] = memory_evidence
+        payload["memory_evidence"] = _world_evidence_references(memory_evidence)
+        if memory_evidence.get("recent_dialogue"):
+            payload["recent_dialogue_meaning"] = (
+                "有来源的双方历史原话，只证明当时这样说过。current_user_input 是本轮消息；"
+                "核对候选是否仍在回答旧问题、忽略当前纠正，不把旧原话覆盖当前输入。"
+                "reply_delivery_plan 是冻结待执行计划，不是已发送成功的证据。"
+            )
+    if memory_evidence.get('frozen_world') and layer.name in {*_MEMORY_EVIDENCE_LAYERS, 'identity_boundary'}:
+        payload['frozen_world'] = memory_evidence['frozen_world']
+        payload['frozen_world_meaning'] = ('与生成使用同一时间截面的世界资料。课表是计划，不证明出席，'
+            '但明确列出的当天课程可否定“今天没有课”。current_class为空或休息不等于今天没课。'
+            '记录及说法保留原证据类型，不把计划升级成完成事实。')
     if layer.name == "continuity_memory":
         payload["fact_sources"] = _continuity_fact_sources(selected_persona_facts, memory_evidence)
         payload["candidate_paragraphs"] = [
@@ -1637,9 +1712,21 @@ def _complete_layer_reviews(
             tuple[_LayerAuthority, tuple[dict[str, str], dict[str, str]]]
         ],
     ) -> tuple[_LayerResult, ...]:
+        from .jev_questions import configured_questions
+        port = configured_questions()
+        if port is not None:
+            from .jev_quality import review_layers_json
+            # JEV confirmation reuses code-scoped projections, not the legacy
+            # full conversation/authority context assembled for text-model review.
+            texts, decisions = await review_layers_json(port, requests, candidate, evidence_bound)
+            return tuple(replace(
+                _parse_layer_result(layer, text, candidate=candidate, evidence_bound=evidence_bound),
+                preadjudicated=tuple(_AdjudicationDecision(**item) for item in decisions[layer.name]))
+                for (layer, _), text in zip(requests, texts, strict=True))
         max_parallel = (
             2
-            if gateway_scope is GatewayRequestScope.JSON_MAX_REASONING
+            if (gateway_scope is GatewayRequestScope.JSON_MAX_REASONING
+                or os.environ.get('OLIVIA_JEV_DECISION_URL', '').strip())
             else max(1, len(requests))
         )
         layer_slots = asyncio.Semaphore(max_parallel)
@@ -1651,16 +1738,22 @@ def _complete_layer_reviews(
             for attempt in range(2):
                 try:
                     async with layer_slots:
-                        text = await _complete_layer_text(
-                            gateway,
-                            messages,
-                            timeout_seconds,
-                            f"quality-{uuid.uuid4().hex}:{layer.name}",
-                            gateway_scope,
-                            **({"response_format": _AUTONOMY_RESPONSE_FORMAT}
-                               if layer.name == "autonomy_life"
-                               and gateway_scope is GatewayRequestScope.JSON_MAX_REASONING else {}),
-                        )
+                        from .jev_questions import configured_questions
+                        questions_port = configured_questions()
+                        if questions_port is not None:
+                            from .jev_quality import layer_json
+                            text = await layer_json(questions_port, layer, messages, candidate, evidence_bound)
+                        else:
+                            text = await _complete_layer_text(
+                                gateway,
+                                messages,
+                                timeout_seconds,
+                                f"quality-{uuid.uuid4().hex}:{layer.name}",
+                                gateway_scope,
+                                **({"response_format": _AUTONOMY_RESPONSE_FORMAT}
+                                   if layer.name == "autonomy_life"
+                                   and gateway_scope is GatewayRequestScope.JSON_MAX_REASONING else {}),
+                            )
                 except _GatewayInvocationFailure as exc:
                     if (
                         attempt == 0
@@ -1736,9 +1829,14 @@ def _complete_layer_reviews(
         requests: list[
             tuple[_LayerAuthority, tuple[dict[str, str], dict[str, str]]]
         ] = []
+        from .jev_questions import configured_questions
+        message_builder = _layer_messages
+        if configured_questions() is not None:
+            from .jev_quality import review_messages
+            message_builder = review_messages
         for layer in authorities:
             try:
-                messages = _layer_messages(
+                messages = message_builder(
                     layer,
                     candidate=candidate,
                     current_user_input=current_user_input,
@@ -1825,12 +1923,15 @@ def _adjudicate_hard_evidence(
         _adjudication_context_id(layer, evidence.code)
         for layer, evidence in claims
     )
+    from .jev_questions import configured_questions
+    questions_port = configured_questions()
     contexts: dict[str, dict[str, object]] = {}
-    for (layer, evidence), context_id in zip(
+    legacy_contexts = zip(
         claims,
         context_ids,
         strict=True,
-    ):
+    ) if questions_port is None else ()
+    for (layer, evidence), context_id in legacy_contexts:
         if context_id in contexts:
             continue
         contexts[context_id] = _adjudication_support_context(
@@ -1913,15 +2014,27 @@ def _adjudicate_hard_evidence(
             ),
         },
     )
-    if sum(len(item["content"]) for item in messages) > _REVIEW_INPUT_CHARACTER_LIMIT:
-        raise RuntimeError("ADJUDICATION_INPUT_TOO_LARGE")
-    text = _complete_text(
-        gateway,
-        messages,
-        timeout_seconds,
-        diagnostic=True,
-        gateway_scope=gateway_scope,
-    )
+    if questions_port is not None:
+        # All independent exact-span confirmations were asked alongside the
+        # detector. Missing or mismatched results fail closed, never incur an
+        # undisclosed second provider call.
+        if any(result.preadjudicated is None for result in results
+               if result.layer in _EVIDENCE_BOUND_LAYERS):
+            raise RuntimeError('JEV_ADJUDICATION_UNAVAILABLE')
+        text = json.dumps({'decisions': [dict(
+            evidence_id=wire_ids[(result.layer, item.evidence_id)], code=item.code,
+            start=item.start, end=item.end, decision='CONFIRM' if item.confirmed else 'REJECT')
+            for result in results for item in (result.preadjudicated or ())]})
+    else:
+        if sum(len(item["content"]) for item in messages) > _REVIEW_INPUT_CHARACTER_LIMIT:
+            raise RuntimeError("ADJUDICATION_INPUT_TOO_LARGE")
+        text = _complete_text(
+            gateway,
+            messages,
+            timeout_seconds,
+            diagnostic=True,
+            gateway_scope=gateway_scope,
+        )
     decisions = _parse_adjudication_result(text, claims=claims)
     by_id = {item.evidence_id: item for item in decisions}
     revised: list[_LayerResult] = []
@@ -2015,6 +2128,7 @@ def _adjudication_support_context(
         return {
             "release_authority": release_authority,
             "world_facts": memory_evidence.get("world_facts", ""),
+            **({'frozen_world': memory_evidence['frozen_world']} if memory_evidence.get('frozen_world') else {}),
             **({"world_state": memory_evidence["world_state"]} if "world_state" in memory_evidence else {}),
             **({"selected_persona_facts": selected_persona_facts} if selected_persona_facts else {}),
         }
@@ -2217,16 +2331,16 @@ def _persona_review_profile(
     path: Path,
     mode: str,
 ) -> dict[str, object]:
-    snapshot = load_persona(path).snapshot
+    snapshot = _review_persona(path)
     profile = snapshot.profile
     selected = [
         item
         for item in snapshot.declarations
-        if item.facet in _REVIEW_FACETS
+        if item.inclusion != 'phase' and (item.facet in _REVIEW_FACETS
         or (
             item.tier == "MODE_STYLE"
             and item.mode == mode
-        )
+        ))
     ]
     selected.sort(
         key=lambda item: _rule_priority(
@@ -2288,6 +2402,42 @@ def _rule_priority(
         ),
         item.declaration_id,
     )
+
+
+def _recent_row(message, index, messages):
+    """Read only the native frame produced by fact_attribution, never its body.
+
+    Callers supply frozen program-assembled messages. The last user message is
+    always current input, even if the user pastes a valid-looking prior-turn frame.
+    A statement frame proves its source/role, not that its content happened.
+    """
+    current = next((i for i in range(len(messages) - 1, -1, -1)
+                    if messages[i].get("role") == "user"), None)
+    role, content = message.get("role"), message.get("content")
+    if index == current or role not in {"user", "assistant"} or not isinstance(content, str):
+        return None
+    if not content.startswith('[历史消息 '):
+        return None
+    header, separator, text = content.partition(']\n')
+    try:
+        meta = json.loads(header[len('[历史消息 '):])
+        actor = 'user' if role == 'user' else 'linli'
+        if (not separator or not text or not isinstance(meta, dict)
+                or not isinstance(meta.get('source'), str) or not meta['source']
+                or meta.get('actor') != actor
+                or meta.get('event_id') != meta['source'] + ':' + actor
+                or meta.get('evidence_kind') != 'statement_only'):
+            return None
+        return {key: meta.get(key) for key in (
+            'source', 'event_id', 'actor', 'evidence_kind', 'time', 'channel', 'truncated', 'image_delivery_confirmed') } | {
+                'role': role, 'text': text}
+    except (TypeError, ValueError):
+        return None
+
+
+def _recent_dialogue(messages):
+    return [row for index, message in enumerate(messages)
+            if (row := _recent_row(message, index, messages)) is not None]
 
 
 def _last_user_text(
@@ -2368,6 +2518,15 @@ def _continuity_fact_sources(
                 sources.append({"id": "current_rest_plan", "kind": "plan",
                                 "text": json.dumps(plan, ensure_ascii=False)})
         elif fragment_id == "linli.daily-life" and value.get("kind") == "character_life_reference":
+            schedule = value.get('schedule')
+            if isinstance(schedule, dict):
+                sources.append({'id': 'current_class_schedule', 'kind': 'plan',
+                    'text': json.dumps(schedule, ensure_ascii=False),
+                    'meaning': '同一生成截面的课表计划；不证明出席，current_class为空不表示今天没有课程。'})
+            for field in ('meals', 'weather', 'recent_episodes'):
+                if field in value:
+                    sources.append({'id': 'world_' + field, 'kind': 'world_record',
+                                    'text': json.dumps(value[field], ensure_ascii=False)})
             current = value.get("current")
             if isinstance(current, dict):
                 sources.append({"id": "current_life",
@@ -2417,7 +2576,8 @@ def _selected_persona_facts(messages: Sequence[Mapping[str, Any]]) -> str:
                 # they cannot substantiate a specific event or recurring habit.
                 tag in {"public_canon", "community_soft_canon"}
                 and isinstance(payload, dict)
-                and set(payload) == {"declaration_id", "statement", "facet"}
+                and {"declaration_id", "statement", "facet"} <= set(payload)
+                and set(payload) <= {"declaration_id", "statement", "facet", "current_development", "development_meaning"}
                 and isinstance(payload["facet"], str)
                 and payload["facet"] in {"IDENTITY", "BACKGROUND"}
                 and isinstance(payload["declaration_id"], str)
@@ -2436,7 +2596,7 @@ def _assembled_evidence_blocks(
         if message.get("role") != "system" or not isinstance(content, str):
             continue
         for match in re.finditer(
-            r"<(untrusted_history|evidence_summary)>\s*(\{.*?\})\s*</\1>",
+            r"<(untrusted_history|evidence_summary|reply_delivery_plan)>\s*(\{.*?\})\s*</\1>",
             content,
             flags=re.DOTALL,
         ):
@@ -2448,6 +2608,43 @@ def _assembled_evidence_blocks(
             if isinstance(text, str) and text.strip():
                 evidence.append(match.group(0))
     return tuple(evidence)
+
+
+def _world_evidence_references(evidence: Mapping[str, str]) -> dict:
+    """Deduplicate exact world copies; the layer keeps one full frozen_world."""
+    value = dict(evidence)
+    frozen = value.pop('frozen_world', None)
+    if not frozen:
+        return value
+    value['frozen_world_ref'] = 'frozen_world'
+    def replace_world(match):
+        try:
+            wrapper = json.loads(match.group(1))
+            world = json.loads(wrapper.get('text', ''))
+            if wrapper.get('fragment_id') == 'linli.daily-life' and world == json.loads(frozen):
+                return '<evidence_summary>' + json.dumps({'fragment_id': 'linli.daily-life',
+                    'text': json.dumps({'reference': 'frozen_world'})}, ensure_ascii=False) + '</evidence_summary>'
+        except (AttributeError, TypeError, ValueError):
+            pass
+        return match.group(0)
+    value['assembled_memory'] = re.sub(r'<evidence_summary>\s*(\{.*?\})\s*</evidence_summary>',
+                                      replace_world, value.get('assembled_memory', ''), flags=re.DOTALL)
+    return value
+
+
+def _assembled_world_evidence(messages: Sequence[Mapping[str, Any]]) -> str:
+    """Read only the world evidence already frozen into generation messages."""
+    for block in _assembled_evidence_blocks(messages):
+        for tag, outer in _reference_objects(block):
+            if tag != 'evidence_summary' or not isinstance(outer, dict) or outer.get('fragment_id') != 'linli.daily-life':
+                continue
+            try:
+                value = json.loads(outer.get('text', ''))
+            except (TypeError, ValueError):
+                continue
+            if isinstance(value, dict) and value.get('kind') == 'character_life_reference':
+                return json.dumps(value, ensure_ascii=False, separators=(',', ':'))
+    return ''
 
 
 def _assembled_memory_evidence(

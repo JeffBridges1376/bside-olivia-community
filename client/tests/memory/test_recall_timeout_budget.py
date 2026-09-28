@@ -58,8 +58,17 @@ def test_compatibility_bridge_budget_covers_check_but_prepared_requests_keep_gen
     provider = Provider()
     adapter = LetterAdapter.__new__(LetterAdapter)
     adapter._runtime = (GatewayConfig(provider=provider_name, stream=streaming), provider)
+    from pathlib import Path
+    adapter.persona_v2_path = Path(__file__).resolve().parents[2] / 'linli_character/persona_release_v2.json'
+    # Isolate the outer preparation timeout; selector correctness and its own
+    # provider timeout are covered separately, and prepared requests bypass it.
+    from runtime.memory import history_selection
+    async def selected(messages, gateway, **kwargs):
+        assert kwargs['persona_snapshot'].status == 'READY'
+        return messages
+    monkeypatch.setattr(history_selection, 'select_history_messages', selected)
     messages = ({'role': 'system', 'content': 'persona'}, {'role': 'user', 'content': 'hello'})
-    adapter._messages = lambda *args: messages
+    adapter._messages = lambda *args, **kwargs: messages
     bridge = _LetterGateway(adapter)
     scope = GatewayRequestScope.MEDIA_REPLY_LOW_REASONING if scoped else None
     request = ReplyRequest(content='hello', messages=messages if prepared else None, gateway_scope=scope)

@@ -5,6 +5,7 @@ import sqlite3
 from types import SimpleNamespace
 
 import pytest
+from tests.private_world.decisions import life_decision
 
 from runtime.private_world.daily_life import DailyLifeStore
 from runtime.private_world.daily_life_runtime import (
@@ -39,18 +40,7 @@ class FailingThenSuccessfulGateway:
         self.calls += 1
         if self.calls == 1:
             raise RuntimeError("synthetic provider failure")
-        return SimpleNamespace(
-            text=json.dumps(
-                {
-                    "current": {
-                        "location": "琴房",
-                        "activity": "慢练",
-                        "note": "换一种指法试试。",
-                    },
-                    "projects": [],
-                }
-            )
-        )
+        return SimpleNamespace(text=json.dumps(life_decision(_messages)))
 
 
 class AlwaysFailingGateway:
@@ -80,6 +70,33 @@ class HardFailingGateway:
         raise ClassifiedProviderFailure(self.code, self.status)
 
 
+@pytest.mark.parametrize('pending', [False, True])
+def test_explicit_refresh_rechecks_pending_times_without_bypassing_backoff(tmp_path, pending):
+    now = datetime(2026, 9, 28, 8, tzinfo=timezone.utc)
+    store = DailyLifeStore(tmp_path / 'world.sqlite3')
+    if pending:
+        quote = '明天早上七点前起床。'
+        store.record_exchange('reply:early:1', '早点休息。', quote, [dict(
+            id='early', title='早起', detail=quote, quote=quote, status='planned',
+            kind='linli', actor='linli')], occurred_at=now - timedelta(hours=12))
+    store.publish_day('day:fresh', dict(location='家里', activity='休息', note='正在休息。'),
+                      [], occurred_at=now, activity_kind='rest')
+    gateway = AlwaysFailingGateway()
+    runtime = DailyLifeRuntime(store, lambda: gateway, lambda: '喜欢音乐。')
+
+    async def run():
+        await runtime.refresh(now + timedelta(minutes=1))
+        assert gateway.calls == 0
+        runtime.schedule_refresh(now + timedelta(minutes=2), recheck_projects=True)
+        await runtime._task
+        assert gateway.calls == int(pending)
+        # Manual refresh never resets the existing provider failure backoff.
+        await runtime.refresh(now + timedelta(minutes=3), recheck_projects=True)
+        assert gateway.calls == int(pending)
+
+    asyncio.run(run())
+
+
 def test_running_client_refreshes_stale_world_without_opening_world_page(tmp_path, monkeypatch):
     import local_server as server
 
@@ -89,10 +106,7 @@ def test_running_client_refreshes_stale_world_without_opening_world_page(tmp_pat
     class Gateway:
         async def complete(self, _messages, **_kwargs):
             refreshed.set()
-            return SimpleNamespace(text=json.dumps({
-                "current": {"location": "琴房", "activity": "练琴", "note": "今天练了一小段。"},
-                "projects": [],
-            }))
+            return SimpleNamespace(text=json.dumps(life_decision(_messages, kind='practice', focus='一小段曲子')))
 
     runtime = DailyLifeRuntime(store, Gateway, lambda: "林离喜欢弹琴。")
     monkeypatch.setattr(server, "daily_life_runtime", runtime)
@@ -113,7 +127,7 @@ def test_running_client_refreshes_stale_world_without_opening_world_page(tmp_pat
 
 
 def test_day_refresh_can_advance_twice_in_one_six_hour_block(tmp_path):
-    noon = datetime(2026, 9, 7, 4, tzinfo=timezone.utc)  # 12:00 in Shanghai
+    noon = datetime(2026, 9, 6, 4, tzinfo=timezone.utc)  # Sunday 12:00, no class boundary.
     store = DailyLifeStore(tmp_path / "life.sqlite3")
 
     class Gateway:
@@ -121,10 +135,7 @@ def test_day_refresh_can_advance_twice_in_one_six_hour_block(tmp_path):
 
         async def complete(self, _messages, **_kwargs):
             self.calls += 1
-            return SimpleNamespace(text=json.dumps({
-                "current": {"location": "琴房", "activity": "练琴", "note": f"今天练习第{self.calls}段。"},
-                "projects": [],
-            }))
+            return SimpleNamespace(text=json.dumps(life_decision(_messages, kind='practice', focus=f'第{self.calls}段')))
 
     gateway = Gateway()
     runtime = DailyLifeRuntime(store, lambda: gateway, lambda: "林离喜欢弹琴。")
@@ -132,13 +143,16 @@ def test_day_refresh_can_advance_twice_in_one_six_hour_block(tmp_path):
     async def run():
         await runtime.refresh(noon)
         assert gateway.calls == 1
-        await runtime.refresh(noon + timedelta(hours=2))
+        await runtime.refresh(noon + timedelta(minutes=59))
         assert gateway.calls == 1
-        later = noon + timedelta(hours=5, minutes=31)
+        later = noon + timedelta(hours=1)
         assert store.snapshot(later)["stale"] is True
         await runtime.refresh(later)
         assert gateway.calls == 2
-        assert store.snapshot(later)["current"]["note"] == "今天练习第2段。"
+        for minute in range(1, 10):
+            await runtime.refresh(later + timedelta(minutes=minute))
+        assert gateway.calls == 2  # Polling does not pay for a new decision each minute.
+        assert store.snapshot(later)["current"]["note"] == "在住处练琴：第2段。"
 
     asyncio.run(run())
 
@@ -152,10 +166,7 @@ def test_overdue_life_waits_for_waking_hours(tmp_path):
 
         async def complete(self, _messages, **_kwargs):
             self.calls += 1
-            return SimpleNamespace(text=json.dumps({
-                "current": {"location": "家里", "activity": "整理曲谱", "note": f"整理了第{self.calls}页曲谱。"},
-                "projects": [],
-            }))
+            return SimpleNamespace(text=json.dumps(life_decision(_messages, kind='housework', focus=f'第{self.calls}页曲谱')))
 
     gateway = Gateway()
     runtime = DailyLifeRuntime(store, lambda: gateway, lambda: "林离喜欢弹琴。")

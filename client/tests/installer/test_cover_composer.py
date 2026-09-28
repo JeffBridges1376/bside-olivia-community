@@ -31,10 +31,11 @@ def test_inline_cover_composer_preserves_drafts_and_submission(tmp_path,asr,widt
 def test_audio_collection_reuses_existing_waveform_and_stays_outside_paper():
     source = BOOTSTRAP_JAVASCRIPT
     assert "collect.className='olivia-wave-style'" in source
-    assert "document.body.append(collect)" in source
+    assert "toolbar.append(collect)" in source
+    assert "if(paper)paper.before(toolbar);else this.before(toolbar)" in source
     assert "this.waveCleanup=letterWave(wave,seek,audio,url)" in source
     assert "'/toy/local-songs/from-letter'" in source
-    assert "collect.remove();styles.remove();" in source
+    assert "cancelAnimationFrame(placementFrame);toolbar.remove()" in source
 
 
 def test_world_main_navigation_lifecycle(tmp_path):

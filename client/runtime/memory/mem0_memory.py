@@ -628,6 +628,11 @@ class DeferredConversationMemoryAdapter:
             index = getattr(delegate, "index_original_exchange", None)
             return index(**kwargs) if index is not None else False
 
+    def index_received_user(self, **kwargs):
+        with self._using_current() as delegate:
+            index = getattr(delegate, 'index_received_user', None)
+            return index(**kwargs) if callable(index) else False
+
     def remember_exchange(self, **kwargs):
         with self._using_current() as delegate:
             return delegate.remember_exchange(**kwargs)
@@ -1075,6 +1080,14 @@ class Mem0ConversationMemoryAdapter:
         self._originals.put(self._normalized_user_id(user_id), source_id,
                             user_message, assistant_message, occurred_at)
         return True
+
+    def index_received_user(self, *, user_id, source_id, user_message, occurred_at, exchange_sources=()):
+        user = self._normalized_user_id(user_id)
+        result = self._originals.put_received(user, source_id, user_message, occurred_at)
+        for exchange in exchange_sources:
+            self._originals.alias_received(user, exchange, (source_id,))
+        self._evidence_cache.clear()
+        return result
 
     def __init__(self, backend: Mem0Backend, config: Mem0Config) -> None:
         if not isinstance(config, Mem0Config) or not config.enabled:
@@ -1581,6 +1594,11 @@ class Mem0ConversationMemoryAdapter:
             MemoryWriteStatus.WRITTEN, MemoryWriteStatus.DUPLICATE, MemoryWriteStatus.SKIPPED,
         }:
             return result
+        from runtime.reply.jev_questions import configured_questions
+        if configured_questions() is not None:
+            # Addressing evidence is selected as attributed original text by Jev.
+            # Legacy regex synthesis must not override a Jev skip decision.
+            return result
         # Separate stable sources let already audited imports gain explicit
         # address facts without invalidating their paid extraction audit.
         added = []
@@ -1734,6 +1752,13 @@ class Mem0ConversationMemoryAdapter:
         values: list[object] = []
         created_ids: list[str] = []
         try:
+            from runtime.reply.jev_questions import configured_questions
+            from .jev_memory_extraction import add_originals
+            semantic_port = configured_questions()
+            def add_with_semantics(messages, *, prompt, **kwargs):
+                if semantic_port is not None:
+                    return add_originals(semantic_port, self.backend, messages, prompt=prompt, **kwargs)
+                return self.backend.add(messages, prompt=prompt, **kwargs)
             if source_id.startswith("history:"):
                 for actor, role, content, prompt in (
                     (
@@ -1745,11 +1770,11 @@ class Mem0ConversationMemoryAdapter:
                     (
                         _HISTORY_LINLI_ACTOR,
                         "user",
-                        f"{_HISTORY_LINLI_INPUT_PREFIX}{assistant_message}",
+                        f"{_HISTORY_LINLI_INPUT_PREFIX if semantic_port is None else ''}{assistant_message}",
                         _HISTORY_LINLI_FACT_PROMPT,
                     ),
                 ):
-                    value = self.backend.add(
+                    value = add_with_semantics(
                         [{"role": role, "name": actor, "content": str(content)}],
                         user_id=user_id,
                         agent_id=self.config.agent_id,
@@ -1768,7 +1793,7 @@ class Mem0ConversationMemoryAdapter:
                             memory_id for memory_id, _memory in acknowledgements
                         )
             else:
-                user_value = self.backend.add(
+                user_value = add_with_semantics(
                     [{"role": "user", "content": str(user_message)}],
                     user_id=user_id,
                     agent_id=self.config.agent_id,
@@ -1777,7 +1802,7 @@ class Mem0ConversationMemoryAdapter:
                 )
                 values.append(user_value)
                 explicit_fact = _explicit_user_memory_fact(user_message)
-                if _add_acknowledgements(user_value) == () and explicit_fact is not None:
+                if semantic_port is None and _add_acknowledgements(user_value) == () and explicit_fact is not None:
                     values.append(
                         self.backend.add(
                             explicit_fact,

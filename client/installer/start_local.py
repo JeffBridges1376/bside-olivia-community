@@ -570,6 +570,16 @@ def _run_client_with_native_layout(
 ) -> int:
     """Run the copied client while a bounded guard preserves its native layout."""
 
+    animation = environment.get("OLIVIA_STARTUP_VIDEO")
+    player = Path(__file__).with_name("startup_animation.ps1")
+    if attempt == 1 and os.name == "nt" and animation and Path(animation).is_file() and player.is_file():
+        from installer.patch_native_splash import NativeSplashPatchError, patch_native_splash
+        try:
+            splash_status = patch_native_splash(client.parent)
+        except (OSError, NativeSplashPatchError):
+            splash_status = 'unsupported_or_busy'
+        _append_launcher_event(data_root, 'native_splash', status=splash_status)
+
     stop = Event()
     outcome: list[LayoutStatus] = []
 
@@ -588,11 +598,18 @@ def _run_client_with_native_layout(
     )
     worker.start()
     try:
-        return subprocess.call(
-            _client_command(client, local),
-            cwd=cwd,
-            env=environment,
-        )
+        if attempt == 1 and os.name == 'nt' and animation and Path(animation).is_file() and player.is_file():
+            process = subprocess.Popen(_client_command(client, local), cwd=cwd, env=environment)
+            try:
+                subprocess.Popen(
+                    ['powershell.exe', '-NoProfile', '-STA', '-WindowStyle', 'Hidden',
+                     '-ExecutionPolicy', 'Bypass', '-File', str(player), '-MediaPath', animation,
+                     '-ClientProcessId', str(process.pid), '-ReportPath', str(data_root / 'logs' / 'startup-animation.json')],
+                    creationflags=subprocess.CREATE_NO_WINDOW)
+            except OSError:
+                pass  # The application already started; player failure cannot block it.
+            return process.wait()
+        return subprocess.call(_client_command(client, local), cwd=cwd, env=environment)
     finally:
         stop.set()
         worker.join(timeout=1.0)
@@ -863,6 +880,9 @@ def main(argv: list[str] | None = None) -> int:
         "OLIVIA_PORT": str(args.port),
     }
     backend_environment.update(runtime_environment)
+    from original_client_relay_api import RELAY_BASE
+    backend_environment.setdefault('OLIVIA_JEV_DECISION_URL', RELAY_BASE + '/companion/decide')
+    backend_environment.setdefault('OLIVIA_JEV_BILLING_ENABLED', '1')
     backend_environment["OLIVIA_BACKEND_ID"] = expected_backend_id
     client_environment.update(runtime_environment)
     backend_environment = _load_video_environment(backend_environment, data_root)
@@ -956,6 +976,7 @@ def main(argv: list[str] | None = None) -> int:
         ).expanduser()
         _seed_native_user_settings(source_settings_roaming, roaming)
         _prepare_native_user_settings(roaming, data_root)
+        client_environment.setdefault("OLIVIA_STARTUP_VIDEO", str(backend / "installer" / "assets" / "startup.mp4"))
         _append_launcher_event(data_root, "client_start", attempt=1)
         exit_code = _run_client_with_native_layout(
             client,

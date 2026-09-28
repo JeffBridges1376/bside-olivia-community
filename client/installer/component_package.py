@@ -14,7 +14,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 from installer.component_update import ComponentUpdateError, _validate_relative_path
-from installer.full_patch import PatchInstallError, copy_project_payload
+from installer.full_patch import PatchInstallError, copy_project_payload, stage_startup_video
 
 
 PACKAGE_SCHEMA = "olivia.component-package.v1"
@@ -183,6 +183,8 @@ def build_component_package(
     version: str,
     expected_source_commit: str,
     image_dependency_wheel: str | os.PathLike[str] | None = None,
+    startup_video: str | os.PathLike[str] | None = None,
+    startup_video_sha256: str | None = None,
 ) -> dict[str, object]:
     """Build a deterministic package plus independent manifest/package digests."""
 
@@ -218,6 +220,7 @@ def build_component_package(
         payload = staging / "payload"
         try:
             copy_project_payload(exported_source, payload)
+            stage_startup_video(payload, startup_video, startup_video_sha256)
         except PatchInstallError as exc:
             raise ComponentPackageBuildError(str(exc)) from exc
         _verify_source(source_root, source_commit)

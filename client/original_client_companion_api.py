@@ -523,7 +523,7 @@ async def _daily_life(request: web.Request) -> web.Response:
             body = await request.json()
             if body != {}:
                 return _error("DAILY_LIFE_REQUEST_INVALID", 400, origin=origin)
-            life.schedule_refresh(now)
+            life.schedule_refresh(now, recheck_projects=True)
         result = await asyncio.to_thread(life.snapshot, now)
         return web.json_response(result, headers=headers)
     except OriginalClientCompanionAPIError as exc:

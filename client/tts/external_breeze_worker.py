@@ -19,13 +19,14 @@ _PACKAGE_NAME = "olivia_breeze_tts2_runtime"
 
 
 def _audio_text_chunks(text: str) -> list[str]:
-    """Keep full text while fitting the model context, preferably at punctuation."""
+    """Split long speech only at full stops; the model owns pauses within sentences."""
     chunks = []
     while len(text) > 180:
-        breaks = list(re.finditer(r'[。！？!?；;\n][”’」』）]*', text[:180]))
+        breaks = list(re.finditer(r'(?:。|(?<!\d)\.(?!\d))[”’」』）]*', text))
         if not breaks:
-            breaks = list(re.finditer(r'[，,、\s]', text[:180]))
-        end = breaks[-1].end() if breaks else 180
+            break  # Context validation rejects oversized sentences without cutting words.
+        within = [match for match in breaks if match.end() <= 180]
+        end = (within[-1] if within else breaks[0]).end()
         chunks.append(text[:end])
         text = text[end:]
     if text:
@@ -81,7 +82,7 @@ def _generate_complete_audio(generate, bundle, *, text, audio_only_unbounded=Fal
     for item in results:
         waveform = item['waveform']
         if parts:
-            # Leave a short breath between independently generated text spans.
+            # Retain the established gap between complete sentence spans.
             parts.append(waveform.new_zeros((*waveform.shape[:-1], round(item['sample_rate'] * .2))))
         parts.append(waveform)
     return {'sample_rate': results[0]['sample_rate'],

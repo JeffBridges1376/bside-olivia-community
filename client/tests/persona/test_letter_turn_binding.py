@@ -9,7 +9,8 @@ import pytest
 from runtime.reply.conversation_context import conversation_context
 from runtime.reply.reply_context import ReplyContext, ReplyMode, TrustedTime
 from runtime.reply.reply_orchestrator import ReplyRequest, ReplyResult, ReplyState
-from runtime.reply.reply_pipeline import ReplyPipeline
+from runtime.reply.reply_pipeline import ReplyPipeline, UnavailableRewriter
+from runtime.reply.reply_reviewer import NullReviewer
 
 
 @pytest.mark.parametrize('current', [
@@ -31,14 +32,15 @@ def test_old_topics_do_not_replace_current_letter_at_generation(current):
     async def generate(request):
         seen.append(request)
         return ReplyResult(request.request_id, ReplyState.COMPLETED, text='收到。')
-    pipeline = ReplyPipeline(SimpleNamespace(run=generate), reviewer=None,
-                             rewriter=None, discover_runtime_ports=False)
+    pipeline = ReplyPipeline(SimpleNamespace(run=generate), reviewer=NullReviewer(),
+                             rewriter=UnavailableRewriter(), discover_runtime_ports=False)
     request = ReplyRequest(request_id='letter-reply:current', messages=(
         {'role': 'system', 'content': '<untrusted_history>' + wrapper + '</untrusted_history>'},
         {'role': 'user', 'content': current}), max_input_chars=20000)
     result = asyncio.run(pipeline.run(request, ReplyContext.create(
         ReplyMode.TEXT_LETTER, trusted_time=TrustedTime(now))))
     assert result.state is ReplyState.COMPLETED
+    assert result.reviewer_calls == result.rewrite_calls == 0
     assert result.request_id == request.request_id
     assert len(seen) == 1
     messages = seen[0].normalized_messages()

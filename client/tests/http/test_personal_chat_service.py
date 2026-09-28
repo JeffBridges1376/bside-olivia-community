@@ -8,7 +8,38 @@ from runtime.personal_chat.service import PersonalChatService
 
 
 @pytest.mark.parametrize('channel', ['qq', 'wechat'])
-def test_stale_generated_reply_is_not_replayed_after_newer_delivery(channel):
+def test_first_seen_late_message_does_not_answer_before_a_delivered_newer_turn(channel):
+    async def scenario():
+        rows, generated, sent = [], [], []
+        async def generate(event, row):
+            generated.append(event.text)
+            return 'reply ' + event.text
+        async def send(text):
+            sent.append(text)
+        async def commit(row):
+            pass
+        service = PersonalChatService(rows, lambda: None, generate, commit, {channel: ('a', 'owner')})
+        await service.handle(PersonalMessage(channel, 'a', 'owner', 'new', 'awake',
+                             sent_at='2026-09-26T14:38:00+08:00'), send)
+        restarted = PersonalChatService(json.loads(json.dumps(rows)), lambda: None, generate, commit, service.bindings)
+        late = PersonalMessage(channel, 'a', 'owner', 'old', 'going to sleep',
+                               sent_at='2026-09-26T05:04:00+00:00')
+        await restarted.handle(late, send)
+        await restarted.handle(late, send)
+        assert generated == ['awake']
+        assert sent == ['reply awake']
+        assert restarted.rows[-1]['delivery_status'] == 'SKIPPED'
+        assert restarted.rows[-1]['error_code'] == 'PERSONAL_CHAT_STALE_REPLY'
+        # OneBot timestamps have second precision: ties are not stale.
+        await restarted.handle(PersonalMessage(channel, 'a', 'owner', 'same-second', 'and hello',
+                               sent_at='2026-09-26T06:38:00+00:00'), send)
+        assert generated[-1] == 'and hello'
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('channel', ['qq', 'wechat'])
+@pytest.mark.parametrize('pending_status', ['GENERATED', 'FAILED', 'GENERATING'])
+def test_stale_generated_reply_is_not_replayed_after_newer_delivery(channel, pending_status):
     async def scenario():
         rows, sent = [], []
         async def generate(event, row):
@@ -24,6 +55,7 @@ def test_stale_generated_reply_is_not_replayed_after_newer_delivery(channel):
         old = PersonalMessage(channel, 'a', 'owner', 'old', 'old question')
         with pytest.raises(RuntimeError, match='DISCONNECTED'):
             await service.handle(old, Disconnected())
+        rows[0]['delivery_status'] = pending_status
         await service.handle(PersonalMessage(channel, 'a', 'owner', 'new', 'new question'), send)
         restarted = PersonalChatService(json.loads(json.dumps(rows)), lambda: None, generate, commit, service.bindings)
         await restarted.handle(old, send)
@@ -71,11 +103,14 @@ def test_two_channels_share_serialized_generation_and_commit(tmp_path):
         async def commit(row):
             persisted = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
             assert persisted["letters"] == []
-            assert persisted["personal_chats"][-1]["delivery_status"] == "DELIVERED"
+            stored = next(item for item in persisted['personal_chats'] if item['letter_id'] == row['letter_id'])
+            assert stored['delivery_status'] == 'DELIVERED'
             seen.append(row["letter_id"])
             order.append("commit:" + row["channel"])
         async def send(text):
-            assert rows[-1]["delivery_status"] == "SENDING"
+            sending = [row for row in rows if row['delivery_status'] == 'SENDING']
+            assert len(sending) == 1
+            assert sending[0]['reply_text'] == text
         service = PersonalChatService(rows, persist, generate, commit, {"wechat": ("a", "owner"), "qq": ("b", "owner")})
         await asyncio.gather(service.handle(PersonalMessage("wechat", "a", "owner", "1", "晚饭"), send),
                              service.handle(PersonalMessage("qq", "b", "owner", "1", "散步"), send))
@@ -125,9 +160,12 @@ def test_delivered_replay_retries_consumer_without_resend_and_rejects_foreign_ow
             await service.handle(PersonalMessage("qq", "b", "foreign", "1", "你好"), send)
         assert calls == [] and rows == []
         event = PersonalMessage("qq", "b", "owner", "1", "你好")
-        with pytest.raises(RuntimeError):
-            await service.handle(event, send)
         await service.handle(event, send)
+        await asyncio.gather(*service.consumer_tasks.values())
+        assert rows[0]['delivery_status'] == 'DELIVERED'
+        assert rows[0]['consumer_error_code'] == 'PERSONAL_CHAT_CONSUMER_UNAVAILABLE'
+        await service.handle(event, send)
+        await asyncio.gather(*service.consumer_tasks.values())
         assert calls == ["generate", "send", "commit", "commit"]
     asyncio.run(scenario())
 

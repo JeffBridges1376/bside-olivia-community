@@ -31,7 +31,7 @@ def original_configured(environment):
 
 def render_original_reply(content, reply_text, output_path, *, environment,
                           duration_seconds=110, gateway=None, reply_adapter=None, render_video=True,
-                          include_spoken=True, **video_options):
+                          include_spoken=True, expression_context=None, **video_options):
     from runtime.remote_pipeline import enabled, generate, capabilities
     cloud = enabled(environment)
     if not cloud and duration_seconds != 110:
@@ -48,9 +48,12 @@ def render_original_reply(content, reply_text, output_path, *, environment,
         planner_options = {"gateway": gateway} if gateway is not None else {}
         if reply_adapter is not None:
             planner_options['reply_adapter'] = reply_adapter
+        if expression_context is not None:
+            planner_options['expression_context'] = expression_context
         plan = cached_song_plan(audio.parent / (audio.stem + "-song-plan.private.json"),
             content, reply_text, planning_duration,
-            lambda: plan_song_content(content, reply_text, planning_duration, **planner_options))
+            lambda: plan_song_content(content, reply_text, planning_duration, **planner_options),
+            **({'expression_context':expression_context} if expression_context is not None else {}))
     except Exception as exc:
         raise MusicReplyError("SONG_CONTENT_UNAVAILABLE") from exc
     if cloud and planning_duration == 240 and not music_options['caption'].strip():
@@ -63,7 +66,7 @@ def render_original_reply(content, reply_text, output_path, *, environment,
     try:
         metadata = generate('original', {'lyrics': plan.lyrics, 'music_options': music_options}, audio, environment=environment) if enabled(environment) else generate_ace(None, audio, environment=environment, paths=original_paths(environment),
             lyrics=plan.lyrics, language="zh", task_type="text2music",
-            parameters=generation_parameters(music_options, CAPTION))
+            parameters=generation_parameters(music_options, plan.caption if expression_context is not None else CAPTION))
     except CoverError as exc:
         raise MusicReplyError(str(exc)) from None
     if not render_video:

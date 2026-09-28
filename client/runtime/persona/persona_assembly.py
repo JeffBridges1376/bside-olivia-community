@@ -170,6 +170,7 @@ def assemble_persona(
     evidence_summaries: tuple[UntrustedFragment, ...] = (),
     cost_counter: Callable[[str], int] = len,
     relationship_expression_enabled: bool = False,
+    selected_declaration_ids: tuple[str, ...] | None = None,
 ) -> PersonaAssembly:
     if not isinstance(snapshot, PersonaSnapshot):
         raise TypeError("snapshot must be PersonaSnapshot")
@@ -185,6 +186,7 @@ def assemble_persona(
         history,
         evidence_summaries,
         relationship_expression_enabled=relationship_expression_enabled,
+        selected_declaration_ids=selected_declaration_ids,
     )
     items = tuple(
         PromptBudgetItem(block.item_id, block.section, cost_counter(block.content))
@@ -215,12 +217,14 @@ def _persona_blocks(
     evidence_summaries: tuple[UntrustedFragment, ...],
     *,
     relationship_expression_enabled: bool = False,
+    selected_declaration_ids: tuple[str, ...] | None = None,
 ) -> tuple[_Block, ...]:
     persona_mode = persona_mode_for_reply_mode(context.mode)
     if snapshot.status == "READY":
         if snapshot.profile is None:
             raise ValueError("READY persona requires a profile")
-        declarations = snapshot.declarations
+        from .persona_selection import selected_declarations
+        declarations = selected_declarations(snapshot, persona_mode, selected_declaration_ids)
         # Keep the source/reviewer inventory intact. The stock participation
         # rule already contains refusal; mode grounding retains clarification.
         if any(
@@ -622,6 +626,7 @@ def _declaration_blocks(
     declarations: tuple[PersonaDeclaration, ...],
     tier: str,
     section: PromptSection,
+    *, development=None,
 ) -> tuple[_Block, ...]:
     blocks: list[_Block] = []
     for declaration in declarations:
@@ -641,11 +646,21 @@ def _declaration_blocks(
         }
         if declaration.facet:
             payload["facet"] = declaration.facet
+        if development is not None and declaration.development:
+            from runtime.private_world.character_development import project_persona
+            try:
+                projected = json.loads(project_persona(json.dumps([
+                    {**payload, 'development':declaration.development}], ensure_ascii=False), development))[0]
+                for key in ('current_development', 'development_meaning'):
+                    if key in projected:
+                        payload[key] = projected[key]
+            except (ValueError, KeyError, TypeError, IndexError):
+                pass
         blocks.append(
             _json_block(
                 tier.lower(),
                 _budget_id("declaration", declaration.declaration_id),
-                section,
+                PromptSection.CORE_PERSONA if declaration.inclusion == 'core' else section,
                 payload,
             )
         )
@@ -671,4 +686,6 @@ def _budget_id(prefix: str, source_id: str) -> str:
 def _im_presentation():
     from runtime.personal_chat.presentation import CURRENT
     value = CURRENT.get()
-    return {"chat_delivery": dict(value)} if value is not None else {}
+    local_only = {'companion_decision', 'save_companion_decision', 'received_source_id', 'input_revision',
+                  'proactive_decide', 'proactive_decision'}
+    return {"chat_delivery": {key: item for key, item in value.items() if key not in local_only}} if value is not None else {}

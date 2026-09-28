@@ -34,7 +34,14 @@ def test_release_profile_is_complete_linli_not_policy_only() -> None:
     assert loaded.snapshot.status == "READY"
     assert loaded.snapshot.profile is not None
     assert loaded.snapshot.profile.display_name == "林离 Olivia"
-    assert "钢琴" in loaded.snapshot.profile.summary
+    assert "自己的生活和主见" in loaded.snapshot.profile.summary
+    background = next(row for row in loaded.snapshot.declarations
+                      if row.declaration_id == "background.shanghai_music_student")
+    assert "钢琴" in background.statement
+    assert background.inclusion == "contextual"
+    identity = next(row for row in loaded.snapshot.declarations
+                    if row.declaration_id == "identity.linli_name")
+    assert identity.inclusion == "core"
     assert any("不承担通用助手或专业咨询的角色" in row.statement for row in loaded.snapshot.declarations)
     assert not loaded.readiness_gaps
 
@@ -199,6 +206,7 @@ def test_release_profile_contains_exact_concrete_anchors(
         "rights_status": "SUMMARY_ONLY",
         "allowed_public_release": True,
         "statement": statement,
+        **_anchor_metadata(declaration_id),
     }
 
 
@@ -248,7 +256,31 @@ def test_release_profile_contains_exact_authorized_anchors_and_craft_rules(
         "rights_status": "SUMMARY_ONLY",
         "allowed_public_release": True,
         "statement": statement,
+        **_anchor_metadata(declaration_id),
     }
+
+
+def _anchor_metadata(declaration_id: str) -> dict:
+    """Keep exact source/statement checks while pinning the new classification."""
+    if declaration_id == "anchor.current_piece":
+        return {"inclusion": "phase", "phase_seed": {
+            "title": "肖邦《夜曲 Op.9 No.2》练习",
+            "detail": "初始练习安排：持续练习肖邦《夜曲 Op.9 No.2》，关注音色；实际进展由后续生活记录更新。",
+            "activity_kind": "practice", "scope": "activation_semester",
+        }}
+    result = {"inclusion": "core" if declaration_id == "anchor.name_origin" else "contextual"}
+    topics = {
+        "anchor.listening_shelf": (("jazz", "爵士乐", "interest", "like"),
+                                   ("chinese_pop", "华语流行音乐", "interest", "like")),
+        "anchor.everyday_taste": (("sweet", "甜味", "taste", "like"),
+                                 ("spicy", "辣味", "taste", "avoid"),
+                                 ("light_food", "清淡口味", "taste", "like")),
+        "anchor.reading": (("reading", "阅读", "interest", "like"),),
+    }
+    if declaration_id in topics:
+        result["development"] = [dict(key=key, label=label, kind=kind, baseline=baseline, anchor=True)
+                                 for key, label, kind, baseline in topics[declaration_id]]
+    return result
 
 
 def test_vary_closing_does_not_restore_a_rhetorical_question_rule() -> None:
@@ -370,8 +402,9 @@ def test_release_profile_excludes_private_instances_and_control_protocol() -> No
         "control_only",
     ):
         assert forbidden not in text
-    assert len(text) < 40_000
     payload = json.loads(text)
+    # Storage indentation is not provider context; retain the serialized data bound.
+    assert len(json.dumps(payload, ensure_ascii=False, separators=(",", ":"))) < 40_000
     assert max(len(row["statement"]) for row in payload["declarations"]) <= 240
 
 

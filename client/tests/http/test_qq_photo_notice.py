@@ -44,7 +44,9 @@ def test_photo_preparation_never_sends_canned_progress(monkeypatch, attach):
     asyncio.run(scenario())
 
 
-def test_photo_send_failure_notifies_without_resending_image():
+@pytest.mark.parametrize('primary', [False, True])
+def test_photo_unknown_ack_does_not_announce_failure_or_resend_image(monkeypatch, primary):
+    monkeypatch.setattr('runtime.image_reply.is_companion_image', lambda row: primary)
     async def scenario():
         messages = []
         async def photo(row, send):
@@ -60,6 +62,10 @@ def test_photo_send_failure_notifies_without_resending_image():
         await asyncio.gather(*service.photo_tasks.values())
         service._schedule_photo(row, send)
         assert not service.photo_tasks
-        assert len(messages) == 1 and '没能确认发送成功' in messages[0]
-        assert row['image_failure_notice'] == 'DELIVERED'
+        assert messages == []
+        assert 'image_failure_notice' not in row
+        assert row['image_error_code'] == 'PERSONAL_CHAT_DELIVERY_UNCONFIRMED'
+        if primary:
+            assert row['delivery_status'] == 'DELIVERY_UNCONFIRMED'
+            assert row['letter_status'] == 'PROCESSING'
     asyncio.run(scenario())

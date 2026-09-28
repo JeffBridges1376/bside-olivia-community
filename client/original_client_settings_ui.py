@@ -6,7 +6,7 @@ import base64
 from pathlib import Path
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v48"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v52"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -126,6 +126,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   if (typeof customElements !== 'undefined' && typeof HTMLElement !== 'undefined' && !customElements.get('olivia-photo')) customElements.define('olivia-photo', class extends HTMLElement {
     static get observedAttributes(){return ['letter-id'];}
     connectedCallback(){
+      this.parentElement?.classList.add('olivia-photo-stack');
+      this.removeAttribute('data-open');
       this.outside=e=>{if(!this.contains(e.target))this.setOpen(false);};
       this.escape=e=>{if(e.key==='Escape')this.setOpen(false);};
       this.refresh();
@@ -133,10 +135,23 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     disconnectedCallback(){clearTimeout(this.timer);this.controller?.abort();this.setOpen(false);}
     attributeChangedCallback(){if(this.isConnected){this.setOpen(false);this.refresh();}}
     setOpen(open){
+      if(open===this.hasAttribute('data-open'))return;
+      this.motion?.cancel();
+      const before=this.getBoundingClientRect();
       const paper=this.parentElement?.querySelector('.mail-box-reply-content');
       if(open&&paper)this.style.setProperty('--photo-open-height',Math.max(120,paper.clientHeight-48)+'px');
       this.toggleAttribute('data-open',open);
-      this.querySelector('button')?.setAttribute('aria-expanded',String(open));
+      if(this.isConnected&&this.animate&&!matchMedia('(prefers-reduced-motion: reduce)').matches){
+        const after=this.getBoundingClientRect(),base=getComputedStyle(this).transform;
+        this.setAttribute('data-moving','');
+        this.motion=this.animate([
+          {transform:`translate(${before.x-after.x}px,${before.y-after.y}px) scale(${before.width/Math.max(1,after.width)},${before.height/Math.max(1,after.height)}) ${base==='none'?'':base}`},
+          {transform:base}
+        ],{duration:280,easing:'cubic-bezier(.22,.61,.36,1)'});
+        this.motion.onfinish=()=>this.removeAttribute('data-moving');
+      }else this.removeAttribute('data-moving');
+      const button=this.querySelector('button');
+      if(button){button.setAttribute('aria-expanded',String(open));button.setAttribute('aria-label',open?'收起随信照片':'查看随信照片');}
       const caption=this.querySelector('.olivia-letter-photo-print span');
       if(caption)caption.textContent=open?'收起照片':'查看照片';
       document.removeEventListener('pointerdown',this.outside);
@@ -162,7 +177,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           const url=new URL(data.replyImageUrl);if(url.origin!==new URL(apiBase).origin)return;
           const link=document.createElement('button');link.type='button';link.setAttribute('aria-expanded','false');
           link.onclick=e=>{e.stopPropagation();this.setOpen(!this.hasAttribute('data-open'));};
-          link.title='查看随信照片';link.className='olivia-letter-photo-print';
+          link.title='查看随信照片';link.setAttribute('aria-label','查看随信照片');link.className='olivia-letter-photo-print';
           const img=document.createElement('img');img.alt='随信照片，点击查看大图';
           const caption=document.createElement('span');caption.textContent='查看照片';
           img.onload=()=>{if(id===this.getAttribute('letter-id'))this.ackPhoto();};
@@ -1382,6 +1397,51 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       return area;
     };
     const relationship = relationshipPanel();
+    const agendaRows = (world) => {
+      const date=world?.schedule?.date;
+      const meals=date && Array.isArray(world.meals) ? world.meals.filter(item=>item.date===date) : [];
+      const plans=date && Array.isArray(world?.meal_schedule) ? world.meal_schedule.filter(item=>item.date===date) : [];
+      const stamp=value=>typeof value==='string' && /(?:Z|[+-]\d{2}:\d{2})$/.test(value) ? Date.parse(value) : NaN;
+      const clock=value=>Number.isFinite(stamp(value)) ? new Date(value).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}) : '';
+      const span=(start,end)=>{const a=clock(start),b=clock(end);return a ? a+(b && b!==a ? '–'+b : '') : '时间待同步';};
+      const rows=(world?.schedule?.classes || []).map(item=>({kind:'book',at:stamp(item.start),label:`${span(item.start,item.end)}　${item.title} · 课表计划`}));
+      const seenActivities=new Set();
+      for(const item of world?.today_activities || []){
+        const at=stamp(item.occurred_at);
+        if(!Number.isFinite(at) || typeof item.activity!=='string' || item.activity_kind==='meal')continue;
+        const day=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(at));
+        if(day!==date || seenActivities.has(item.source_id))continue;
+        seenActivities.add(item.source_id);
+        rows.push({kind:'clock',at,label:`${span(item.occurred_at,item.last_recorded_at)}　${item.activity} · ${item.record_count > 1 ? '同状态记录' : '生活记录'}`,note:typeof item.note==='string'?item.note:''});
+      }
+      const names={breakfast:'早餐',lunch:'午餐',dinner:'晚餐',snack:'加餐'};
+      const slots=['breakfast','lunch','dinner'];
+      if(meals.some(item=>item.slot==='snack'))slots.push('snack');
+      for(const slot of slots){
+        const item=meals.find(entry=>entry.slot===slot);
+        const plan=plans.find(entry=>entry.slot===slot);
+        let at=NaN,label;
+        const failure=plan?.status==='error' ? `用餐更新失败${/^[A-Z][A-Z0-9_]{0,95}$/.test(plan.error_code || '') ? `（${plan.error_code}）` : ''}` : null;
+        if(!date)label=`${names[slot]} · 当天日期待同步`;
+        else if(!item){
+          at=stamp(plan?.scheduled_for);
+          const state=failure || (plan?.status==='not_due' ? '未到用餐时间' : plan?.status==='pending' ? '用餐记录待更新' : '用餐安排待同步');
+          label=`${Number.isFinite(at) ? '计划 '+clock(plan.scheduled_for)+'　' : ''}${names[slot]} · ${state}`;
+        }else{
+          const planned=item.status==='planned';
+          const start=planned ? (item.scheduled_for || plan?.scheduled_for) : (item.started_at || item.occurred_at);
+          at=stamp(start);
+          const food=typeof item.food==='string' ? item.food : '';
+          const states={planned:`计划吃${food}`,eating:`正在吃${food}`,eaten:`已吃${food}`,skipped:'这餐没吃'};
+          const state=states[item.status] || '用餐记录待更新';
+          label=`${planned ? '计划 ' : ''}${span(start,item.status==='eaten' ? item.finished_at : null)}　${names[slot]} · ${item.stale ? `上次记录：${state}；当前状态待更新` : state}`;
+          if(item.stale && failure)label+=` · ${failure}`;
+          if(item.recovered)label+=` · ${clock(item.recorded_at) ? '补记于 '+clock(item.recorded_at) : '补记'}`;
+        }
+        rows.push({kind:'meal',at,label});
+      }
+      return rows.sort((a,b)=>(Number.isFinite(a.at)?a.at:Infinity)-(Number.isFinite(b.at)?b.at:Infinity));
+    };
     const draw = (payload) => {
       if (!payload || payload.schema_version !== "olivia.daily-life.v1" || !Array.isArray(payload.projects)
           || !Array.isArray(payload.shared) || !Array.isArray(payload.moments)) throw new Error("DAILY_LIFE_INVALID");
@@ -1403,6 +1463,66 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         topic(el, current);
         now.append(el);
       } else now.append(text("p", "还没有留下近况。连接大模型后，这里会开始记录她的生活。", "text-text-secondary text-body-m"));
+      if (payload.world) {
+        const world = payload.world;
+        const schedule = world.schedule || {};
+        {
+          const el = card();
+          const phases = {teaching:'教学期间', assessment:'复习与考核期间', vacation:'假期', holiday:'休息日', graduated:'毕业后的生活', before_enrollment:'入学前'};
+          el.append(text('h5', '今天的安排', 'text-text-title text-label-l'),
+            text('small', `${schedule.date || '当天日期待同步'} · ${phases[schedule.phase] || ''}`, 'text-text-secondary text-caption-m'));
+          for (const item of agendaRows(world)) {
+            el.append(text('p', item.label, 'text-text-body text-body-m'));
+            if(item.note)el.append(text('small',item.note,'text-text-secondary text-caption-m'));
+          }
+          el.append(text('small', '计划不等于已经发生，临时变化以她留下的近况为准。', 'text-text-secondary text-caption-m'));
+          now.append(el);
+        }
+        const weather = world.weather;
+        if (weather) {
+          const el = card();
+          el.append(text('h5', '上海天气', 'text-text-title text-label-l'));
+          el.append(text('p', weather.status === 'fresh' ? `虹桥站观测 ${weather.temperature_c} °C` : '当前天气暂未获取', 'text-text-body text-body-m'));
+          if (weather.observed_at) el.append(text('small', `${weather.status === 'stale' ? '上次观测（已过期）' : '观测时间'}：${when(weather.observed_at)} · 虹桥站，不代表全市每一处`, 'text-text-secondary text-caption-m'));
+          now.append(el);
+        }
+      }
+      const feelings = card();
+      feelings.append(text('h5', '她现在的心情', 'text-text-title text-label-l'));
+      const emotion = payload.emotion;
+      const reactions = {pleased:'高兴', frustrated:'受挫', concerned:'担忧', hurt:'受伤', relieved:'释然', calm:'平静'};
+      const hasCurrentAffect=Boolean(emotion && Object.prototype.hasOwnProperty.call(emotion,'current_affect'));
+      const affect=emotion?.current_affect, affectName=reactions[affect?.label];
+      const affectState=affect?.status==='available' && affectName ? affectName
+        : affect?.status==='stale' && affectName ? `上次为${affectName}；当前待更新`
+        : affect?.status==='missing' ? '待评估' : '暂时无法读取';
+      const appendAffectBasis=target=>{
+        if(!affectName || !['available','stale'].includes(affect?.status))return;
+        if(typeof affect.reason==='string' && affect.reason.trim())target.append(text('p',`${affect.status==='stale'?'上次依据':'当前依据'}：${affect.reason}`,'text-text-secondary text-body-m'));
+        if(affect.as_of && when(affect.as_of))target.append(text('small',`${affect.status==='stale'?'上次判断于':'判断于'} ${when(affect.as_of)}`,'text-text-secondary text-caption-m'));
+      };
+      if(hasCurrentAffect){feelings.append(text('p',`当前情绪：${affectState}`,'text-text-title text-label-l'));appendAffectBasis(feelings);}
+      if (!emotion || emotion.status !== 'available') {
+        feelings.append(text('p', hasCurrentAffect ? '情绪变化记录暂时无法读取。' : '当前情绪暂时无法读取，不能据此判断她心情平静。', 'text-text-secondary text-body-m'));
+      } else {
+        const recent = (emotion.reactions || []).filter(item => reactions[item.reaction]);
+        if (!recent.length) feelings.append(text('p', '暂时没有有效的近期情绪记录，不代表没有情绪。', 'text-text-secondary text-body-m'));
+        for (const item of [...recent].reverse()) {
+          const entry = document.createElement('div');
+          entry.style.cssText = 'display:grid;gap:6px;padding:8px 0';
+          entry.append(text('p', reactions[item.reaction], 'text-text-title text-label-l'),
+            text('p', `相关事件或话语：${item.quote}`, 'text-text-body text-body-m'),
+            text('p', `她在意的是：${typeof item.goal_or_need === 'string' && item.goal_or_need.trim() ? item.goal_or_need : '尚未明确'}`, 'text-text-secondary text-body-m'),
+            text('small', when(item.occurred_at), 'text-text-secondary text-caption-m'));
+          feelings.append(entry);
+        }
+        if ((emotion.concerns || []).length) {
+          feelings.append(text('h5', '挂心的事', 'text-text-title text-label-l'));
+          for (const item of emotion.concerns) feelings.append(text('p', item.summary, 'text-text-body text-body-m'));
+        }
+        feelings.append(text('small', '这些是她对事件的暂时理解；多种感受可能并存，旧反应会随时间淡出。', 'text-text-secondary text-caption-m'));
+      }
+      now.prepend(feelings);
       const projects = section("最近在忙", "有些事会慢慢来，也可以暂时搁下。");
       const shared = section("与你有关", "推荐、约定，以及你留下的参与。");
       for (const [target, items, empty, limit] of [[projects, payload.projects, "她还没有提起正在忙的事。", 3], [shared, payload.shared, "你们的共同事项会从信件中慢慢留下来。", 2]]) {
@@ -1412,15 +1532,44 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         for (const item of items) {
           const el = document.createElement("details");
           el.style.cssText = "padding:8px 0;overflow-wrap:anywhere";
-          el.append(text("summary", `${item.title} · ${labels[item.status] || "进展未知"}`, "text-text-title text-label-l"),
+          el.append(text("summary", `${item.title} · ${item.time_scope === 'transient' ? '当时的活动记录' : item.deadline_expired ? (item.time_scope_pending ? '时限待确认（上次时限已过）' : '时限已过，进展未确认') : (labels[item.status] || "进展未知") + (item.time_scope_pending ? ' · 时限待确认' : '')}`, "text-text-title text-label-l"),
             text("p", item.detail, "text-text-body text-body-m"),
             text("small", when(item.updated_at), "text-text-secondary text-caption-m"));
+          if(item.deadline_at)el.append(text('small',`${item.time_scope_pending?'上次时限':'时限'}：${when(item.deadline_at)}`,'text-text-secondary text-caption-m'));
           topic(el, item);
-          if (!["completed", "cancelled"].includes(item.status) && shown < limit) { target.append(el); shown++; }
+          if (item.time_scope !== 'transient' && !item.deadline_expired && !["completed", "cancelled"].includes(item.status) && shown < limit) { target.append(el); shown++; }
           else more.append(el);
         }
         if (more.children.length > 1) target.append(more);
         if (!items.length) target.append(text("p", empty, "text-text-secondary text-body-m"));
+      }
+      const episodeHistory=document.createDocumentFragment();
+      const episodes=Array.isArray(payload.world?.recent_episodes) ? payload.world.recent_episodes : [];
+      if(episodes.length){
+        const area=section('经历的过程','展开查看经过、她的理解，以及尚未发生的下一步打算。');
+        const kinds={practice:'练琴',meal:'用餐',rest:'休息'};
+        const results={completed:'完成',partial:'部分进展',failed:'未达成',paused:'暂停'};
+        for(const episode of episodes){
+          const entry=document.createElement('details');entry.className='olivia-world-episode';
+          entry.style.cssText='padding:10px 0;overflow-wrap:anywhere';
+          const result=results[episode.result?.status] || '结果待同步';
+          entry.append(text('summary',`${when(episode.occurred_at)} · ${kinds[episode.activity_kind] || '生活经历'} · ${result}`,'text-text-body text-body-m'));
+          if(episode.trigger?.detail)entry.append(text('p',`起因：${episode.trigger.detail}`,'text-text-body text-body-m'));
+          if(Array.isArray(episode.process) && episode.process.length){
+            entry.append(text('h5','已发生的过程','text-text-title text-label-l'));
+            for(const step of episode.process){
+              for(const [field,label] of [['obstacle','遇到的情况'],['response','她的应对'],['outcome','随后发生']]){
+                if(step[field])entry.append(text('p',`${label}：${step[field]}`,'text-text-body text-body-m'));
+              }
+            }
+          }
+          if(episode.result?.detail)entry.append(text('p',`结果 · ${result}：${episode.result.detail}`,'text-text-body text-body-m'));
+          if(episode.interpretation?.subjective===true && episode.interpretation.meaning)entry.append(text('p',`她的理解（主观）：${episode.interpretation.meaning}`,'text-text-secondary text-body-m'));
+          if(episode.effects?.next_action)entry.append(text('p',`下一步打算（尚未发生）：${episode.effects.next_action}`,'text-text-secondary text-body-m'));
+          if(episode.effects?.open_loop)entry.append(text('p',`仍待处理：${episode.effects.open_loop}`,'text-text-secondary text-body-m'));
+          area.append(entry);
+        }
+        episodeHistory.append(area);
       }
       const moments = section("生活片段", "最近 3 条，展开可读全文。");
       const recent = payload.moments.filter(item => !payload.current || item.id !== payload.current.source_id).slice(0, 3);
@@ -1429,30 +1578,119 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       status.textContent = payload.refreshing ? "正在整理新的近况，已有内容仍可阅读。"
         : payload.error_code ? "新近况暂时没能整理好，已有记录已保留。可以稍后重试。" : "近况已保存。";
       if (panel.dataset?.worldMain !== undefined) {
-        const top=actions();top.className='olivia-world-heading';
-        const title=stack();title.append(heading,text('p','上海 · 北京时间','text-text-secondary'));top.append(title,button('更新近况',()=>load(true)));
-        const columns=document.createElement('div');columns.className='olivia-world-columns';
-        const primary=document.createElement('div'),secondary=document.createElement('aside');
-        const expanded=panel._worldExpanded || (panel._worldExpanded=['now','projects']);
-        const fold=(content,key,column)=>{
-          if (content.classList.contains('olivia-world-fold')) return content;
-          const area=content.tagName==='DETAILS'?content:document.createElement('details');
-          const caption=area===content?content.querySelector('summary'):document.createElement('summary');
-          if(area!==content){caption.textContent=content.querySelector('h4').textContent;content.querySelector('h4').remove();area.append(caption)}
-          const body=document.createElement('div');body.className='olivia-world-scroll';body.tabIndex=0;body.setAttribute('role','region');body.setAttribute('aria-label',caption.textContent);
-          if(area===content){for(const child of [...area.children])if(child!==caption)body.append(child)}else body.append(content);
-          area.append(body);area.classList.add('olivia-world-fold');area.dataset.worldSection=key;area.open=expanded[column]===key;
-          area.addEventListener('toggle',()=>{
-            if(!area.isConnected)return;
-            if(area.open){expanded[column]=key;for(const peer of area.parentElement.children)if(peer!==area)peer.open=false}
-            else if(expanded[column]===key)expanded[column]=null;
-          });
-          return area;
+        // Static, authored line icons; all user/model content uses textContent.
+        const paths = {
+          home:'m3 10 9-7 9 7v11h-6v-8H9v8H3Z',
+          clock:'M12 3a9 9 0 1 0 0 18 9 9 0 1 0 0-18M12 6v6l4 2',
+          weather:'M9 4h6v3H9ZM10 7v8a4 4 0 1 0 4 0V7M12 11v7',
+          emotion:'M12 3a9 9 0 1 0 0 18 9 9 0 1 0 0-18M8 9h.01M16 9h.01M8 15h8',
+          thought:'M7 17a6 6 0 0 1-3-10 6 6 0 0 1 9-3 6 6 0 0 1 8 6 6 6 0 0 1-8 6ZM5 20a1 1 0 1 0 0 2 1 1 0 1 0 0-2',
+          book:'M12 5c-3-3-7-2-9-1v16c3-2 6-2 9 0 3-2 6-2 9 0V4c-3-1-6-2-9 1Zm0 0v15',
+          meal:'M4 3v5a3 3 0 0 0 6 0V3M7 3v18M18 13v8M18 3a3 5 0 1 0 0 10 3 5 0 1 0 0-10',
+          calendar:'M5 5h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2M7 3v4M17 3v4M3 11h18',
+          link:'m10 8 3-3a5 5 0 0 1 7 7l-3 3M14 16l-3 3a5 5 0 0 1-7-7l3-3M8 16l8-8'
         };
-        primary.append(fold(now,'now',0),fold(moments,'moments',0),fold(historyPanel(),'history',0));
-        secondary.append(fold(projects,'projects',1),fold(shared,'shared',1),fold(relationship,'relationship',1));columns.append(primary,secondary);
-        panel.replaceChildren(top,status,columns);
-      } else panel.replaceChildren(heading, status, button("更新近况", () => load(true)), now, projects, shared, moments, historyPanel(), relationship);
+        const line = (kind, label, cls='olivia-world-line') => {
+          const row=document.createElement('div');row.className=cls;
+          const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+          svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('aria-hidden','true');
+          const path=document.createElementNS('http://www.w3.org/2000/svg','path');path.setAttribute('d',paths[kind] || paths.clock);svg.append(path);
+          row.append(svg,text('span',label));return row;
+        };
+        const world=payload.world || {}, schedule=world.schedule || {}, weather=world.weather;
+        const top=document.createElement('div');top.className='olivia-world-heading';
+        const weatherLabel=weather?.status==='fresh' ? `上海 · 虹桥站 ${weather.temperature_c} °C` : '上海 · 天气暂未更新';
+        const weatherInfo=line('weather',weatherLabel+' · 北京时间');
+        if(weather?.observed_at)weatherInfo.title=`${weather.status==='stale'?'已过期的观测':'观测时间'}：${when(weather.observed_at)}`;
+        const refresh=button('更新近况',()=>load(true));refresh.disabled=Boolean(payload.refreshing);top.append(weatherInfo,refresh);
+        const overview=document.createElement('section');overview.className='olivia-world-overview';
+        const current=payload.current, fresh=current && !payload.stale;
+        overview.append(text('h3',fresh ? (current.activity || '她最近的近况') : (payload.rhythm?.activity || '此刻的近况待更新')));
+        const meta=document.createElement('div');meta.className='olivia-world-meta';
+        if(fresh && current.location)meta.append(line('home',current.location));
+        if(current?.occurred_at)meta.append(line('clock',`${fresh?'记录于':'上次分享'} ${when(current.occurred_at)}`));
+        if(!fresh)meta.append(text('span','作息仅供参考，旧活动不代表此刻仍在进行。'));
+        overview.append(meta);
+        const mood=document.createElement('div');mood.className='olivia-world-mood';
+        const valid=emotion?.status==='available';
+        const recent=valid ? [...(emotion.reactions || [])].filter(item=>reactions[item.reaction]).reverse() : [];
+        const emotionNames=[...new Set(recent.map(item=>reactions[item.reaction]))];
+        mood.append(line('emotion',`当前情绪：${hasCurrentAffect?affectState:!valid?'暂时无法读取':emotionNames.length?emotionNames.join('、'):'暂无有效记录'}`));
+        appendAffectBasis(mood);
+        const detail=document.createElement('details');detail.className='olivia-world-emotion-detail';
+        detail.open=Boolean(panel._emotionOpen);
+        detail.addEventListener('toggle',()=>{if(detail.isConnected)panel._emotionOpen=detail.open});
+        detail.append(text('summary','查看变化与原因'));
+        const changes=[];
+        for(const item of recent){
+          const key=JSON.stringify([item.reaction,item.quote,item.goal_or_need?.trim() || '',item.action_tendency || '']);
+          const last=changes[changes.length-1];
+          if(last?.key===key){last.count++;last.first=item.occurred_at;}
+          else changes.push({key,item,count:1,first:item.occurred_at});
+        }
+        for(const {item,count,first} of changes){
+          const entry=document.createElement('div');entry.className='olivia-world-emotion-entry';
+          entry.append(text('h5',reactions[item.reaction]),text('p',`相关事件或话语：${item.quote}`),text('p',`她在意的需要：${typeof item.goal_or_need === 'string' && item.goal_or_need.trim() ? item.goal_or_need : '尚未明确'}`),text('small',count>1?`${when(first)} — ${when(item.occurred_at)} · 相同感受 ${count} 次`:when(item.occurred_at)));
+          if(item.reaction==='relieved')entry.append(text('p','变化：对这件事感到释然，不等同于开心。'));
+          detail.append(entry);
+        }
+        if(recent.length){
+          if(!hasCurrentAffect)mood.append(text('p',`相关原因：${recent[0].quote}`,'olivia-world-muted'));
+          mood.append(detail);
+        }else mood.append(text('p',hasCurrentAffect?'暂无新的情绪变化记录。':valid?'没有记录不代表平静，也不代表没有情绪。':'情绪暂时无法读取，已有生活记录仍可查看。','olivia-world-muted'));
+        if(valid && emotion.concerns?.length)mood.append(line('thought',`挂心的事：${emotion.concerns.map(item=>item.summary).join('；')}`));
+        overview.append(mood);
+        const tabs=document.createElement('div');tabs.className='olivia-world-tabs';tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','世界内容');
+        const today=document.createElement('div');today.className='olivia-world-content';
+        const columns=document.createElement('div');columns.className='olivia-world-columns';
+        const agenda=section('今天的安排',schedule.date || '日期暂未获取');
+        for(const item of agendaRows(world)){
+          if(!item.note){agenda.append(line(item.kind,item.label,'olivia-world-agenda'));continue;}
+          const entry=document.createElement('details');entry.className='olivia-world-agenda-detail';
+          entry.append(text('summary',item.label,'olivia-world-agenda'),text('p',item.note,'olivia-world-muted'));
+          agenda.append(entry);
+        }
+        agenda.append(text('small','课表和打算不证明已经发生，以后续生活记录为准。','olivia-world-muted'));
+        const next=section('接下来','');next.className='olivia-world-aside';
+        if(schedule.next_class)next.append(line('calendar',`${when(schedule.next_class.start)}　${schedule.next_class.title}`,'olivia-world-agenda'));
+        else next.append(text('p','暂无下一节课的安排。','olivia-world-muted'));
+        const promise=payload.shared.find(item=>item.time_scope !== 'transient' && !item.deadline_expired && !['completed','cancelled'].includes(item.status));
+        if(promise){next.append(line('link','与你的约定','olivia-world-agenda'),text('p',promise.title),text('small',labels[promise.status] || '状态待确认','olivia-world-muted'))}
+        columns.append(agenda,next);today.append(columns);
+        const connections=document.createElement('div');connections.className='olivia-world-content';
+        const relationColumns=document.createElement('div');relationColumns.className='olivia-world-columns';
+        const related=document.createElement('div');related.className='olivia-world-aside';related.append(shared,relationship);relationColumns.append(projects,related);connections.append(relationColumns);
+        const history=document.createElement('div');history.className='olivia-world-content';
+        if(current){const last=section('最近一次分享',fresh?'最近留下的记录':'旧记录，不代表当前活动');last.append(text('p',current.note),text('small',when(current.occurred_at),'olivia-world-muted'));topic(last,current);history.append(last)}
+        history.append(episodeHistory,moments,historyPanel());
+        const views=[today,connections,history], names=['今天','牵挂与关系','生活记录'];
+        const choose=index=>{
+          panel._worldTab=index;
+          [...tabs.children].forEach((tab,i)=>{tab.setAttribute('aria-selected',String(i===index));tab.tabIndex=i===index?0:-1;views[i].hidden=i!==index});
+        };
+        names.forEach((name,i)=>{
+          const tab=button(name,()=>choose(i));tab.setAttribute('role','tab');tab.id=`olivia-world-tab-${i}`;tab.setAttribute('aria-controls',`olivia-world-view-${i}`);
+          views[i].id=`olivia-world-view-${i}`;views[i].setAttribute('role','tabpanel');views[i].setAttribute('aria-labelledby',tab.id);
+          tab.addEventListener('keydown',event=>{const index=event.key==='ArrowRight'?(i+1)%3:event.key==='ArrowLeft'?(i+2)%3:event.key==='Home'?0:event.key==='End'?2:null;if(index!==null){event.preventDefault();choose(index);tabs.children[index].focus()}});tabs.append(tab);
+        });
+        choose([0,1,2].includes(panel._worldTab)?panel._worldTab:0);
+        const basis=document.createElement('details');basis.className='olivia-world-basis';
+        basis.append(text('summary','查看回应依据'));
+        const frozen=payload.reply_basis;
+        if(frozen?.status==='available'){
+          basis.append(text('p',`最近一次已送达 QQ 回复 · 采用状态的时间：${when(frozen.as_of)}`));
+          basis.append(text('p',`当时的活动：${frozen.activity || (frozen.world_used?'没有确定的当前活动':'这次未采用世界状态')}`));
+          const names=[...new Set((frozen.reactions || []).map(item=>reactions[item.reaction]).filter(Boolean))];
+          basis.append(text('p',`当时的情绪：${names.join('、') || (frozen.emotion_used?'没有已记录的情绪反应':'这次未采用情绪状态')}`));
+          for(const item of frozen.reactions || [])if(item.quote)basis.append(text('p',`相关原因：${item.quote}`));
+          if(frozen.concerns?.length)basis.append(text('p',`当时挂心的事：${frozen.concerns.join('；')}`));
+          basis.append(text('small','这是生成回复时保存的状态，不会用当前世界状态替换。'));
+        }else basis.append(text('p',frozen?.status==='unavailable'?'回应依据暂时无法读取。':'最近的 QQ 回复尚无可核验的状态快照，不能用当前状态代替。'));
+        status.className='olivia-world-status';status.setAttribute('role','status');
+        const scroll=panel.scrollTop;
+        panel.replaceChildren(top,overview,tabs,...views,basis,status);
+        panel.scrollTop=scroll;
+      } else panel.replaceChildren(heading, status, button("更新近况", () => load(true)), now, projects, shared, episodeHistory, moments, historyPanel(), relationship);
     };
     const load = async (refresh = false) => {
       if (busy || !alive()) return;
@@ -2532,6 +2770,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
             await reload(); await refreshLocalSongCatalog(); state.textContent = "已删除。";
           } catch (_error) { state.textContent = "删除失败；若正在播放，请停止播放后重试。"; }
         }));
+        controls.append(button("打开文件位置", async () => {
+          try {
+            await localSongRequest("/reveal", {id: song.id});
+            state.textContent = "已在资源管理器中定位文件。";
+          } catch (_error) { state.textContent = "无法打开文件位置，请确认文件仍在本地后重试。"; }
+        }));
         row.append(name, text("span", `${Math.round(song.duration)} 秒`), controls); list.append(row);
       }
       if (!result.songs.length) list.append(text("p", "还没有导入演奏。"));
@@ -2639,23 +2883,50 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       [data-olivia-world-page]{width:100%;height:100%;min-height:0;color:#ded9d1;display:flex;flex-direction:column;gap:24px;-webkit-app-region:no-drag}
       .olivia-world-header{height:40px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
       .olivia-world-header h1{font-size:30px;margin:0;font-weight:700}
-      [data-world-main]{overflow:hidden;background:#191a1c;border-radius:12px;padding:24px;min-height:0;flex:1;display:flex;flex-direction:column;box-sizing:border-box}
+      [data-world-main]{overflow-y:auto;overflow-x:hidden;background:#191a1c;border-radius:12px;padding:28px 32px;min-height:0;flex:1;display:block;box-sizing:border-box;scrollbar-width:thin}
       [data-world-main] p{line-height:1.7;margin:8px 0}
       [data-world-main] h3{font-size:26px;margin:0}[data-world-main] h4{font-size:21px;margin:0}
       [data-world-main] button,.olivia-world-header button{border:1px solid #686a70;border-radius:999px;background:transparent;color:#ded9d1;padding:9px 18px;font:inherit;cursor:pointer}
       [data-world-main] summary{cursor:pointer;line-height:1.7}
       [data-world-main] article{background:transparent!important;padding:12px 0!important}
       .olivia-world-heading{display:flex;justify-content:space-between;align-items:center;gap:16px}
-      .olivia-world-columns{display:grid;grid-template-columns:minmax(0,1.8fr) minmax(0,1fr);gap:36px;flex:1;min-height:0;overflow:hidden}
-      .olivia-world-columns>aside{border-left:1px solid #383a3e;padding-left:32px;min-width:0}
-      .olivia-world-columns>div,.olivia-world-columns>aside{min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden}
-      .olivia-world-fold{margin:0!important;min-height:0;flex:0 0 auto;border-bottom:1px solid #383a3e;overflow:hidden}
-      .olivia-world-fold[open]{flex:1 1 0;position:relative}
-      .olivia-world-fold>summary{padding:14px 0;font-size:20px;height:64px;box-sizing:border-box}
-      .olivia-world-scroll{position:absolute;inset:64px 0 0;min-height:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;scrollbar-width:none;padding:0 12px 16px 0}
-      .olivia-world-scroll::-webkit-scrollbar{display:none;width:0;height:0}
-      .olivia-world-scroll>section{margin-top:0!important}
-      @media(max-width:800px){.olivia-world-columns{gap:16px;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.olivia-world-columns>aside{padding-left:16px}[data-world-main]{padding:16px}.olivia-world-fold>summary{font-size:16px;padding:12px 0;height:52px}.olivia-world-scroll{top:52px}}
+      .olivia-world-columns{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(0,1fr);gap:32px}
+      .olivia-world-columns>*{min-width:0;margin-top:0!important}
+      .olivia-world-columns>section{align-content:start}
+      .olivia-world-aside{border-left:1px solid #383a3e;padding-left:28px;min-width:0}
+      .olivia-world-aside>section{margin-top:0!important}
+      .olivia-world-heading{font-size:14px;color:#acb0b4}
+      .olivia-world-heading button{flex-shrink:0;font-size:13px}
+      .olivia-world-overview{padding:22px 0 0}
+      .olivia-world-meta{display:flex;align-items:center;flex-wrap:wrap;gap:16px;font-size:13px;color:#acb0b4;margin-top:10px}
+      .olivia-world-line,.olivia-world-agenda{display:flex;gap:12px;align-items:center;overflow-wrap:anywhere}
+      [data-world-main] svg{width:20px;height:20px;flex-shrink:0;fill:none;stroke:currentColor;stroke-width:1.65;stroke-linecap:round;stroke-linejoin:round}
+      .olivia-world-meta svg{width:16px;height:16px}
+      .olivia-world-mood{margin-top:22px;display:grid;gap:8px;font-size:15px}
+      .olivia-world-mood>.olivia-world-line svg{color:#b6c8b0}
+      [data-world-main] .olivia-world-muted{color:#acb0b4;font-size:14px}
+      [data-world-main] .olivia-world-mood>p{margin:0 0 0 32px}
+      .olivia-world-emotion-detail{margin:0 0 8px 32px;font-size:14px}
+      .olivia-world-emotion-detail>summary{color:#acb0b4;padding:4px 0}
+      .olivia-world-emotion-entry{border-bottom:1px solid #383a3e;padding:14px 0}
+      .olivia-world-emotion-entry h5{font-size:15px;margin:0}
+      .olivia-world-emotion-entry p,.olivia-world-emotion-entry small{color:#acb0b4}
+      .olivia-world-tabs{display:flex;gap:30px;border-bottom:1px solid #383a3e;margin-top:26px}
+      [data-world-main] .olivia-world-tabs button{border:0;border-radius:0;padding:12px 0;font-size:15px;color:#acb0b4;border-bottom:2px solid transparent}
+      [data-world-main] .olivia-world-tabs button[aria-selected=true]{border-bottom-color:#ded3bf;color:#eee6d9}
+      .olivia-world-content{padding:26px 0;overflow-wrap:anywhere}
+      [data-world-main] [hidden]{display:none!important}
+      .olivia-world-agenda{padding:17px 0;border-bottom:1px solid #383a3e;font-size:15px}
+      .olivia-world-agenda-detail>summary{display:list-item;list-style-position:inside;cursor:pointer}
+      .olivia-world-agenda-detail>p{padding:0 12px 12px}
+      [data-world-main] .olivia-world-status{font-size:12px;color:#acb0b4;border-top:1px solid #383a3e;padding-top:14px;margin-top:0}
+      .olivia-world-basis{border-top:1px solid #383a3e;padding:14px 0;font-size:13px;color:#acb0b4}
+      [data-world-main] .olivia-world-basis+.olivia-world-status{border:0;padding-top:0}
+      [data-world-main] button:disabled{opacity:.5;cursor:wait}
+      [data-world-main] button:hover:not(:disabled){background:#ffffff08}
+      [data-world-main] button:focus-visible,[data-world-main] summary:focus-visible{outline:2px solid #ded3bf;outline-offset:4px}
+      @media(max-width:800px){.olivia-world-columns{gap:20px;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr)}.olivia-world-aside{padding-left:20px}[data-world-main]{padding:20px}[data-world-main] h3{font-size:23px}[data-world-main] h4{font-size:18px}}
+      @media(max-width:580px){.olivia-world-columns{grid-template-columns:1fr}.olivia-world-aside{padding:20px 0 0;border-left:0;border-top:1px solid #383a3e}.olivia-world-tabs{gap:20px}.olivia-world-heading{align-items:flex-start}.olivia-world-heading .olivia-world-line{align-items:flex-start}[data-world-main]{padding:18px}.olivia-world-meta{gap:8px}}
     `;
     const header=document.createElement('header');header.className='olivia-world-header';header.append(text('h1','世界'));
     const panel=document.createElement('section');panel.dataset.worldMain='';
@@ -3303,7 +3574,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
   window.__oliviaPrepareLetterRoute = async (config) => {
     const endpoint = new URL(config.url, config.baseURL || apiBase);
-    if (endpoint.origin !== new URL(apiBase).origin || !/^\/(?:toy\/)?letter\/send$/.test(endpoint.pathname)) return config;
+    if (endpoint.origin !== new URL(apiBase).origin || !/^\/(?:toy\/)?letter\/(?:send|resend)$/.test(endpoint.pathname)) return config;
+    const resending = endpoint.pathname.endsWith('/resend');
     if (proactiveState.busy) {
       const error = new Error("林离正在写信，完成后就可以寄出。草稿会保留。");
       error.code = "PROACTIVE_LETTER_BUSY";
@@ -3311,13 +3583,13 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       throw error;
     }
     const body = typeof config.data === "string" ? JSON.parse(config.data) : config.data;
-    if (!body || typeof body.content !== "string" || !body.content.trim()) return config;
+    if (!body || (!resending && (typeof body.content !== "string" || !body.content.trim()))) return config;
     let preview;
-    const editor=coverComposer?.isConnected && coverComposer.value===body.content ? composerCovers.get(coverComposer) : null;
+    const editor=!resending && coverComposer?.isConnected && coverComposer.value===body.content ? composerCovers.get(coverComposer) : null;
     let attachment=null;
     try{if(editor && editor.mode!=='letter')attachment=editor.materialForSend()}
     catch(error){error.config=config;throw error}
-    try { do { preview = await routeRequest("/toy/letter/route-preview", {content: body.content,
+    try { do { preview = await routeRequest("/toy/letter/route-preview", {...(resending ? {letter_id:body.letter_id || body.letterId} : {content: body.content}),
       ...(attachment?.original_output ? {original_output:attachment.original_output,music_options:attachment.music_options} :
         attachment ? {cover_source_id:attachment.cover_source_id,cover_output:attachment.cover_output} : {})});
       if (!preview.requested_route || preview.ready || preview.readiness?.backend !== 'remote') break;
@@ -3371,6 +3643,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
     let once;
     let videoOnce;
+    if (preview.image_enabled && !await confirmAction(
+      (preview.image_requested ? '本次回信预计生成图片附件。' : '图片附件已开启，本次回信可能生成图片。') +
+      '生成图片会按图片服务计费。是否附图以正式回信判断为准，未生成不会收取图片费用。确认寄出？')) {
+      throw Object.assign(new Error('已取消发送，草稿保留。'),{config,code:'ERR_CANCELED',__CANCEL__:true});
+    }
     if (preview.requested_route && (!preview.ready || preview.needs_confirmation || preview.needs_video_confirmation)) {
       if (!await confirmReplyRoute(preview.requested_route, preview.ready, preview.needs_video_confirmation)) {
         const error = new Error("已取消发送，信件内容保留"); error.name = "CanceledError"; error.code = "ERR_CANCELED"; error.__CANCEL__ = true; throw error;
@@ -3380,7 +3657,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
     const material = {...(body.material || {}), ...(attachment || {}), route_preview_token: preview.token};
     delete material.filename;
-    if (preview.requires_cover_audio && !material.cover_source_id) {
+    if (!resending && preview.requires_cover_audio && !material.cover_source_id) {
       editor?.select('cover');
       throw Object.assign(new Error("请在翻唱页选择原曲并确认歌词，再点击寄出。"),{config,code:"ERR_CANCELED",__CANCEL__:true});
     }
@@ -4262,30 +4539,34 @@ BOOTSTRAP_JAVASCRIPT = r'''
   if (!window.customElements || customElements.get('olivia-letter-audio')) return;
   const style = document.createElement('style');
   style.textContent = `
-    olivia-letter-audio{display:block;margin:var(--tp-spacing-5,16px) var(--tp-spacing-6,16px) 0;color:var(--tp-grey-0,#333);font-family:inherit}
+    .mail-content-body-inner>.mail-responsive-card{width:min(100%,650px);min-width:0;height:auto;min-height:0;flex:0 0 auto;aspect-ratio:auto}
+    .mail-content-body-inner>.mail-responsive-card>.mail-card-content{width:100%;min-width:0;min-height:0;height:auto;aspect-ratio:16/9;box-sizing:border-box}
+    olivia-letter-audio{display:block;margin:8px var(--tp-spacing-6,16px) 0;color:var(--tp-grey-0,#333);font-family:inherit}
     .mail-box-reply-content-text:has(olivia-letter-audio){height:auto;min-height:290px}
     .mail-box-reply-content-text:has(olivia-letter-audio) .mail-box-reply-content-textarea{height:180px;margin-top:10px}
     .mail-responsive-card:has(olivia-photo){height:auto!important;aspect-ratio:auto;flex:0 0 auto!important}
-    .mail-responsive-card:has(olivia-photo .olivia-letter-photo-print){position:relative;isolation:isolate;padding-bottom:52px}
-    .mail-responsive-card:has(olivia-photo .olivia-letter-photo-print)>.mail-box-reply-content{position:relative;z-index:1}
-    .mail-responsive-card:has(olivia-photo[data-open]){z-index:5}
+    .olivia-photo-stack:has(olivia-photo .olivia-letter-photo-print){position:relative;isolation:isolate;padding-bottom:44px}
+    .olivia-photo-stack:has(olivia-photo .olivia-letter-photo-print)>.mail-box-reply-content{position:relative;z-index:1}
+    .olivia-photo-stack:has(olivia-photo[data-open]){z-index:5}
+    olivia-photo[data-moving]{z-index:3!important}
     olivia-photo{display:block;flex:none;margin:8px 20px 16px;max-width:100%;color:#bbb6ad;overflow-wrap:anywhere;font-family:system-ui,sans-serif;font-size:13px;line-height:1.6}
-    olivia-photo:has(.olivia-letter-photo-print){position:absolute;right:24px;bottom:8px;z-index:0;display:block;max-width:calc(100% - 48px);margin:0}
+    olivia-photo:has(.olivia-letter-photo-print){position:absolute;right:56px;bottom:44px;z-index:0;display:block;max-width:calc(100% - 80px);margin:0;transform-origin:bottom right;transform:rotate(-12deg)}
     olivia-photo[data-open]{top:16px;bottom:auto;z-index:3;transform:none}
-    .olivia-letter-photo-print{display:block;max-width:100%;padding:8px 8px 4px;border:0;background:#f3eee4;color:#514638;text-decoration:none;box-shadow:0 4px 12px #0003;cursor:zoom-in}
-    .olivia-letter-photo-print img{display:none;max-width:100%;width:auto;height:auto;object-fit:contain}
+    .olivia-letter-photo-print{display:block;box-sizing:border-box;width:160px;max-width:100%;padding:6px;border:0;border-radius:0;background:#f3eee4;color:#514638;text-decoration:none;box-shadow:0 4px 12px #0003;cursor:zoom-in}
+    .olivia-letter-photo-print img{display:block;max-width:100%;width:100%;height:176px;object-fit:cover}
     .olivia-letter-photo-print span{display:block;padding:4px 0;text-align:center;font:16px/1.5 SentyTEA,serif}
-    olivia-photo[data-open] .olivia-letter-photo-print{cursor:zoom-out;box-shadow:0 12px 32px #0006}
-    olivia-photo[data-open] img{display:block;max-height:min(360px,60vh,var(--photo-open-height,360px))}
+    olivia-photo:not([data-open]) .olivia-letter-photo-print span{display:none}
+    olivia-photo[data-open] .olivia-letter-photo-print{width:auto;cursor:zoom-out;box-shadow:0 12px 32px #0006}
+    olivia-photo[data-open] img{width:auto;height:auto;object-fit:contain;max-height:min(360px,60vh,var(--photo-open-height,360px))}
     .olivia-letter-photo-print:focus-visible{outline:2px solid #d6c3a4;outline-offset:4px}
     olivia-photo:empty{display:none}
     .tp-el-overlay:has(.video-preview-dialog){z-index:10000!important}
     olivia-letter-audio .voice-controls{position:relative;display:flex;flex-direction:column;align-items:center;gap:5px;padding:8px 0 12px;color:#514638}
     olivia-letter-audio .voice-controls>button{position:absolute;top:21px;left:calc(50% - 105px)}
     olivia-letter-audio .voice-controls[data-wave-style="ripple"]>button{left:calc(50% - 15px);top:21px;z-index:1}
-    .olivia-wave-style{position:fixed;z-index:50;width:108px;border:1px solid #64676e;border-radius:14px;background:#202124;color:#eee9df;font:13px/1.5 "Microsoft YaHei",Arial,sans-serif;padding:6px;cursor:pointer;color-scheme:dark}
+    .olivia-audio-toolbar{display:flex;justify-content:flex-end;align-items:center;flex-wrap:wrap;gap:8px;padding:8px 0 12px;font:13px/1.5 "Microsoft YaHei",Arial,sans-serif;color:#eee9df}
+    .olivia-wave-style{position:static;border:1px solid #64676e;border-radius:14px;background:#202124;color:#eee9df;font:13px/1.5 "Microsoft YaHei",Arial,sans-serif;padding:6px 10px;cursor:pointer;color-scheme:dark}
     .olivia-wave-style option{background:#202124;color:#eee9df;font:13px "Microsoft YaHei",Arial,sans-serif}
-    @media(max-width:600px){olivia-letter-audio .voice-controls{padding-top:32px}olivia-letter-audio .voice-controls>button,olivia-letter-audio .voice-controls[data-wave-style="ripple"]>button{top:45px}}
     olivia-letter-audio button{appearance:none;border:0;background:none;color:inherit;padding:6px;cursor:pointer;flex-shrink:0;line-height:1}
     olivia-letter-audio button:focus-visible,olivia-letter-audio input:focus-visible{outline:2px solid currentColor;outline-offset:3px}
     olivia-letter-audio svg{width:18px;height:18px;fill:currentColor;display:block}
@@ -4294,8 +4575,11 @@ BOOTSTRAP_JAVASCRIPT = r'''
     olivia-letter-audio .voice-wave canvas{display:block;width:100%;height:60px;pointer-events:none}
     olivia-letter-audio .voice-wave input{position:absolute;left:0;bottom:-5px;width:100%;height:20px;margin:0;opacity:0;touch-action:pan-y}
     olivia-letter-audio .voice-wave:focus-within{outline:1px solid currentColor;outline-offset:3px}
-    olivia-letter-audio .voice-volume-control{display:flex;align-items:center;justify-content:center;gap:8px;font-size:12px}
-    olivia-letter-audio .voice-volume{width:110px;flex:none;margin:3px 0 0}
+    olivia-letter-audio .voice-volume-control{position:absolute;left:calc(50% + 88px);top:21px;font:12px Arial,sans-serif}
+    olivia-letter-audio .voice-volume-control summary{display:flex;align-items:center;gap:4px;cursor:pointer;list-style:none;padding:6px}
+    olivia-letter-audio .voice-volume-control summary::-webkit-details-marker{display:none}
+    olivia-letter-audio .voice-volume-popup{position:absolute;right:0;top:100%;padding:12px;background:#f3eee4;border:1px solid #b7aa95;border-radius:8px;z-index:2}
+    olivia-letter-audio .voice-volume{width:100px;flex:none;margin:0}
     olivia-letter-audio time{font-family:Arial,sans-serif;font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap}
     olivia-letter-audio .voice-status{font-size:13px;line-height:1.7}
     olivia-letter-audio .song-controls{display:flex;align-items:center;gap:12px;margin:14px 0;padding:12px 16px;border:1px solid #a48c5c66;border-radius:12px;background:#a48c5c14;color:#78613b}
@@ -4416,35 +4700,41 @@ BOOTSTRAP_JAVASCRIPT = r'''
         button.onclick=()=>{this.waveCleanup?.start();if(audio.paused)audio.play().catch(()=>{status.textContent='语音暂时无法播放，请稍后重新打开信件。'});else audio.pause()};
         seek.oninput=()=>{audio.currentTime=Number(seek.value)};
         audio.onplay=()=>{if(current&&current!==audio)current.pause();document.querySelectorAll('video').forEach(v=>v.pause());current=audio;sync()};audio.onpause=sync;audio.ontimeupdate=sync;
-        audio.onloadedmetadata=()=>{audio.currentTime=Math.min(oldTime,audio.duration||0);sync();if(wasPlaying)audio.play().catch(()=>{})};
+        audio.onloadedmetadata=()=>{audio.currentTime=Math.min(oldTime,audio.duration||0);if(state==='COMPLETED')status.textContent='';sync();if(wasPlaying)audio.play().catch(()=>{})};
         audio.onerror=()=>{status.textContent='语音暂时无法播放，请稍后重新打开信件。'};
         audio.onended=sync;
         const wave=document.createElement('div');wave.className='voice-wave';
         const volume=document.createElement('input');volume.type='range';volume.className='voice-volume';volume.min='0';volume.max='100';volume.step='1';volume.value=String(Math.round(audio.volume*100));volume.setAttribute('aria-label','语音音量');
         volume.oninput=()=>{audio.volume=Number(volume.value)/100;try{localStorage.setItem('olivia.letter.voice-volume',volume.value)}catch(_){}};
-        const volumeControl=document.createElement('label');volumeControl.className='voice-volume-control';volumeControl.textContent='音量';volumeControl.append(volume);
+        const volumeControl=document.createElement('details');volumeControl.className='voice-volume-control';
+        const volumeToggle=document.createElement('summary');volumeToggle.setAttribute('aria-label','调节语音音量');const speaker=document.createElementNS('http://www.w3.org/2000/svg','svg');speaker.setAttribute('viewBox','0 0 24 24');speaker.setAttribute('aria-hidden','true');speaker.style.fill='none';speaker.style.stroke='currentColor';speaker.style.strokeWidth='1.6';const speakerPath=document.createElementNS('http://www.w3.org/2000/svg','path');speakerPath.setAttribute('d','M11 5 6 9H3v6l5 4zM15 8a6 6 0 0 1 0 8M18 5a10 10 0 0 1 0 14');speaker.append(speakerPath);const volumeLabel=document.createElement('span');volumeLabel.textContent='音量';volumeToggle.append(speaker,volumeLabel);
+        const volumePopup=document.createElement('div');volumePopup.className='voice-volume-popup';volumePopup.append(volume);volumeControl.append(volumeToggle,volumePopup);
+        volumeControl.addEventListener('keydown',event=>{if(event.key==='Escape'){volumeControl.open=false;volumeToggle.focus()}});
         row.append(button,wave,stamp,volumeControl);this.append(row);this.waveCleanup=letterWave(wave,seek,audio,url);
         const styles=document.createElement('select');styles.className='olivia-wave-style';styles.setAttribute('aria-label','波形样式');styles.title='选择波形样式';
         for(const [value,label] of [['bars','淡墨呼吸'],['dots','浮动墨点'],['ribbon','轻柔声带'],['ripple','声音涟漪']]){const option=document.createElement('option');option.value=value;option.textContent=label;styles.append(option)}
         try{styles.value=localStorage.getItem('olivia.letter.wave-style')||'bars'}catch(_){}if(!styles.value)styles.value='bars';
         const choose=()=>{row.dataset.waveStyle=styles.value;this.waveCleanup.setStyle(styles.value)};
-        styles.onchange=()=>{choose();try{localStorage.setItem('olivia.letter.wave-style',styles.value)}catch(_){}};document.body.append(styles);choose();
+        styles.onchange=()=>{choose();try{localStorage.setItem('olivia.letter.wave-style',styles.value)}catch(_){}};choose();
         const collect=document.createElement('button');collect.type='button';collect.className='olivia-wave-style';collect.textContent='添加到曲库';
         collect.onclick=async()=>{if(collect.disabled)return;collect.disabled=true;
           try {const response=await fetch(new URL('/toy/local-songs/from-letter',coverApi),{method:'POST',credentials:'omit',
             headers:{'Content-Type':'application/json','X-Olivia-Companion-Action':'confirmed'},body:JSON.stringify({letter_id:this.getAttribute('cover-id')})});
             const result=await response.json();if(!response.ok||result.code!==0)throw Error();collect.textContent='已添加到曲库';window.dispatchEvent(new Event('olivia-local-catalog-ready'));
           }catch(_){collect.textContent='添加失败，点击重试';collect.disabled=false;}};
-        if(this.getAttribute('cover-id')&&state==='COMPLETED')document.body.append(collect);
-        const paper=this.closest('.mail-box-reply-content-text')||this;
-        const positionStyle=()=>{
-          const rect=paper.getBoundingClientRect();const top=this.getBoundingClientRect().top;
-          styles.hidden=rect.bottom<0||top<0||top>window.innerHeight||!this.isConnected;
-          styles.style.left=Math.min(window.innerWidth-116,rect.right+10)+'px';
-          styles.style.top=Math.max(8,top)+'px';collect.hidden=styles.hidden;collect.style.left=styles.style.left;collect.style.top=Math.max(8,top+42)+'px';
+        const toolbar=document.createElement('div');toolbar.className='olivia-audio-toolbar';toolbar.setAttribute('aria-label','信件语音工具');toolbar.append(styles);
+        if(this.getAttribute('cover-id')&&state==='COMPLETED')toolbar.append(collect);
+        toolbar.setAttribute('data-html2canvas-ignore','true');
+        const placeToolbar=()=>{
+          if(!this.isConnected)return;
+          const paper=this.closest('.mail-box-reply-content');
+          if(paper)paper.before(toolbar);else this.before(toolbar);
         };
-        const styleResize=new ResizeObserver(positionStyle);styleResize.observe(paper);window.addEventListener('resize',positionStyle);document.addEventListener('scroll',positionStyle,true);positionStyle();
-        this.styleCleanup=()=>{collect.remove();styles.remove();styleResize.disconnect();window.removeEventListener('resize',positionStyle);document.removeEventListener('scroll',positionStyle,true)};
+        placeToolbar();
+        // Vue applies the text-paper class after child custom elements mount.
+        // Re-anchor after that render instead of leaving controls inside paper.
+        const placementFrame=requestAnimationFrame(placeToolbar);
+        this.styleCleanup=()=>{cancelAnimationFrame(placementFrame);toolbar.remove()};
       }
       if(!url)status.textContent=['FAILED','UNAVAILABLE'].includes(state)?'这次声音或视频未能生成，文字回信已保留。':'林离正在准备回信音频…';
       else if(['FAILED','UNAVAILABLE'].includes(state))status.textContent='歌曲暂时未完成，语音可以先听。';

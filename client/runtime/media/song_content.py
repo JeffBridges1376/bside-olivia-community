@@ -297,6 +297,8 @@ Lyrics contract:
 - Respond as Lin Li; recognize the listener's actual concern before any reassurance.
 - Preserve facts from the current exchange without copying it line by line.
 - Do not diagnose, lecture, demand trust, force optimism, invent past events, or copy known songs.
+- Any supplied world episode and current affect are frozen to this reply's time. Its process/result are fictional character experiences; its interpretation is subjective, and its next steps are not completed facts. Let these guide original imagery and musical expression without inventing causes. Explicit user song/style preferences take priority. Never change a selected cover's original lyrics.
+- When frozen_music_direction is supplied, express those already selected musical choices in the lyrics and, where allowed, style. Do not silently replace them with a new emotional or delivery decision. They are music directions, never speech synthesis instructions.
 
 Use the trusted persona profile supplied above. Its ordinary letter output format is replaced only by this JSON contract:"""
     if duration_seconds == 240:
@@ -317,6 +319,10 @@ def _planning_messages(
     duration_seconds: int,
     config: GatewayConfig,
     reply_adapter=None,
+    *,
+    persona_snapshot=None,
+    as_of: datetime,
+    expression_context=None,
 ) -> tuple[dict[str, str], ...]:
     from runtime.reply.fact_attribution import finalize_reply_messages
     contract = _planner_contract(duration_seconds)
@@ -324,8 +330,19 @@ def _planning_messages(
         return finalize_reply_messages(messages, contract,
             max_input_chars=config.max_input_chars - _PLANNER_REPAIR_RESERVE_CHARS)
     if reply_adapter is not None:
+        options = {}
+        if expression_context is not None:
+            from runtime.persona.persona_assembly import UntrustedFragment
+            world = expression_context.get('world')
+            options['life_fragments'] = ((UntrustedFragment('linli.daily-life', json.dumps(world,ensure_ascii=False)),)
+                                         if isinstance(world,dict) else ())
         messages = reply_adapter.reply_context_messages(user_input, mode=ReplyMode.MUSICAL_VIDEO,
-            max_input_chars=config.max_input_chars - len(contract) - 1 - _PLANNER_REPAIR_RESERVE_CHARS)
+            max_input_chars=config.max_input_chars - len(contract) - 1 - _PLANNER_REPAIR_RESERVE_CHARS,
+            persona_snapshot=persona_snapshot, as_of=as_of, **options)
+        if expression_context is not None:
+            from runtime.reply.character_emotion_context import project_emotion
+            messages = project_emotion(messages, expression_context.get('emotion'),
+                max_input_chars=config.max_input_chars-len(contract)-1-_PLANNER_REPAIR_RESERVE_CHARS)
         return finalize(messages)
     if not config.persona_v2_enabled:
         legacy_path = (
@@ -342,20 +359,20 @@ def _planning_messages(
             {"role": "user", "content": user_input},
         ))
 
-    loaded = load_persona(_runtime_path(config.persona_v2_file))
-    if not loaded.ready:
+    if persona_snapshot is None or persona_snapshot.status != 'READY':
         raise RuntimeError("PERSONA_UNAVAILABLE")
     prefix = f"{contract}\n"
     assembly = assemble_persona(
-        loaded.snapshot,
+        persona_snapshot,
         ReplyContext.create(
             ReplyMode.MUSICAL_VIDEO,
-            trusted_time=TrustedTime(datetime.now(timezone.utc)),
+            trusted_time=TrustedTime(as_of),
         ),
         user_input=user_input,
         max_units=(
             config.max_input_chars - len(prefix) - _PLANNER_REPAIR_RESERVE_CHARS
         ),
+        selected_declaration_ids=(),
     )
     return finalize((
         {"role": "system", "content": assembly.system_content},
@@ -370,6 +387,7 @@ def plan_song_content(
     *,
     gateway: Gateway | None = None,
     reply_adapter=None,
+    expression_context=None,
 ) -> SongContentPlan:
     """Plan constrained lyrics and render the production MiniMax caption."""
 
@@ -381,21 +399,61 @@ def plan_song_content(
         else load_gateway_config()
     )
     active_gateway = gateway or create_gateway(gateway_config)
+    # The adapter may use a different asset than the lyric provider's config.
+    # Capture it and the clock once, before either assembly or model selection.
+    persona_config = getattr(reply_adapter, 'config', None) if reply_adapter is not None else gateway_config
+    persona_snapshot = None
+    if isinstance(persona_config, GatewayConfig) and persona_config.persona_v2_enabled:
+        persona_path = getattr(reply_adapter, 'persona_v2_path', None) or _runtime_path(persona_config.persona_v2_file)
+        loaded = load_persona(persona_path)
+        if not loaded.ready:
+            raise RuntimeError('PERSONA_UNAVAILABLE')
+        persona_snapshot = loaded.snapshot
+    clock = getattr(reply_adapter, '_now', None)
+    as_of = (datetime.fromisoformat(expression_context['as_of']) if expression_context is not None
+             else clock() if callable(clock) else datetime.now(timezone.utc))
+    music_direction = None
+    if expression_context is not None:
+        from runtime.reply.jev_questions import configured_questions
+        port = configured_questions()
+        if port is not None:
+            enums = dict(emotion_arc=SongEmotionArc,piano_texture=PianoTexture,vocal_delivery=VocalDelivery,
+                         dynamic_arc=SongDynamicArc,ending=SongEnding)
+            music_direction = port.ask_sync({'current_letter':content,'ordinary_reply':reply_text,
+                'frozen_expression':{key:expression_context[key] for key in ('as_of','world','emotion') if key in expression_context},
+                'contract': '选择这首原创歌的音乐表达。用户明确选歌/曲风优先；其余参考同一时刻冻结的世界经历和当前心情。'
+                    '这是歌曲表达方向，不是TTS情绪命令，不修改翻唱原词或把角色主观解释当事实。'}, {key:dict(instructions=
+                    f'遵守state.contract，选择{key}。',
+                    criteria={member.value:member.value for member in enum}) for key,enum in enums.items()},
+                purpose='original-song-direction')
+            if set(music_direction)!=set(enums) or any(music_direction[k] not in {m.value for m in enum} for k,enum in enums.items()):
+                raise ValueError('SONG_DIRECTION_INVALID')
     user_input = json.dumps(
         {
             "duration_seconds": duration,
             "current_letter": str(content),
             "ordinary_reply": str(reply_text),
+            **({'frozen_music_direction':music_direction} if music_direction is not None else {}),
         },
         ensure_ascii=False,
         separators=(",", ":"),
     )
-    messages = _planning_messages(user_input, duration, gateway_config, reply_adapter=reply_adapter)
+    messages = _planning_messages(user_input, duration, gateway_config, reply_adapter=reply_adapter,
+                                  persona_snapshot=persona_snapshot, as_of=as_of, expression_context=expression_context)
     complete_scoped = getattr(active_gateway, "complete_scoped", None)
     async def complete_plan(plan_messages):
         from runtime.memory.history_selection import select_history_messages as prepare_recall_messages
+        from runtime.reply.reply_pipeline import _assembled_life_projection
+        current_sources = getattr(reply_adapter, '_memory_source_exclusions', lambda: ())()
+        persona_options = ({'persona_snapshot': persona_snapshot, 'persona_mode': 'musical_video',
+                            'persona_development': (_assembled_life_projection(plan_messages) or {}).get('character_development')}
+                           if persona_snapshot is not None else {})
         plan_messages = await prepare_recall_messages(
             plan_messages, active_gateway, max_input_chars=gateway_config.max_input_chars,
+            memory_builder=getattr(reply_adapter, 'memory_prompt_builder', None),
+            as_of=as_of, exclude_source_ids=current_sources,
+            current_source_ids=current_sources, current_user_text=content,
+            **persona_options,
         )
         from runtime.reply.fact_attribution import finalize_reply_messages
         plan_messages = finalize_reply_messages(plan_messages, _planner_contract(duration),
@@ -405,6 +463,9 @@ def plan_song_content(
         return await active_gateway.complete(plan_messages)
     response = asyncio.run(complete_plan(messages))
     semantic_plan = _plan_from_lyrics_response(response.text, duration)
+    if music_direction is not None:
+        from dataclasses import replace
+        semantic_plan = replace(semantic_plan, **{key:enums[key](value) for key,value in music_direction.items()})
 
     # Imported lazily because music_caption imports the typed plan definitions
     # from this module. The production output remains compatible with the

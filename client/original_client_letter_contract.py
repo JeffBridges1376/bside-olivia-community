@@ -21,6 +21,7 @@ class OriginalClientLetterStatus(IntEnum):
     LLM_PROCESSING = 3
     REPLIED = 4
     FAILED = 5
+    NO_REPLY = 6  # Development companion patch: this turn deliberately ends silently.
 
 
 class OriginalClientAuditStatus(IntEnum):
@@ -47,6 +48,7 @@ _INTERNAL_LETTER_STATUS = {
     "FAILED": OriginalClientLetterStatus.FAILED,
     "CANCELED": OriginalClientLetterStatus.FAILED,
     "CANCELLED": OriginalClientLetterStatus.FAILED,
+    "SKIPPED": OriginalClientLetterStatus.NO_REPLY,
 }
 _INTERNAL_AUDIT_STATUS = {
     "PENDING": OriginalClientAuditStatus.PENDING,
@@ -80,6 +82,8 @@ def _now_value(now: float | None) -> float:
 
 
 def _published(letter: Mapping[str, object], *, now: float | None) -> bool:
+    if _letter_status(letter.get("letter_status", letter.get("letterStatus")), published=True) == OriginalClientLetterStatus.NO_REPLY:
+        return False
     if _video_pending(letter) or _audio_pending(letter) or _photo_pending(letter):
         return False
     deadline = letter.get("reply_not_before", 0.0)
@@ -134,7 +138,7 @@ def _letter_status(value: object, *, published: bool) -> int:
                 OriginalClientLetterStatus.FAILED,
             )
         )
-    if resolved == int(OriginalClientLetterStatus.FAILED):
+    if resolved in {int(OriginalClientLetterStatus.FAILED), int(OriginalClientLetterStatus.NO_REPLY)}:
         return resolved
     if not published:
         return int(OriginalClientLetterStatus.PENDING)
@@ -280,6 +284,9 @@ def serialize_letter_summary(
         "createdAt": created_at,
         "replyType": reply_type,
     }
+    silent = status == OriginalClientLetterStatus.NO_REPLY
+    if silent:
+        payload['replyDisposition'] = 'no_reply'
     if video_pending:
         payload["videoPending"] = True
     if (status == int(OriginalClientLetterStatus.PENDING)
@@ -288,18 +295,18 @@ def serialize_letter_summary(
         payload['replyWaitReason'] = 'bathing'
     if reply_type != OriginalClientReplyType.NONE:
         payload["replyKind"] = _exact_reply_mode(letter.get("reply_mode"))
-    if letter.get("music_provider") == "ace_step_xl_cover" and _exact_reply_mode(letter.get("reply_mode")) != "voice_reply":
+    if not silent and letter.get("music_provider") == "ace_step_xl_cover" and _exact_reply_mode(letter.get("reply_mode")) != "voice_reply":
         payload["coverId"] = letter_id
-    if _audio_reply(letter) or (
+    if not silent and (_audio_reply(letter) or (
         letter.get("reply_video_enabled") is True
         and str(letter.get("media_status") or "").upper() in {"FAILED", "UNAVAILABLE"}
-    ):
+    )):
         payload["coverId"] = letter_id
         payload["audioStatus"] = str(letter.get("media_status") or "PENDING")
         payload["audioRevision"] = _safe_local_media_url(letter.get("reply_audio_url")) if published else ""
 
     replied_at = letter.get("replied_at", letter.get("repliedAt"))
-    if replied_at not in (None, ""):
+    if not silent and replied_at not in (None, ""):
         payload["repliedAt"] = replied_at
     if include_legacy_aliases:
         exact_mode = _exact_reply_mode(letter.get("reply_mode"))
@@ -373,9 +380,9 @@ def serialize_letter_detail(
                 "reply_content": reply_text,
                 "reply_type": reply_type,
                 "reply_video_url": media_url,
-                "media_status": letter.get("media_status", "NOT_REQUESTED"),
-                "media_error_code": letter.get("media_error_code"),
-                "media_retryable": bool(letter.get("media_retryable", False)),
+                "media_status": "NOT_REQUESTED" if payload.get('replyDisposition') == 'no_reply' else letter.get("media_status", "NOT_REQUESTED"),
+                "media_error_code": None if payload.get('replyDisposition') == 'no_reply' else letter.get("media_error_code"),
+                "media_retryable": payload.get('replyDisposition') != 'no_reply' and bool(letter.get("media_retryable", False)),
                 "scope": scope,
                 "read_only": scope == "legacy",
             }

@@ -31,7 +31,7 @@ class InitiativeProfile:
             raise ValueError("INITIATIVE_PROFILE_INVALID")
         if not 0 < self.im_interval_min <= self.im_interval_max:
             raise ValueError("INITIATIVE_PROFILE_INVALID")
-        if not 1 <= self.im_attempt_limit <= 12 or not 1 <= self.letter_daily_limit <= 3:
+        if not 1 <= self.im_attempt_limit <= 72 or not 1 <= self.letter_daily_limit <= 6:
             raise ValueError("INITIATIVE_PROFILE_INVALID")
         if self.letter_followup_delay <= 0 or (self.letter_silence_delay is not None and self.letter_silence_delay <= 0):
             raise ValueError("INITIATIVE_PROFILE_INVALID")
@@ -61,19 +61,19 @@ _BASE = {
         "可以主动延续共同兴趣、上次话题或具体生活关联；纯粹没事找话仍应克制。",
     ),
     "trusted": InitiativeProfile(
-        "trusted", "normal", 45 * 60, 2 * 3600, 6,
+        "trusted", "normal", 30 * 60, 90 * 60, 12,
         2, 3 * 3600, 4 * 86400,
         "可以分享小事、自己的状态、轻量关心和自然吐槽，不要求每次都有任务型理由。",
     ),
     "close": InitiativeProfile(
-        "close", "normal", 20 * 60, 75 * 60, 9,
+        "close", "normal", 10 * 60, 25 * 60, 24,
         2, 90 * 60, 2 * 86400,
         "允许低信息量日常、随手分享、想念和没正事也想说两句；仍不给沉默施加解释义务。",
     ),
     "committed": InitiativeProfile(
-        "committed", "normal", 15 * 60, 60 * 60, 10,
-        3, 45 * 60, 30 * 3600,
-        "想联系对方本身可以成为理由，也可表达想念、期待或轻微失落；亲密不等于催促、占有或监控。",
+        "committed", "normal", 5 * 60, 12 * 60, 72,
+        6, 20 * 60, 4 * 3600,
+        "有空时很想联系对方本身就可以成为理由，可自然表达想念、期待和想多聊几句；这是联系频率档位，不确认恋爱身份，也不授权催促、占有或监控。",
     ),
 }
 
@@ -107,6 +107,10 @@ def tier_from_snapshot(snapshot) -> str:
         return "committed"
     scores = [int(getattr(snapshot, name, 0) or 0)
               for name in ("familiarity", "trust", "comfort", "closeness")]
+    # A behavioral cadence, never a write to relationship_stage or permission.
+    familiarity, trust, comfort, closeness = scores
+    if closeness >= 90 and trust >= 80 and comfort >= 80 and familiarity >= 70:
+        return "committed"
     high = sum(value >= 70 for value in scores)
     medium = sum(value >= 35 for value in scores)
     if stage == "close" or high >= 3:
@@ -152,6 +156,12 @@ def unanswered_wait(profile: InitiativeProfile, usual_gap: float | None, unanswe
     """Return pressure-suppression time; silence later decays instead of locking forever."""
     if unanswered <= 0:
         return 0.0
+    if profile.tier == "committed":
+        # One unanswered everyday message does not imply hours of unavailability.
+        # Repeated silence still progressively spaces contact; tension can add
+        # further space after this ordinary-cadence ceiling.
+        wait = 15 * 60 if unanswered == 1 else min(4 * 3600, 30 * 60 * 1.45 ** min(unanswered - 2, 12))
+        return wait * (1.8 if profile.caution == 'high' else 1.35 if profile.caution == 'elevated' else 1)
     first = {
         "reserved": (24 * 3600, 72 * 3600, 1.5),
         "familiar": (12 * 3600, 48 * 3600, 1.2),

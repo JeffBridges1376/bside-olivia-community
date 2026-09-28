@@ -69,7 +69,7 @@ def test_canonical_interaction_evidence_moves_affection_not_permissions(tmp_path
     assert relationships.commit_exchange("letter:1", user, changed, signal, occurred_at=NOW) is RelationshipFactStatus.REJECTED
     for kind, expected in (("conflict", (0, 0, 3)), ("repair", (1, 1, 1))):
         delivery_id = "letter:" + kind
-        when = NOW + timedelta(minutes=1)
+        when = NOW + timedelta(minutes=1 if kind == 'conflict' else 2)
         deliveries.commit(DeliveryEvent(delivery_id=delivery_id, occurred_at=when, semantic_key=delivery_id,
             canonical_reply_sha256=hashlib.sha256(reply.encode()).hexdigest()))
         relationships.commit_exchange(delivery_id, user, reply, {**signal, "kind":kind}, occurred_at=when)

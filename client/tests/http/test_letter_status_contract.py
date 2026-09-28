@@ -25,6 +25,7 @@ def test_legacy_module_reexports_canonical_contract() -> None:
         ("FAILED", 5),
         ("CANCELED", 5),
         ("cancelled", 5),
+        ("SKIPPED", 6),
     ],
 )
 def test_internal_states_map_to_original_numeric_enum(internal: str, wire: int) -> None:
@@ -37,7 +38,7 @@ def test_existing_valid_wire_values_are_preserved() -> None:
     assert original_letter_status(5) == 5
 
 
-@pytest.mark.parametrize("value", [None, True, False, 0, 2, 3, 6, "", "READY", [], {}])
+@pytest.mark.parametrize("value", [None, True, False, 0, 2, 3, 7, "", "READY", [], {}])
 def test_unknown_states_are_rejected(value: object) -> None:
     with pytest.raises(LetterStatusError):
         original_letter_status(value)

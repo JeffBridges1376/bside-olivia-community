@@ -1,0 +1,94 @@
+"""Index durable user receipts separately from acknowledged assistant exchanges."""
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import hashlib
+
+
+@dataclass(frozen=True)
+class ReceivedOriginal:
+    source_id: str
+    user_message: str
+    occurred_at: datetime
+    exchange_sources: tuple[str, ...]
+    channel: str
+    platform_id: str
+
+
+def _received_at(row):
+    value = row.get('life_received_at')
+    try:
+        stamp = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        return stamp.astimezone(timezone.utc) if stamp.utcoffset() is not None else None
+    except (AttributeError, TypeError, ValueError):
+        # Local letter stores historically carry their receive time as epoch.
+        value = row.get('created_at')
+        if type(value) in (int, float):
+            try:
+                return datetime.fromtimestamp(value, timezone.utc)
+            except (ValueError, OverflowError, OSError):
+                pass
+        return None
+
+
+def received_originals(rows):
+    """Caller supplies durable rows. Never read reply_text or synthetic media rows."""
+    grouped = {}
+    for row in rows:
+        if (not isinstance(row, Mapping) or row.get('origin') == 'proactive' or row.get('read_only')
+                or not isinstance(row.get('letter_id'), str) or not row['letter_id']):
+            continue
+        channel = row.get('channel') or 'letter'
+        if channel not in {'qq', 'wechat', 'letter'}:
+            continue
+        stamp = _received_at(row)
+        if stamp is None:
+            continue
+        if channel in {'qq', 'wechat'}:
+            binding = row.get('binding_id')
+            sources = row.get('source_messages')
+            if not isinstance(binding, str) or not binding or not isinstance(sources, Mapping):
+                continue
+        else:
+            binding = ''
+            sources = {row['letter_id']: row.get('content')}
+        revision = row.get('reply_revision', 1)
+        revision = revision if type(revision) is int and revision >= 1 else 1
+        exchange = 'reply:' + row['letter_id'] + ':' + str(revision)
+        for identifier, text in sources.items():
+            if not isinstance(identifier, str) or not identifier or not isinstance(text, str) or not text.strip():
+                continue
+            identity = identifier if channel == 'letter' else binding + '\0' + identifier
+            source_id = 'received-user:' + channel + ':' + hashlib.sha256(identity.encode()).hexdigest()
+            grouped.setdefault(source_id, []).append((text, stamp, len(sources) == 1, exchange, channel, identifier))
+    result = []
+    for source_id, entries in grouped.items():
+        if len({entry[0] for entry in entries}) != 1:
+            continue  # Conflicting source IDs must not silently overwrite originals.
+        originals = [entry for entry in entries if entry[2]] or entries
+        chosen = min(originals, key=lambda entry: entry[1])
+        result.append(ReceivedOriginal(source_id, chosen[0], chosen[1],
+            tuple(dict.fromkeys(entry[3] for entry in entries)), chosen[4], chosen[5]))
+    return tuple(result)
+
+
+def index_received_rows(adapter, rows, *, user_id, memory_lifecycle=None):
+    """Synchronous local writes, suitable for asyncio.to_thread; returns indexed refs."""
+    from .conversation_memory_identity import normalize_conversation_memory_user_id
+    user_id = normalize_conversation_memory_user_id(user_id)
+    write = getattr(adapter, 'index_received_user', None)
+    if not getattr(adapter, 'enabled', False) or not callable(write):
+        return ()
+    if memory_lifecycle is not None and memory_lifecycle.is_paused():
+        return ()
+    indexed = []
+    for record in received_originals(rows):
+        def operation():
+            return write(user_id=user_id, source_id=record.source_id,
+                user_message=record.user_message, occurred_at=record.occurred_at,
+                exchange_sources=record.exchange_sources)
+        result = (memory_lifecycle.run_write(operation, occurred_at=record.occurred_at)
+                  if memory_lifecycle is not None else operation())
+        if result:
+            indexed.append(record)
+    return tuple(indexed)

@@ -11,6 +11,63 @@ run_qq = partial(_run_qq, merge_seconds=0)
 TOKEN = "synthetic-onebot-token"
 
 
+def test_media_ack_after_text_timeout_is_retained_without_resending(tmp_path):
+    async def scenario():
+        stop = asyncio.Event()
+        receipts, sent = [], []
+        async def handler(message, send):
+            receipts.append(await send.for_exchange(message).image(tmp_path / 'photo.png'))
+            stop.set()
+        async def socket(request):
+            ws = web.WebSocketResponse()
+            await ws.prepare(request)
+            await login(ws)
+            await ws.send_json(event())
+            outgoing = await ws.receive_json()
+            sent.append(outgoing)
+            await asyncio.sleep(.12)
+            await ws.send_json(dict(echo=outgoing['echo'], status='ok', retcode=0, data=dict(message_id=301)))
+            await stop.wait()
+            await ws.close()
+            return ws
+        app = web.Application()
+        app.router.add_get('/', socket)
+        async with TestServer(app) as server:
+            await asyncio.wait_for(run_qq(str(server.make_url('/')), TOKEN, '100', '200', handler, stop,
+                                         ack_timeout=.06, media_ack_timeout=.6), 3)
+        assert receipts == ['301'] and len(sent) == 1
+    asyncio.run(scenario())
+
+
+def test_proactive_reply_does_not_quote_a_synthetic_message_id():
+    from runtime.personal_chat.events import PersonalMessage
+    async def scenario():
+        stop = asyncio.Event()
+        sent = []
+        async def handler(message, send):
+            proactive = PersonalMessage('qq', '100', '200', 'proactive-synthetic', '')
+            await send.for_exchange(proactive)('hello again')
+            stop.set()
+        async def socket(request):
+            ws = web.WebSocketResponse()
+            await ws.prepare(request)
+            await login(ws)
+            await ws.send_json(event())
+            outgoing = await ws.receive_json()
+            sent.extend(outgoing['params']['message'])
+            await ws.send_json({'echo': outgoing['echo'], 'status': 'ok', 'retcode': 0,
+                                'data': {'message_id': 300}})
+            await stop.wait()
+            await ws.close()
+            return ws
+        app = web.Application()
+        app.router.add_get('/', socket)
+        async with TestServer(app) as server:
+            await asyncio.wait_for(run_qq(str(server.make_url('/')), TOKEN, '100', '200', handler, stop), 3)
+        assert sent == [{'type': 'text', 'data': {'text': 'hello again'}}]
+    asyncio.run(scenario())
+
+
 def test_unknown_labels_cq_syntax_and_unicode_remain_literal():
     from runtime.personal_chat.qq import text_segments
     text = '🙂[未知标签][CQ:at,qq=999][吃瓜]后文😂'
@@ -64,6 +121,42 @@ def event(identifier=1, **overrides):
     return {"post_type": "message", "message_type": "private", "self_id": 100,
         "user_id": 200, "message_id": identifier,
         "message": [{"type": "text", "data": {"text": "hello"}}], **overrides}
+
+
+def test_late_photo_keeps_original_turn_after_new_text_reply(tmp_path):
+    async def scenario():
+        stop = asyncio.Event()
+        sent, old_sender = [], []
+        async def handler(message, send):
+            correlated = send.for_exchange(message)
+            if message.message_id == '1':
+                old_sender.append(correlated)
+            await correlated('reply ' + message.message_id)
+            if message.message_id == '2':
+                await old_sender[0].image(tmp_path / 'old-photo.png')
+                stop.set()
+        async def socket(request):
+            ws = web.WebSocketResponse()
+            await ws.prepare(request)
+            await login(ws)
+            await ws.send_json(event(1))
+            await ws.send_json(event(2))
+            for identifier in (301, 302, 303):
+                reply = await ws.receive_json()
+                sent.append(reply['params']['message'])
+                await ws.send_json({'echo':reply['echo'], 'status':'ok', 'retcode':0,
+                                    'data':{'message_id':identifier}})
+            await stop.wait()
+            await ws.close()
+            return ws
+        app = web.Application()
+        app.router.add_get('/', socket)
+        async with TestServer(app) as server:
+            await asyncio.wait_for(run_qq(str(server.make_url('/')), TOKEN, '100', '200', handler, stop), 3)
+        assert [message[0] for message in sent] == [
+            {'type':'reply', 'data':{'id':identifier}} for identifier in ('1','2','1')]
+        assert sent[2][1]['type'] == 'image'
+    asyncio.run(scenario())
 
 
 async def login(ws, account=100):

@@ -62,7 +62,7 @@ def test_interpretation_precedes_generation_and_preserves_original_request():
 def test_assembled_persona_request_may_clear_content(monkeypatch):
     import runtime.reply.reply_pipeline as module
     original = request()
-    monkeypatch.setattr(module, "_prepare_generation_request", lambda *args: module._PreparedGeneration(
+    monkeypatch.setattr(module, "_prepare_generation_request", lambda *args, life_fragments=None: module._PreparedGeneration(
         replace(original, content=None),
     ))
     interpreter, orchestrator = Interpreter(), Orchestrator()

@@ -456,6 +456,7 @@ class PrivateWorldCommandService:
                     event_type=command.kind.value,
                     payload=audit,
                     occurred_at=command.occurred_at.isoformat(),
+                    reducer_input={'schema': 1, 'kind': 'command', 'value': command.to_dict()},
                 )
                 try:
                     applied = self._ledger.apply_once(
@@ -500,6 +501,9 @@ class PrivateWorldCommandService:
                     raise PrivateWorldCommandServiceError(
                         "PRIVATE_WORLD_COMMAND_IDENTITY_CONFLICT"
                     )
+                persisted = next((item for item in self._ledger_events() if item.event_id == event_id), None)
+                if persisted is not None:
+                    return _result_from_audit(persisted, duplicate=False)
                 return CommandExecutionResult(
                     (
                         CommandExecutionStatus.APPLIED

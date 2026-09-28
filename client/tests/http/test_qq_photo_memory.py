@@ -249,16 +249,17 @@ def test_qq_delivers_text_before_waiting_for_photo(commit_fails):
         await asyncio.wait_for(started.wait(), 1)
         assert sent == ['text'] and rows[0]['delivery_status'] == 'DELIVERED'
         finish.set()
-        if commit_fails:
-            with pytest.raises(RuntimeError): await task
-        else:
-            await task
+        await task
+        await asyncio.gather(*service.consumer_tasks.values())
         await asyncio.gather(*service.photo_tasks.values())
         assert sent == ['text', 'image']
         if commit_fails:
-            with pytest.raises(RuntimeError): await service.handle(event, send)
-        else:
-            await service.handle(event, send)
+            assert rows[0]['consumer_error_code'] == 'PERSONAL_CHAT_CONSUMER_UNAVAILABLE'
+        await service.handle(event, send)
+        await asyncio.gather(*service.consumer_tasks.values())
+        if commit_fails:
+            assert rows[0]['consumer_error_code'] == 'PERSONAL_CHAT_CONSUMER_UNAVAILABLE'
+        assert rows[0]['delivery_status'] == 'DELIVERED'
         assert sent == ['text', 'image']
     asyncio.run(scenario())
 

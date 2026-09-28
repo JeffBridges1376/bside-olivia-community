@@ -41,14 +41,20 @@ def _ack(raw):
     return raw["data"]
 
 
-async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_timeout, merge_seconds=2, state_callback=None):
+async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_timeout, merge_seconds=2, state_callback=None, media_ack_timeout=120):
     queue = asyncio.Queue(maxsize=32)
+    intake_queue = asyncio.Queue(maxsize=32)
     control_queue = asyncio.Queue(maxsize=32)
+    ingest = getattr(handle_message, 'ingest', None)
+    pending_messages = getattr(handle_message, 'pending', None)
+    durable_intake = callable(ingest)
+    scheduled_sources = set()
     classify_control = getattr(handle_message, 'is_control_message', None)
     handle_control = getattr(handle_message, 'handle_control', handle_message)
 
     def enqueue(event):
-        target = control_queue if callable(classify_control) and classify_control(event) else queue
+        target = control_queue if callable(classify_control) and classify_control(event) else (
+            intake_queue if durable_intake else queue)
         try:
             target.put_nowait(event)
         except asyncio.QueueFull:
@@ -94,7 +100,9 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
             await ws.send_json({"action": "send_private_msg", "echo": echo,
                 "params": {"user_id": int(owner_id),
                     "message": ([{'type': 'reply', 'data': {'id': reply_to}}] if reply_to is not None else []) + (item if isinstance(item, list) else [item])}})
-            result = _ack(await asyncio.wait_for(future, ack_timeout))
+            items = item if isinstance(item, list) else [item]
+            is_media = any(part.get('type') in {'image', 'record', 'video'} for part in items)
+            result = _ack(await asyncio.wait_for(future, media_ack_timeout if is_media else ack_timeout))
             identifier = result.get("message_id")
             if isinstance(identifier, bool) or not isinstance(identifier, (str, int)) or not str(identifier):
                 raise RuntimeError("QQ_SEND_UNCONFIRMED")
@@ -124,16 +132,63 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
     def for_exchange(event):
         if (event.channel, event.account_id, event.owner_id) != ('qq', account_id, owner_id):
             raise ValueError('QQ_REPLY_OWNER_MISMATCH')
+        # Proactive exchanges have no inbound message; their local ID is not a
+        # OneBot message ID and cannot be used in a reply segment.
+        reply_to = event.message_id if event.text.strip() else None
         async def correlated(text):
             if not isinstance(text, str) or not text.strip() or len(text) > 10000:
                 raise ValueError('QQ_REPLY_INVALID')
-            return await send_item(text_segments(text), event.message_id)
+            return await send_item(text_segments(text), reply_to)
         correlated.audio = send_audio
-        correlated.image = send_image
+        async def correlated_image(path):
+            from pathlib import Path
+            return await send_item({'type': 'image', 'data': {'file': Path(path).resolve().as_uri()}}, reply_to)
+        correlated.image = correlated_image
         correlated.is_available = send.is_available
         return correlated
 
     send.for_exchange = for_exchange
+
+    def source_keys(event):
+        return {(event.binding_id, key) for key, _ in event.sources}
+
+    def schedule(event):
+        if (event.channel, event.account_id, event.owner_id) != ('qq', account_id, owner_id):
+            raise ValueError('QQ_PENDING_OWNER_MISMATCH')
+        keys = source_keys(event)
+        if keys & scheduled_sources:
+            return
+        queue.put_nowait(event)
+        scheduled_sources.update(keys)
+
+    def refill():
+        # The durable store is the backlog. A full response queue must not make
+        # intake wait for generation. Only RECEIVED entries belong in this hook;
+        # ambiguous or already reserved sends must never be returned for replay.
+        if not durable_intake or not callable(pending_messages):
+            return
+        for event in pending_messages('qq'):
+            if queue.full():
+                break
+            schedule(event)
+
+    async def intake_worker():
+        refill()  # Login identity has been verified before workers are started.
+        while True:
+            event = await intake_queue.get()
+            try:
+                if await ingest(event) is not False:
+                    if callable(pending_messages):
+                        refill()
+                    else:
+                        # Compatibility for standalone ingest hooks: bounded,
+                        # fail visibly on saturation rather than blocking intake.
+                        try:
+                            schedule(event)
+                        except asyncio.QueueFull:
+                            raise RuntimeError('QQ_OWNER_QUEUE_FULL') from None
+            finally:
+                intake_queue.task_done()
 
     async def reader():
         async for message in ws:
@@ -199,29 +254,35 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
                 processing = False
                 for _ in events:
                     queue.task_done()
+                for completed in events:
+                    scheduled_sources.difference_update(source_keys(completed))
+                refill()
 
     reader_task = asyncio.create_task(reader())
     worker_task = asyncio.create_task(worker())
     control_task = asyncio.create_task(control_worker())
+    intake_task = asyncio.create_task(intake_worker())
     stop_task = asyncio.create_task(stop_event.wait())
     try:
-        await asyncio.wait({reader_task, worker_task, control_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+        await asyncio.wait({reader_task, worker_task, control_task, intake_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+        if intake_task.done():
+            intake_task.result()
         if control_task.done():
             control_task.result()
         if worker_task.done():
             worker_task.result()
         if reader_task.done():
             reader_task.result()
-            if not stop_event.is_set() and (processing or not queue.empty() or not control_queue.empty()):
+            if not stop_event.is_set() and (processing or not queue.empty() or not intake_queue.empty() or not control_queue.empty()):
                 raise RuntimeError("QQ_CONNECTION_LOST_DURING_EXCHANGE")
     finally:
-        for task in (reader_task, worker_task, control_task, stop_task):
+        for task in (reader_task, worker_task, control_task, intake_task, stop_task):
             task.cancel()
-        await asyncio.gather(reader_task, worker_task, control_task, stop_task, return_exceptions=True)
+        await asyncio.gather(reader_task, worker_task, control_task, intake_task, stop_task, return_exceptions=True)
 
 
 async def run_qq(url, token, account_id, owner_id, handle_message, stop_event,
-                 *, ack_timeout=30, reconnect_delay=1, merge_seconds=2, state_callback=None):
+                 *, ack_timeout=30, reconnect_delay=1, merge_seconds=2, state_callback=None, media_ack_timeout=120):
     """Run until stopped. send(text) returns a confirmed platform message ID.
 
     The handler must persist a sending reservation before calling send: a timeout
@@ -233,7 +294,7 @@ async def run_qq(url, token, account_id, owner_id, handle_message, stop_event,
     account_id, owner_id = str(account_id), str(owner_id)
     if not account_id.isascii() or not account_id.isdigit() or not owner_id.isascii() or not owner_id.isdigit() or account_id == owner_id:
         raise ValueError("QQ_ACCOUNT_OWNER_INVALID")
-    if ack_timeout <= 0 or reconnect_delay <= 0:
+    if ack_timeout <= 0 or media_ack_timeout <= 0 or reconnect_delay <= 0:
         raise ValueError("QQ_TIMEOUT_INVALID")
     failures = 0
 
@@ -250,7 +311,7 @@ async def run_qq(url, token, account_id, owner_id, handle_message, stop_event,
                 publish("CONNECTING" if failures == 0 else "RECONNECTING")
                 async with session.ws_connect(url, headers={"Authorization": "Bearer " + token}, heartbeat=20) as ws:
                     await _connection(ws, account_id, owner_id, handle_message, stop_event, ack_timeout, merge_seconds,
-                                      state_callback=publish)
+                                      state_callback=publish, media_ack_timeout=media_ack_timeout)
             except (aiohttp.ClientError, ConnectionError, TimeoutError):
                 log.warning("QQ_TRANSPORT_DISCONNECTED")
             if stop_event.is_set():

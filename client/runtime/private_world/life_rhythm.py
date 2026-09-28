@@ -117,6 +117,8 @@ def rhythm(now: datetime, exchanges: list[tuple[datetime, datetime]], shifts: di
               'breakfast': '早餐时间', 'lunch': '午饭时间', 'dinner': '晚饭时间',
               'quiet': '准备收工休息', 'focus': '留给练习和创作的时间', 'free': '自己的闲暇时间'}
     return {'phase': phase, 'rest': rest, 'local_time': local.isoformat(),
+            'historical_rest': {'load_minutes': debt, 'rest': rest,
+                'meaning': '夜间通信历史负荷，不是当前精力测量；不证明已睡着或当前仍需一直休息。'},
             'phase_basis': 'schedule_and_correspondence', 'wake_cause': 'unknown',
             'planned_rest_window': {'kind': 'current_plan', 'start': begin.isoformat(), 'end': finish.isoformat()},
             'bath_end_at': begin.timestamp() if bathing else None,
@@ -128,3 +130,27 @@ def rhythm(now: datetime, exchanges: list[tuple[datetime, datetime]], shifts: di
                      '按自己的节奏生活。'),
             'availability': 'rest' if phase in {'bathing', 'sleep', 'interrupted_rest', 'quiet'} else
                             'busy' if phase in {'focus', 'breakfast', 'lunch', 'dinner'} else 'open'}
+
+
+def with_recovery(state, episodes, now):
+    """Consume authored recovery evidence without erasing accumulated sleep load."""
+    if state['wellbeing']['state'] in {'unwell', 'recovering'}:
+        return state  # Ordinary rest does not establish recovery from illness.
+    for episode in episodes:
+        recovery = episode.get('effects', {}).get('body_recovery')
+        if not isinstance(recovery, dict) or episode.get('activity_kind') != 'rest':
+            continue
+        stamp = datetime.fromisoformat(episode['occurred_at'])
+        if stamp > now or stamp.astimezone(LOCAL).date() != now.astimezone(LOCAL).date():
+            continue
+        if state['historical_rest']['load_minutes'] > recovery.get('baseline_load_minutes', -1):
+            continue  # New night-time load invalidates an earlier recovery.
+        rest = recovery.get('rest')
+        if rest not in {'tired', 'rested'} or episode.get('result', {}).get('status') != 'completed':
+            continue
+        return {**state, 'rest': rest,
+            'recovery': {'source_id': episode['source_id'], 'occurred_at': episode['occurred_at'],
+                         'meaning': '本次已发布休息过程的精力恢复，不代表睡眠或疾病痊愈。'},
+            'wellbeing': {**state['wellbeing'], 'care': 'none' if rest == 'rested' else 'rest'},
+            'note': '这段休息后精力有所恢复，可以按意愿接回轻活动。' if rest == 'rested' else '这段休息后缓过来一些，仍适合放慢节奏。'}
+    return state

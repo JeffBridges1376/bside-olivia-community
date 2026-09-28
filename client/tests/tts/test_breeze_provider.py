@@ -241,7 +241,10 @@ def test_long_audio_chunks_preserve_every_character_and_video_stays_single_pass(
     chunks = _audio_text_chunks(text)
     assert ''.join(chunks) == text
     assert all(0 < len(chunk) <= 180 for chunk in chunks)
-    assert ''.join(_audio_text_chunks('字' * 501)) == '字' * 501
+    assert _audio_text_chunks('字' * 501) == ['字' * 501]
+    sentence = ('连贯，表达；不要！按？短语、拆开\n' * 20) + '。'
+    assert _audio_text_chunks(sentence + '下一句。') == [sentence, '下一句。']
+    assert _audio_text_chunks('3.14，' * 60) == ['3.14，' * 60]
     calls = []
     def generate(bundle, **kwargs):
         calls.append(kwargs['text'])

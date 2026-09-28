@@ -120,11 +120,11 @@ def test_pipeline_accepts_clean_candidate_with_disabled_reviewer() -> None:
 
 @pytest.mark.parametrize("mode", [ReplyMode.TEXT_LETTER, ReplyMode.SPOKEN_VIDEO, ReplyMode.MUSICAL_VIDEO])
 @pytest.mark.parametrize("candidate", ["太短。", "initial candidate"])
-def test_pipeline_publishes_first_candidate_without_review_or_rewrite(mode, candidate):
+def test_pipeline_default_disabled_publishes_without_review_or_rewrite(mode, candidate):
     rewriter = FixedRewriter("replacement must not be used")
     pipeline = ReplyPipeline(
         CompletedOrchestrator(candidate),
-        reviewer=PassingReviewer(),
+        reviewer=NullReviewer(),
         rewriter=rewriter,
     )
     result = asyncio.run(pipeline.run(object(), _context(mode)))
@@ -239,14 +239,19 @@ def test_current_turn_runtime_factory_runs_with_real_persona_preparation(monkeyp
     assert provider.calls == 1 and bridge.calls == 0
 
 
-def test_persisted_visible_life_is_disclosed_to_real_persona_generation(tmp_path):
+def test_persisted_visible_life_is_disclosed_to_real_persona_generation(tmp_path, monkeypatch):
     from runtime.private_world.daily_life import DailyLifeStore
     from runtime.private_world.daily_life_runtime import DailyLifeRuntime
     pipeline, _, bridge, provider = _configured_v2_pipeline(ROOT / "linli_character/persona_release_v2.json")
-    now = datetime.now(timezone.utc)
+    now = _context().trusted_time.instant
     store = DailyLifeStore(tmp_path / "life.sqlite3")
     store.publish_day("day:piano", {"location": "琴房", "activity": "慢练左手", "note": "这两小节今天顺了一点。"}, [], occurred_at=now)
     bridge.adapter.daily_life = DailyLifeRuntime(store, lambda: provider, lambda: "")
+    class SelectionPort:
+        async def ask(self, state, questions, **kwargs):
+            return {key: 'rank9' if item['field'] == 'current' else 'rank0'
+                    for key, item in state['records'].items()}
+    monkeypatch.setattr('runtime.reply.jev_questions.configured_questions', lambda: SelectionPort())
     result = asyncio.run(pipeline.run(ReplyRequest(content="你今天练琴怎么样？", request_id="life-context"), _context()))
     assert result.state is ReplyState.COMPLETED
     prompt = "\n".join(m["content"] for m in provider.messages)
@@ -392,6 +397,11 @@ def test_generation_receives_the_same_mode_context_as_quality_gate(
 ) -> None:
     memory = NullMemoryPort()
     provider = RecordingProvider()
+    from runtime.persona.persona_assembly import assemble_persona
+    from runtime.persona.persona_loader import load_persona
+    snapshot = load_persona(ROOT / "linli_character" / "persona_release_v2.json").snapshot
+    required = assemble_persona(snapshot, _context(mode), user_input="今天只是普通地有点累。",
+                                selected_declaration_ids=(), max_units=100_000).budget_report.required_units
     adapter = SimpleNamespace(
         config=SimpleNamespace(
             persona_v2_enabled=True,
@@ -409,12 +419,19 @@ def test_generation_receives_the_same_mode_context_as_quality_gate(
         rewriter=UnavailableRewriter(),
     )
 
+    rejected = asyncio.run(pipeline.run(ReplyRequest(
+        content="今天只是普通地有点累。", request_id=f"mode-small-{mode.value}",
+        max_input_chars=required - 1), _context(mode)))
+    assert rejected.state is ReplyState.FAILED
+    assert rejected.error_code == "RECALL_CONTEXT_BUDGET_EXCEEDED"
+    assert provider.calls == 0
+
     result = asyncio.run(
         pipeline.run(
             ReplyRequest(
                 content="今天只是普通地有点累。",
                 request_id=f"mode-{mode.value}",
-                max_input_chars=10_000,
+                max_input_chars=required + 4_096,
             ),
             _context(mode),
         )
@@ -586,7 +603,7 @@ def test_explicitly_disabled_persona_v2_preserves_legacy_provider_path() -> None
     assert provider.messages[-1]["content"] == "synthetic legacy letter"
 
 
-def test_letter_pipeline_does_not_send_history_to_disabled_reviewer(
+def test_letter_pipeline_sends_only_attributed_character_history_to_explicit_reviewer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The production Letter path must not treat prior user text as Linli evidence."""
@@ -629,7 +646,9 @@ def test_letter_pipeline_does_not_send_history_to_disabled_reviewer(
     )
 
     assert result.state is ReplyState.COMPLETED
-    assert review_gateway.requests == []
+    identity = next(item for item in review_gateway.requests if item['layer'] == 'identity_boundary')
+    assert identity['character_reply_history'] == '我曾在回信里说，下雨时会把窗户留一条缝。'
+    assert identity['current_user_input'] == '今天下雨了。'
     assert generation.calls == 1
     assert "<untrusted_history>" in str(generation.messages)
 
@@ -674,7 +693,8 @@ def test_letter_pipeline_uses_empty_character_history_without_reliable_actor(
     )
 
     assert result.state is ReplyState.COMPLETED
-    assert review_gateway.requests == []
+    identity = next(item for item in review_gateway.requests if item['layer'] == 'identity_boundary')
+    assert identity['character_reply_history'] == ''
     assert generation.calls == 1
 
 

@@ -21,6 +21,8 @@ from runtime.reply.media_delivery import validate_delivery, grouped_delivery_evi
 MAX_EXCHANGE_UPDATES = 12
 from runtime.private_world.life_rhythm import rhythm, LOCAL
 from statistics import median
+from runtime.private_world.student_world import student_schedule, weather_view
+from runtime.private_world.world_decision import KINDS as _ACTIVITY_KINDS
 
 
 _ID = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
@@ -30,11 +32,39 @@ _VISIBLE = "(kind IN ('daily','media','image') OR json_array_length(payload,'$.u
 # Recent observations remain bounded for reply context; publication timing is
 # derived from the last published moment instead of a fixed six-hour deadline.
 RECENT_OBSERVATION_WINDOW = timedelta(hours=6)
+# Observation validity, not an inferred duration or proof of completion.
+_SHORT_ACTIVITY_MINUTES = {"meal": 60, "walk": 90, "errand": 90, "housework": 90}
 
 
 def _refresh_delay(source_id: str) -> timedelta:
     spread = int.from_bytes(hashlib.sha256(source_id.encode("utf-8")).digest()[:2], "big") % 121
     return timedelta(minutes=180 + spread)  # A stable 3-5 hours per moment.
+
+
+def _activity_refresh_delay(current: dict) -> timedelta:
+    kind = current.get("activity_kind")
+    if kind is None and current.get("meals"):
+        kind = "meal"  # Older published records already carry structured meals.
+    # Reconsider an awake activity at a bounded cadence. This only expires
+    # the observation; a new decision/episode must still establish what
+    # happens next, and the runtime continues to protect sleep and bathing.
+    if kind == "rest":
+        return timedelta(minutes=30)
+    if kind in {"practice", "reading", "creative", "housework", "walk", "errand"}:
+        return timedelta(minutes=60)
+    if kind in _SHORT_ACTIVITY_MINUTES:
+        return timedelta(minutes=_SHORT_ACTIVITY_MINUTES[kind])
+    return _refresh_delay(current["source_id"])
+
+
+def _meal_observation(meal: dict, now: datetime) -> dict:
+    basis = meal.get('scheduled_for') if meal['status'] == 'planned' else None
+    until = (datetime.fromisoformat(basis or meal["occurred_at"]) + timedelta(minutes=_SHORT_ACTIVITY_MINUTES["meal"])
+             if meal["status"] in {"planned", "eating"} else None)
+    return {**meal, "stale": until is not None and now >= until,
+            "valid_until": _time(until) if until is not None else None}
+
+
 # Common conversational/time words are not evidence that a task is relevant.
 _QUERY_STOP_WORDS = set("今天 明天 昨天 晚上 现在 这次 上次 已经 还是 一下 一些 一点 我们 你们 我的 你的 她的 自己 时候 最近 然后 但是 还有 就是 觉得 可以 没有 怎么 什么 这个 那个 这件 那件".split())
 
@@ -156,7 +186,33 @@ def _project(value: dict) -> dict:
             "detail": _text(value["detail"], 240), "status": value["status"]}
 
 
+def validate_exchange_updates(source_id, user_text, reply_text, updates, *, stamp, origin):
+    """Check new episode identities before evaluation; storage repeats this check."""
+    if not isinstance(updates, list) or len(updates) > MAX_EXCHANGE_UPDATES:
+        raise ValueError("DAILY_LIFE_UPDATES_INVALID")
+    checked = []
+    for update in updates:
+        if not isinstance(update, dict) or set(update) != _EXCHANGE_UPDATE_FIELDS:
+            raise ValueError("DAILY_LIFE_UPDATE_INVALID")
+        item = _project({k: update[k] for k in ("id", "title", "detail", "status")})
+        actor, kind = update["actor"], update["kind"]
+        if actor not in {"user", "linli"} or kind not in {"linli", "shared"} or (actor == "user" and kind != "shared"):
+            raise ValueError("DAILY_LIFE_ACTOR_INVALID")
+        if origin == "proactive" and (actor == "user" or (kind == "shared" and item["status"] != "awaiting_user")):
+            raise ValueError("DAILY_LIFE_PROACTIVE_UPDATE_INVALID")
+        quote = _source_quote(update["quote"], user_text if actor == "user" else reply_text)
+        if item['status'] == 'completed' and _explicitly_unfinished(quote):
+            raise ValueError('DAILY_LIFE_PHASE_CONFLICT')
+        item.update(kind=kind, actor=actor, quote=quote, source_id=source_id, updated_at=stamp)
+        checked.append(item)
+    if len({p["id"] for p in checked}) != len(checked):
+        raise ValueError("DAILY_LIFE_UPDATES_INVALID")
+    return checked
+
+
 def _project_evidence(project: dict) -> dict:
+    if project.get('evidence_kind') == 'initial_plan':
+        return dict(project)
     # An extractor's paraphrase is not something either participant said.
     if 'quote' in project:
         return {**project, 'detail': project['quote'], 'evidence_kind':
@@ -199,14 +255,32 @@ class DailyLifeStore:
                     id TEXT PRIMARY KEY, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS life_current (
                     id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS life_exchange_world_gate (
+                    source_id TEXT PRIMARY KEY, decision TEXT NOT NULL, reply_text TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS life_exchange_world_gate_versions (
+                    source_id TEXT PRIMARY KEY, version INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS life_rest_exchanges (
                     source_id TEXT PRIMARY KEY, received_at TEXT NOT NULL, replied_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS life_routine_days (
                     day TEXT PRIMARY KEY, shift_minutes INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS life_user_routine (
                     source_id TEXT PRIMARY KEY, occurred_at TEXT NOT NULL, payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS life_weather (
+                    fetched_at TEXT PRIMARY KEY, payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS character_development_topics (
+                    key TEXT PRIMARY KEY, payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS character_development_events (
+                    source_id TEXT NOT NULL, topic TEXT NOT NULL,
+                    occurred_at TEXT NOT NULL, payload TEXT NOT NULL,
+                    PRIMARY KEY (source_id,topic));
                 CREATE INDEX IF NOT EXISTS life_moments_chronology ON life_moments(occurred_at DESC, source_id DESC);
             """)
+            from .meal_lifecycle import initialize as initialize_meals
+            initialize_meals(db)
+            from .life_episode import initialize as initialize_episodes
+            initialize_episodes(db)
+            from .project_timing import initialize as initialize_project_timing
+            initialize_project_timing(db)
 
     @contextmanager
     def _db(self):
@@ -221,6 +295,46 @@ class DailyLifeStore:
     def has_source(self, source_id: str) -> bool:
         with self._db() as db:
             return db.execute("SELECT 1 FROM life_moments WHERE source_id=?", (source_id,)).fetchone() is not None
+
+    def configure_development(self, persona_json: str) -> list[dict]:
+        from .character_development import configure
+        with self._db() as db:
+            return configure(db, persona_json)
+
+    def development_view(self, as_of: datetime) -> dict:
+        from .character_development import view
+        _time(as_of)
+        with self._db() as db:
+            db.execute('BEGIN')
+            return view(db, as_of)
+
+    def development_world_assessment(self, now: datetime) -> dict:
+        from .character_development import world_assessment
+        _time(now)
+        with self._db() as db:
+            db.execute('BEGIN')
+            return world_assessment(db, now)
+
+    def development_episodes(self, as_of: datetime) -> list[dict]:
+        from .character_development import episodes
+        with self._db() as db:
+            return episodes(db, _time(as_of))
+
+    def development_exchange_context(self, as_of: datetime) -> dict:
+        from .character_development import episodes, withdrawal_candidates
+        stamp = _time(as_of)
+        with self._db() as db:
+            db.execute('BEGIN')
+            return {'episodes': episodes(db, stamp),
+                    'withdrawal_candidates': withdrawal_candidates(db, as_of)}
+
+    def record_weather(self, weather: dict, now: datetime) -> None:
+        # This observation exists independently of whether life generation succeeds.
+        if weather_view(weather, now)['status'] != 'fresh':
+            return
+        with self._db() as db:
+            db.execute('INSERT OR REPLACE INTO life_weather VALUES (?,?)', (_time(now), _json(weather)))
+            db.execute('DELETE FROM life_weather WHERE fetched_at<?', (_time(now-timedelta(days=7)),))
 
     def adapt_routine(self, now: datetime, *, affinity: float) -> None:
         """At most 15 minutes per active day, from >=3 distinct evening dates.
@@ -266,31 +380,85 @@ class DailyLifeStore:
             shift = previous + max(-15, min(15, target - previous))
             db.execute('INSERT INTO life_routine_days VALUES (?,?)', (day.isoformat(), shift))
 
-    def publish_day(self, source_id: str, current: dict, projects: list, *, occurred_at: datetime) -> bool:
+    def publish_day(self, source_id: str, current: dict, projects: list, *, occurred_at: datetime, meals: list | None = None, weather: dict | None = None, activity_kind: str | None = None, development: list | None = None, development_basis: dict | None = None, episode: dict | None = None, project_timing: list | None = None) -> bool:
         _identifier(source_id)
         stamp = _time(occurred_at)
+        if activity_kind is not None and activity_kind not in _ACTIVITY_KINDS:
+            raise ValueError("DAILY_LIFE_ACTIVITY_KIND_INVALID")
         if not isinstance(current, dict) or set(current) != {"location", "activity", "note"}:
             raise ValueError("DAILY_LIFE_CURRENT_INVALID")
         current = {k: _text(current[k], 180 if k == "note" else 60) for k in current}
         if not isinstance(projects, list) or len(projects) > 3:
             raise ValueError("DAILY_LIFE_PROJECTS_INVALID")
         checked = [_project(p) for p in projects]
+        checked_meals = []
+        if meals is not None:
+            if not isinstance(meals, list) or len(meals) > 3:
+                raise ValueError('DAILY_LIFE_MEALS_INVALID')
+            for meal in meals:
+                if not isinstance(meal, dict) or set(meal) != {'slot', 'food', 'status'}:
+                    raise ValueError('DAILY_LIFE_MEALS_INVALID')
+                if meal['slot'] not in {'breakfast', 'lunch', 'dinner', 'snack'} or meal['status'] not in {'planned', 'eating', 'eaten', 'skipped'}:
+                    raise ValueError('DAILY_LIFE_MEALS_INVALID')
+                food = '' if meal['status'] == 'skipped' and meal['food'] == '' else _text(meal['food'], 120)
+                checked_meals.append({**meal, 'food': food,
+                                      'date': occurred_at.astimezone(LOCAL).date().isoformat(),
+                                      'occurred_at': stamp, 'source_id': source_id})
+            if len({m['slot'] for m in checked_meals}) != len(checked_meals):
+                raise ValueError('DAILY_LIFE_MEALS_INVALID')
         if len({p["id"] for p in checked}) != len(checked):
             raise ValueError("DAILY_LIFE_PROJECTS_INVALID")
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
             if db.execute("SELECT 1 FROM life_moments WHERE source_id=?", (source_id,)).fetchone():
                 return False
+            if project_timing:
+                from .project_timing import validate as validate_project_timing
+                timings = validate_project_timing(project_timing, {'projects': self._projects_at(db, occurred_at)})
+                for timing in timings:
+                    db.execute('INSERT OR IGNORE INTO life_project_timing VALUES (?,?)', (timing['version'], _json(timing)))
+            previous_meals = self._world(db, occurred_at)['meals']
+            for meal in checked_meals:
+                old = next((m for m in previous_meals if m['date'] == meal['date'] and m['slot'] == meal['slot']), None)
+                if old and old['status'] == 'eating' and old['food'] != meal['food']:
+                    raise ValueError('DAILY_LIFE_MEAL_REWRITE')
+                if old and (old['status'] in {'eaten', 'skipped'} or (old['status'] == 'eating' and meal['status'] == 'planned')):
+                    if (old['status'], old['food']) != (meal['status'], meal['food']):
+                        raise ValueError('DAILY_LIFE_MEAL_REWRITE')
+            # Terminal meals retain the original occurrence time/source. A
+            # later life activity must not publish the same meal all over again.
+            terminal = {(m['date'], m['slot']) for m in previous_meals if m['status'] in {'eaten', 'skipped'}}
+            checked_meals = [m for m in checked_meals if (m['date'], m['slot']) not in terminal]
+            published_projects = []
             for p in checked:
                 existing = db.execute("SELECT payload FROM life_projects WHERE id=?", (p["id"],)).fetchone()
-                if existing and json.loads(existing[0]).get("kind") == "shared":
+                old_project = json.loads(existing[0]) if existing else None
+                if old_project and old_project.get("kind") == "shared":
                     raise ValueError("DAILY_LIFE_SHARED_EVENT_REQUIRES_LETTER")
                 p.update(kind="linli", source_id=source_id, updated_at=stamp)
-                if existing and json.loads(existing[0])["updated_at"] > stamp:
+                if old_project and old_project["updated_at"] > stamp:
                     continue
+                if old_project:
+                    if old_project['status'] in {'completed', 'cancelled'}:
+                        if p['status'] != old_project['status']:
+                            raise ValueError('DAILY_LIFE_DECISION_PROJECT_REOPEN')
+                        continue
+                    p['title'] = old_project['title']
                 db.execute("INSERT OR REPLACE INTO life_projects VALUES (?,?)", (p["id"], _json(p)))
-            current.update(source_id=source_id, occurred_at=stamp, progress=checked)
+                from .project_timing import inherit_world_progress
+                inherit_world_progress(db, old_project, p)
+                published_projects.append(p)
+            current.update(source_id=source_id, occurred_at=stamp, progress=published_projects)
+            if activity_kind is not None:
+                current["activity_kind"] = activity_kind
+            current['meals'] = checked_meals
+            if weather:
+                current['weather'] = weather
             db.execute("INSERT INTO life_moments VALUES (?,?,?,?)", (source_id, stamp, "daily", _json(current)))
+            from .life_episode import save as save_episode
+            save_episode(db, episode, source_id, occurred_at)
+            from .character_development import record_world
+            record_world(db, occurred_at, development, development_basis)
             self._set_current(db, current)
         return True
 
@@ -304,7 +472,7 @@ class DailyLifeStore:
         if not old or json.loads(old[0])["occurred_at"] <= current["occurred_at"]:
             db.execute("INSERT OR REPLACE INTO life_current VALUES (1,?)", (_json(current),))
 
-    def record_exchange(self, source_id: str, user_text: str, reply_text: str, updates: list, *, occurred_at: datetime, current_quote: str | None = None, relationship: dict | None = None, received_at: datetime | None = None, routine: dict | None = None, boundaries: list | None = None, origin: str = "user", contact_choice: dict | None = None) -> bool:
+    def record_exchange(self, source_id: str, user_text: str, reply_text: str, updates: list, *, occurred_at: datetime, current_quote: str | None = None, relationship: dict | None = None, received_at: datetime | None = None, routine: dict | None = None, boundaries: list | None = None, origin: str = "user", contact_choice: dict | None = None, development: list | None = None) -> bool:
         """Consume only final letter text; exact quotations bind each update to its actor."""
         _identifier(source_id)
         if not source_id.startswith("reply:"):
@@ -343,25 +511,7 @@ class DailyLifeStore:
             quote = _current_source_quote(current_quote, reply_text)
             current = {"location": None, "activity": None, "note": quote,
                        "source_id": source_id, "occurred_at": stamp}
-        if not isinstance(updates, list) or len(updates) > MAX_EXCHANGE_UPDATES:
-            raise ValueError("DAILY_LIFE_UPDATES_INVALID")
-        checked = []
-        for update in updates:
-            if not isinstance(update, dict) or set(update) != _EXCHANGE_UPDATE_FIELDS:
-                raise ValueError("DAILY_LIFE_UPDATE_INVALID")
-            item = _project({k: update[k] for k in ("id", "title", "detail", "status")})
-            actor, kind = update["actor"], update["kind"]
-            if actor not in {"user", "linli"} or kind not in {"linli", "shared"} or (actor == "user" and kind != "shared"):
-                raise ValueError("DAILY_LIFE_ACTOR_INVALID")
-            if origin == "proactive" and (actor == "user" or (kind == "shared" and item["status"] != "awaiting_user")):
-                raise ValueError("DAILY_LIFE_PROACTIVE_UPDATE_INVALID")
-            quote = _source_quote(update["quote"], user_text if actor == "user" else reply_text)
-            if item['status'] == 'completed' and _explicitly_unfinished(quote):
-                raise ValueError('DAILY_LIFE_PHASE_CONFLICT')
-            item.update(kind=kind, actor=actor, quote=quote, source_id=source_id, updated_at=stamp)
-            checked.append(item)
-        if len({p["id"] for p in checked}) != len(checked):
-            raise ValueError("DAILY_LIFE_UPDATES_INVALID")
+        checked = validate_exchange_updates(source_id, user_text, reply_text, updates, stamp=stamp, origin=origin)
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
             old = db.execute("SELECT payload FROM life_moments WHERE source_id=?", (source_id,)).fetchone()
@@ -369,6 +519,8 @@ class DailyLifeStore:
                 if json.loads(old[0]).get("digest") != digest:
                     raise ValueError("DAILY_LIFE_SOURCE_CONFLICT")
                 return False
+            from .character_development import record_exchange as record_development
+            record_development(db, source_id, digest, user_text, reply_text, development, relationship, stamp, origin, checked, received)
             for item in checked:
                 old = db.execute("SELECT payload FROM life_projects WHERE id=?", (item["id"],)).fetchone()
                 if old:
@@ -427,37 +579,90 @@ class DailyLifeStore:
 
     def _projects_at(self, db, now: datetime) -> list[dict]:
         """Project the event journal at the requested time, including old data."""
+        return self._project_changes_at(db, now, per_project=1)
+
+    def _project_changes_at(self, db, now: datetime, *, per_project: int) -> list[dict]:
+        """Last changes per identity, oldest first; ties follow journal insertion."""
         rows = db.execute("""
-            SELECT item FROM (
+            SELECT item, position FROM (
                 SELECT j.value AS item, ROW_NUMBER() OVER (
                     PARTITION BY json_extract(j.value, '$.id')
                     ORDER BY m.occurred_at DESC, m.rowid DESC) AS position
                 FROM life_moments m, json_each(CASE m.kind
                     WHEN 'daily' THEN json_extract(m.payload, '$.progress')
+                    WHEN 'phase_seed' THEN json_extract(m.payload, '$.updates')
                     WHEN 'exchange' THEN json_extract(m.payload, '$.updates') END) j
-                WHERE m.occurred_at<=? AND m.kind IN ('daily','exchange')
-            ) WHERE position=1
-        """, (_time(now),))
-        return [json.loads(row[0]) for row in rows]
+                WHERE m.occurred_at<=? AND m.kind IN ('daily','exchange','phase_seed')
+            ) WHERE position<=? ORDER BY json_extract(item, '$.id'), position DESC
+        """, (_time(now), per_project))
+        from .phase_settings import project_at
+        from .project_timing import project_at as project_time_at
+        return [project_time_at(db, project_at(json.loads(row[0]), now), now) if row[1] == 1 else json.loads(row[0]) for row in rows]
 
-    def exchange_state(self, query: str = "", *, related_text: str = "", now: datetime | None = None) -> dict:
+    def exchange_state(self, query: str = "", *, related_text: str = "", now: datetime | None = None, include_history: bool = False) -> dict:
         """All identities; full evidence for active or currently mentioned items."""
         value = {"projects": [], "shared": []}
         tokens = _query_tokens(query) | _query_tokens(related_text)
         with self._db() as db:
-            for item in sorted(self._projects_at(db, now or datetime.now(timezone.utc)), key=lambda p: p['id']):
+            db.execute("BEGIN")
+            changes = {}
+            for item in self._project_changes_at(db, now or datetime.now(timezone.utc),
+                                                 per_project=3 if include_history else 1):
+                changes.setdefault(item['id'], []).append(item)
+            for history in changes.values():
+                item = history[-1]
                 if item["status"] not in {"completed", "cancelled"} or tokens & _query_tokens(
                     item["title"] + " " + item.get("quote", item["detail"])
                 ):
                     disclosed = _project_evidence(item)
                 else:
-                    # Keep every stable identity and its source, even outside
+                    # Keep every stable identity, even outside
                     # the UI window. Omitted evidence is never a blank quote.
-                    disclosed = {key: item.get(key) for key in (
-                        "id", "title", "kind", "actor", "status", "source_id", "updated_at"
-                    )}
+                    fields = (("id", "title", "status") if include_history else
+                              ("id", "title", "kind", "actor", "status", "source_id", "updated_at"))
+                    disclosed = {key: item.get(key) for key in fields}
+                    if include_history:
+                        # This is an identity index, not an evidence excerpt.
+                        # Full originals and timestamps remain in the journal.
+                        disclosed['evidence_kind'] = _project_evidence(item)['evidence_kind']
+                if include_history and item['kind'] == 'linli' and item['status'] not in {'completed', 'cancelled'}:
+                    disclosed['history'] = [_project_evidence(change) for change in history if change['kind'] == 'linli']
                 value["projects" if item["kind"] == "linli" else "shared"].append(disclosed)
         return value
+
+    def reply_candidates(self, *, now: datetime) -> dict:
+        """Authorized as-of facts, before any semantic ranking or reply budget."""
+        with self._db() as db:
+            db.execute('BEGIN')
+            snapshot = self._snapshot(db, now)
+            from .character_development import view as development_view
+            development = development_view(db, now)
+            projects = [_project_evidence(p) for p in self._projects_at(db, now)]
+            observations = self._read_observations(db, now)
+            last_reply = db.execute('SELECT MAX(replied_at) FROM life_rest_exchanges WHERE replied_at<=?', (_time(now),)).fetchone()[0]
+            deliveries = [json.loads(r[0])['delivery'] for r in db.execute(
+                "SELECT payload FROM life_moments WHERE kind='media' AND occurred_at<=? ORDER BY occurred_at DESC LIMIT 3", (_time(now),))]
+            images = [json.loads(r[0])['image'] for r in db.execute(
+                "SELECT payload FROM life_moments WHERE kind='image' AND occurred_at<=? ORDER BY occurred_at DESC LIMIT 3", (_time(now),))]
+        world = snapshot['world']
+        schedule = {k: world['schedule'].get(k) for k in ('date', 'phase', 'classes', 'current_class', 'next_class')}
+        schedule.update(timezone='Asia/Shanghai', meaning='课表是计划，不证明出席。current_class为空不代表今天没课，今天课程看classes，下一节看next_class。')
+        current = snapshot['current']
+        stale = snapshot['stale'] or bool(current and last_reply and last_reply > current['occurred_at'])
+        base = {'kind': 'character_life_reference', 'as_of': _time(now), 'stale': stale,
+                'current': None, 'threads': [],
+                'meaning': '仅为有时间和来源的角色视角。未选择的信息不是不存在。课表是计划，角色说法不等于已完成事实，不能混淆用户与角色。last_observation不是此刻活动；meals中stale只表示状态待更新，不证明仍在吃、已吃完或未吃。她的等待不等于用户承诺，计划不等于已发生。'}
+        records = [{'field': 'schedule', 'value': schedule}, {'field': 'weather', 'value': world['weather']},
+                   {'field': 'character_development', 'value': development}]
+        if current:
+            current = {**current, 'actor': 'linli', 'evidence_kind': 'character_statement'
+                       if current['source_id'].startswith('reply:') else 'published_life'}
+            records.append({'field': 'last_observation' if stale else 'current', 'value': current})
+        for field, values in (('threads', projects), ('meals', world['meals']), ('recent_episodes', world.get('recent_episodes', [])),
+                              ('previous_observations', observations), ('media_deliveries', grouped_delivery_evidence(deliveries)),
+                              ('image_observations', images)):
+            records.extend({'field': field, 'value': value, 'many': True} for value in values)
+        return {'base': base, 'records': records, 'rhythm': snapshot['rhythm']}
 
     def reply_context(self, query: str, *, now: datetime, max_chars: int = 1800, related_text: str = "") -> str:
         """Disclose a small current view, then only relevant persistent threads."""
@@ -466,6 +671,8 @@ class DailyLifeStore:
         with self._db() as db:
             db.execute("BEGIN")
             snapshot = self._snapshot(db, now)
+            from .character_development import view as development_view
+            development = development_view(db, now)
             observations = self._read_observations(db, now)
             all_projects = self._projects_at(db, now)
             last_reply = db.execute(
@@ -475,8 +682,8 @@ class DailyLifeStore:
                 "SELECT payload FROM life_moments WHERE kind='media' AND occurred_at<=? ORDER BY occurred_at DESC, source_id DESC LIMIT 3", (_time(now),))]
             images = [json.loads(row[0])['image'] for row in db.execute(
                 "SELECT payload FROM life_moments WHERE kind='image' AND occurred_at<=? ORDER BY occurred_at DESC, source_id DESC LIMIT 3", (_time(now),))]
-        if not snapshot["current"] and not snapshot["projects"] and not snapshot["shared"] and not media and not observations and not images:
-            return ""
+        # Timetable and independently observed weather remain usable before the
+        # first published activity, or when the life-generation model is down.
         tokens = _query_tokens(query)
         related_tokens = _query_tokens(related_text)
         def relevance(p):
@@ -503,7 +710,7 @@ class DailyLifeStore:
         historical = bool(current and last_reply and last_reply > current["occurred_at"])
         value = {
             "kind": "character_life_reference",
-            "meaning": "同一事件日志的时间截面。current仅来自已发布角色生活；last_observation不是此刻活动。character_statement只证明林离说过，user_statement只证明用户陈述，不能互换人物或自行升级为已发生。事项status是带来源的记录；取消须保留，约定不等于完成。不同来源矛盾时保持未定，不选最新说法当真，不编造过渡。官方人设和关系权限仍由各自来源约束。",
+            "meaning": "同一事件日志的时间截面。current仅来自已发布角色生活；last_observation不是此刻活动。meals中stale表示当前用餐状态待更新，保留的是当时记录，不能据此说仍在吃、已经吃完或没吃。character_statement只证明林离说过，user_statement只证明用户陈述，不能互换人物或自行升级为已发生。事项status是带来源的记录；取消须保留，约定不等于完成。不同来源矛盾时保持未定，不选最新说法当真，不编造过渡。官方人设和关系权限仍由各自来源约束。",
             "stale": snapshot["stale"] or historical,
             "current": {k: current[k] for k in ("location", "activity", "note", "occurred_at", "source_id")} if current else None,
             "threads": [],
@@ -514,6 +721,44 @@ class DailyLifeStore:
         if value["stale"] and value["current"]:
             value["last_observation"] = value["current"]
             value["current"] = None
+        if development['items']:
+            # Keep relevant mature changes even when the whole catalog no
+            # longer fits. Pack after the complete current/stale projection,
+            # so required attribution cannot overflow the finished world view.
+            # Each retained item is intact and shares this as_of.
+            selected = {**development, 'items': [], 'omitted_count': len(development['items'])}
+            ordered = sorted(development['items'], key=lambda item: (
+                bool(tokens & _query_tokens(item['label'] + ' ' + item['key'])),
+                item['stage'] == 'growing'), reverse=True)
+            for item in ordered:
+                proposed = {**selected, 'items': [*selected['items'], item],
+                            'omitted_count': selected['omitted_count'] - 1}
+                candidate = {**value, 'character_development': proposed}
+                if len(_json(candidate)) <= max_chars:
+                    selected, value = proposed, candidate
+        world = snapshot['world']
+        schedule = world['schedule']
+        # Timetable facts must survive before optional narrative episodes.
+        # No class at this instant does not mean there are no classes today.
+        timetable = {k: schedule.get(k) for k in ('date', 'phase', 'classes', 'current_class', 'next_class')}
+        timetable['timezone'] = 'Asia/Shanghai'
+        timetable['meaning'] = '课表是当天计划，不是出席证据。current_class为空只表示此刻未在课程时段，不代表今天没课；今天是否有课看classes，下一节看next_class。休息不代表课程取消，不得据此指责用户记错日子。'
+        candidate = {**value, 'schedule': timetable}
+        if len(_json(candidate)) <= max_chars:
+            value = candidate
+        for episode in world.get('recent_episodes', []):
+            candidate = {**value, 'recent_episodes': [*value.get('recent_episodes', []), episode]}
+            if len(_json(candidate)) <= max_chars:
+                value = candidate
+            else:
+                break  # Preserve whole process/meaning boundaries, never trim into a false cause.
+        for name, item in (
+            ('weather', world['weather']),
+            ('meals', [m for m in world['meals'] if m['date'] == now.astimezone(LOCAL).date().isoformat()][:3]),
+        ):
+            candidate = {**value, name: item}
+            if len(_json(candidate)) <= max_chars:
+                value = candidate
         for observation in images:
             # Images describe an artifact, never certify a new location/activity.
             candidate = {**value, 'image_observations': [*value.get('image_observations', []), observation]}
@@ -581,6 +826,65 @@ class DailyLifeStore:
                             "kind": row["kind"], "content": content})
         return moments
 
+    def recent_life(self, now: datetime) -> list[dict]:
+        with self._db() as db:
+            rows = db.execute(
+                "SELECT source_id,occurred_at,payload FROM (SELECT source_id,occurred_at,payload,"
+                "ROW_NUMBER() OVER (PARTITION BY date(occurred_at,'+8 hours') ORDER BY occurred_at DESC,source_id DESC) AS n "
+                "FROM life_moments WHERE kind='daily' AND occurred_at<=? AND occurred_at>=?) "
+                "WHERE n<=2 ORDER BY occurred_at DESC,source_id DESC LIMIT 14",
+                (_time(now), _time(now-timedelta(days=7)))).fetchall()
+        return [{'source_id': r[0], 'occurred_at': r[1], 'activity': json.loads(r[2])['activity'],
+                 'note': json.loads(r[2])['note'], 'evidence_kind': 'published_life'} for r in rows]
+
+    def _world(self, db, now):
+        meals, weather = {}, None
+        from .meal_lifecycle import records as meal_records, schedule as meal_schedule
+        for meal in meal_records(db, now):
+            meals.setdefault((meal['date'], meal['slot']), meal)
+        observation = db.execute('SELECT payload FROM life_weather WHERE fetched_at<=? ORDER BY fetched_at DESC LIMIT 1', (_time(now),)).fetchone()
+        if observation:
+            weather = json.loads(observation[0])
+        rows = db.execute("SELECT payload FROM life_moments WHERE kind='daily' AND occurred_at<=? AND occurred_at>=? "
+                          "ORDER BY occurred_at DESC,source_id DESC LIMIT 80", (_time(now), _time(now-timedelta(days=7))))
+        for row in rows:
+            payload = json.loads(row[0])
+            if weather is None and payload.get('weather'):
+                weather = payload['weather']
+            for meal in payload.get('meals', []):
+                key = (meal['date'], meal['slot'])
+                old = meals.get(key)
+                if old is None or datetime.fromisoformat(meal.get('recorded_at') or meal['occurred_at']) > datetime.fromisoformat(old.get('recorded_at') or old['occurred_at']):
+                    meals[key] = meal
+        projected_meals = [_meal_observation(meal, now) for meal in list(meals.values())[:28]]
+        day_start = now.astimezone(LOCAL).replace(hour=0, minute=0, second=0, microsecond=0)
+        today_activities = []
+        prior_daily = None
+        for row in db.execute(
+                "SELECT source_id,occurred_at,payload FROM life_moments WHERE kind='daily' "
+                "AND occurred_at>=? AND occurred_at<=? ORDER BY occurred_at ASC,source_id ASC LIMIT 128",
+                (_time(day_start), _time(now))):
+            payload = json.loads(row[2])
+            if payload.get('activity_kind') == 'meal' or (not payload.get('activity_kind') and payload.get('meals')):
+                prior_daily = None
+                continue
+            item = {'source_id': row[0], 'occurred_at': row[1],
+                'activity': payload.get('activity'), 'activity_kind': payload.get('activity_kind'),
+                'note': payload.get('note')}
+            if (prior_daily is not None and item['activity_kind'] == 'rest'
+                    and all(prior_daily.get(key) == item.get(key) for key in ('activity_kind', 'activity', 'note'))
+                    and datetime.fromisoformat(item['occurred_at']) - datetime.fromisoformat(prior_daily.get('last_recorded_at', prior_daily['occurred_at'])) <= timedelta(minutes=45)):
+                prior_daily.setdefault('source_ids', [prior_daily['source_id']]).append(item['source_id'])
+                prior_daily['last_recorded_at'] = item['occurred_at']
+                prior_daily['record_count'] = len(prior_daily['source_ids'])
+            else:
+                today_activities.append(item)
+                prior_daily = item
+        from .life_episode import recent as recent_episodes
+        return {'schedule': student_schedule(now), 'weather': weather_view(weather, now),
+                'meals': projected_meals, 'meal_schedule': meal_schedule(db, now, projected_meals),
+                'recent_episodes': recent_episodes(db, now), 'today_activities': today_activities}
+
     def _recent_observations(self, now: datetime) -> list[dict]:
         with self._db() as db:
             return self._read_observations(db, now)
@@ -599,6 +903,30 @@ class DailyLifeStore:
                                'completion': 'not_established' if _explicitly_unfinished(observation['note']) else 'not_verified'})
         return result
 
+    def pending_exchange_actions(self, now: datetime, after: datetime | None = None) -> list[dict]:
+        """Jev-extracted intentions invite a new decision, never certify an event."""
+        since = max(now - timedelta(hours=6), after) if after else now - timedelta(hours=6)
+        with self._db() as db:
+            if after is None:
+                latest = db.execute("SELECT MAX(occurred_at) FROM life_moments WHERE kind='daily' AND occurred_at<=?", (_time(now),)).fetchone()[0]
+                if latest:
+                    since = max(since, datetime.fromisoformat(latest))
+            rows = db.execute("SELECT source_id,occurred_at,payload FROM life_moments "
+                "WHERE kind='exchange' AND occurred_at>? AND occurred_at<=? "
+                "AND source_id IN (SELECT source_id FROM life_exchange_world_gate WHERE decision='reconsider') "
+                "ORDER BY occurred_at DESC,source_id DESC LIMIT 4", (_time(since), _time(now))).fetchall()
+            texts = dict(db.execute("SELECT source_id,reply_text FROM life_exchange_world_gate WHERE source_id IN "
+                "(SELECT source_id FROM life_moments WHERE occurred_at>? AND occurred_at<=?)", (_time(since), _time(now))))
+        actions = []
+        for source, stamp, raw in rows:
+            payload = json.loads(raw)
+            actions.append({'source_id': source, 'occurred_at': stamp,
+                'evidence_kind': 'character_statement', 'current': payload.get('current'),
+                'reply_text': texts[source],
+                'updates': [u for u in payload.get('updates', []) if u.get('kind') == 'linli'
+                            and u.get('status') in {'planned', 'ongoing', 'paused'}]})
+        return actions
+
     def snapshot(self, now: datetime) -> dict:
         with self._db() as db:
             db.execute("BEGIN")
@@ -616,12 +944,47 @@ class DailyLifeStore:
         current = _current_evidence(json.loads(current_row[0]) if current_row else None)
         if current and _explicitly_unfinished(current['note']):
             current = None
-        projects.sort(key=lambda p: (p["status"] in {"completed", "cancelled"}, -datetime.fromisoformat(p["updated_at"]).timestamp(), p["id"]))
+        projects.sort(key=lambda p: (p["status"] in {"completed", "cancelled"} or bool(p.get("deadline_expired")) or p.get('time_scope') == 'transient', -datetime.fromisoformat(p["updated_at"]).timestamp(), p["id"]))
+        # An activity observed before a class boundary must not remain "current"
+        # for another 3–5 hours. A timetable still does not prove attendance.
+        class_changed = False
+        if current:
+            observed = datetime.fromisoformat(current['occurred_at'])
+            class_changed = any(observed < datetime.fromisoformat(item[edge]) <= now
+                for point in (observed, now) for item in student_schedule(point)['classes']
+                for edge in ('start', 'end'))
+        # A long rest/practice observation must not suppress a new mealtime
+        # decision. This expires the observation, never invents a meal record.
+        meal_boundary = False
+        if current:
+            observed_local = datetime.fromisoformat(current['occurred_at']).astimezone(LOCAL)
+            local_now = now.astimezone(LOCAL)
+            meal_boundary = any(
+                observed_local < local_now.replace(hour=hour, minute=0, second=0, microsecond=0) <= local_now
+                for hour in (8, 12, 18)
+            )
+        world = self._world(db, now)
+        meal_finished = bool(current and current['source_id'].startswith('meal:') and any(
+            m['status'] == 'eaten' and m.get('started_at') == current['occurred_at'] for m in world['meals']))
+        from .life_rhythm import with_recovery
+        body = rhythm(now, exchanges, shifts)
+        recovery_episodes = [json.loads(row[0]) for row in db.execute(
+            "SELECT payload FROM life_episodes WHERE occurred_at>=? AND occurred_at<=? ORDER BY occurred_at DESC LIMIT 128",
+            (_time(now.astimezone(LOCAL).replace(hour=0, minute=0, second=0, microsecond=0)), _time(now)))]
+        body = with_recovery(body, recovery_episodes, now)
+        latest_activity = world['today_activities'][-1] if world['today_activities'] else None
+        if latest_activity and latest_activity.get('activity_kind') == 'rest':
+            body['rest_observations'] = {
+                'first_observed_at': latest_activity['occurred_at'],
+                'last_observed_at': latest_activity.get('last_recorded_at', latest_activity['occurred_at']),
+                'record_count': latest_activity.get('record_count', 1),
+                'meaning': '这些时刻已记录休息，不证明之间持续睡眠；本次恢复仍由新过程判断。'}
         return {
             "schema_version": "olivia.daily-life.v1", "status": "READY",
             "current": current,
-            "rhythm": rhythm(now, exchanges, shifts),
-            "stale": current is None or now - datetime.fromisoformat(current["occurred_at"]) >= _refresh_delay(current["source_id"]),
+            "world": world,
+            "rhythm": body,
+            "stale": current is None or class_changed or meal_boundary or meal_finished or now - datetime.fromisoformat(current["occurred_at"]) >= _activity_refresh_delay(current),
             "projects": [p for p in projects if p["kind"] == "linli"][:6],
             "shared": [p for p in projects if p["kind"] == "shared"][:6],
             "moments": self._moments(rows),

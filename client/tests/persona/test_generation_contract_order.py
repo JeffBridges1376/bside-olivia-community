@@ -7,7 +7,8 @@ import pytest
 from runtime.personal_chat.presentation import CURRENT
 from runtime.reply.reply_context import ReplyContext, ReplyMode, TrustedTime
 from runtime.reply.reply_orchestrator import ReplyRequest, ReplyResult, ReplyState
-from runtime.reply.reply_pipeline import ReplyPipeline
+from runtime.reply.reply_pipeline import ReplyPipeline, UnavailableRewriter
+from runtime.reply.reply_reviewer import NullReviewer
 
 
 @pytest.mark.parametrize('mode', [ReplyMode.TEXT_LETTER, ReplyMode.FUTURE_IM])
@@ -20,7 +21,7 @@ def test_delivery_contract_follows_all_evidence_without_changing_current_input(m
         calls.append(request.normalized_messages())
         return ReplyResult(request.request_id, ReplyState.COMPLETED, text='好')
     orchestrator = SimpleNamespace(run=generate)
-    pipeline = ReplyPipeline(orchestrator, reviewer=None, rewriter=None, discover_runtime_ports=False)
+    pipeline = ReplyPipeline(orchestrator, reviewer=NullReviewer(), rewriter=UnavailableRewriter(), discover_runtime_ports=False)
     current = '你晚饭吃什么？'
     request = ReplyRequest(messages=({'role':'system','content':'人设'},
         {'role':'user','content':'我还没做饭'}, {'role':'assistant','content':'我在吃青菜配饭'},
@@ -32,6 +33,7 @@ def test_delivery_contract_follows_all_evidence_without_changing_current_input(m
     finally:
         CURRENT.reset(token)
     assert result.state is ReplyState.COMPLETED
+    assert result.reviewer_calls == result.rewrite_calls == 0
     assert len(calls) == 1
     messages = calls[0]
     from runtime.personal_chat.decision import INSTRUCTION
@@ -48,7 +50,7 @@ def test_delivery_contract_follows_all_evidence_without_changing_current_input(m
 def test_contract_overflow_fails_before_generation():
     async def generate(request):
         pytest.fail('must not generate without the required delivery contract')
-    pipeline = ReplyPipeline(SimpleNamespace(run=generate), reviewer=None, rewriter=None, discover_runtime_ports=False)
+    pipeline = ReplyPipeline(SimpleNamespace(run=generate), reviewer=NullReviewer(), rewriter=UnavailableRewriter(), discover_runtime_ports=False)
     request = ReplyRequest(messages=({'role':'system','content':'人设'}, {'role':'user','content':'你好'}), max_input_chars=10)
     context = ReplyContext.create(ReplyMode.FUTURE_IM, trusted_time=TrustedTime(datetime.now(timezone.utc)), future_im_enabled=True)
     token = CURRENT.set({'structured':True})

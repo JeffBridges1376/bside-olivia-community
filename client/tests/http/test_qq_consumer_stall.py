@@ -38,10 +38,14 @@ def test_stalled_consumer_releases_next_reply_and_recovers_without_resend(monkey
             await asyncio.wait_for(service.handle(PersonalMessage('qq', '100', '200', '2', 'second'), send), .3)
             assert sent == ['first reply', 'second reply']
             assert rows[0]['delivery_status'] == 'DELIVERED'
+            # The second ACK no longer waits for the first consumer timeout.
+            assert not release.is_set()
+            await asyncio.gather(*service.consumer_tasks.values())
             assert rows[0]['consumer_error_code'] == 'PERSONAL_CHAT_CONSUMER_TIMEOUT'
             release.set()
             rows[0]['consumer_retry_at'] = 0
             await service.recover()
+            await asyncio.gather(*service.consumer_tasks.values())
             assert rows[0]['consumer_done']
             assert 'consumer_error_code' not in rows[0]
             assert len(sent) == 2
@@ -91,10 +95,16 @@ def test_recovery_releases_lock_between_old_rows():
         recovering = asyncio.create_task(service.recover())
         await entered.wait()
         waiting = asyncio.create_task(waiting_message())
-        await asyncio.sleep(0)
+        # A new message acquires the lock while row 0 is still blocked. Other
+        # old consumers may already have started; their start order is irrelevant.
+        await asyncio.wait_for(waiting, .2)
+        assert not release.is_set()
+        assert not service.lock.locked()
+        assert not service.consumer_tasks['0'].done()
         release.set()
         await asyncio.gather(recovering, waiting)
-        assert order.index('new-message') < order.index('1')
+        await asyncio.gather(*service.consumer_tasks.values())
+        assert set(order) == {'0', '1', '2', '3', 'new-message'}
     asyncio.run(scenario())
 
 
@@ -127,7 +137,7 @@ def test_onebot_probe_and_next_reply_survive_stalled_consumer(monkeypatch):
 
     async def scenario():
         stop, stalled = asyncio.Event(), asyncio.Event()
-        sent = []
+        sent, completed = [], set()
         async def commit(server, row):
             if row['content'] == 'first':
                 stalled.set()
@@ -142,9 +152,14 @@ def test_onebot_probe_and_next_reply_survive_stalled_consumer(monkeypatch):
         async def handle(message, send):
             await service.handle(message, send)
             if message.text == 'second':
-                stop.set()
+                completed.add('second')
+                if 'probe' in completed:
+                    stop.set()
         async def control(message, send):
             await send('1611')
+            completed.add('probe')
+            if 'second' in completed:
+                stop.set()
         handle.is_control_message = lambda message: message.text == '/连接测试'
         handle.handle_control = control
         async def socket(request):
@@ -169,5 +184,9 @@ def test_onebot_probe_and_next_reply_survive_stalled_consumer(monkeypatch):
         async with TestServer(app) as server:
             await asyncio.wait_for(run_qq(str(server.make_url('/')), TOKEN, '100', '200',
                 handle, stop, merge_seconds=0), 3)
-        assert sent == ['first reply', '1611', 'second reply']
+        assert sent[0] == 'first reply'
+        assert sorted(sent[1:]) == ['1611', 'second reply']
+        assert completed == {'probe', 'second'}
+        await asyncio.gather(*service.consumer_tasks.values())
+        assert service.rows[0]['consumer_error_code'] == 'PERSONAL_CHAT_CONSUMER_TIMEOUT'
     asyncio.run(scenario())

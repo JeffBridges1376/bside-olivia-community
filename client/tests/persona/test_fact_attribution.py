@@ -7,7 +7,8 @@ import pytest
 
 from runtime.reply.reply_orchestrator import ReplyRequest, ReplyResult, ReplyState
 from runtime.reply.reply_context import ReplyContext, ReplyMode, TrustedTime
-from runtime.reply.reply_pipeline import ReplyPipeline
+from runtime.reply.reply_pipeline import ReplyPipeline, UnavailableRewriter
+from runtime.reply.reply_reviewer import NullReviewer
 from runtime.personal_chat.context import chat_context
 
 
@@ -29,8 +30,9 @@ def test_shared_generation_preserves_speakers_without_extra_provider_call(mode):
     orchestrator = SimpleNamespace(run=generate, gateway=SimpleNamespace(adapter=SimpleNamespace(gateway=gateway)))
     context = ReplyContext.create(mode, trusted_time=TrustedTime(datetime.now(timezone.utc)), future_im_enabled=True)
     request = ReplyRequest(messages=({'role': 'system', 'content': system}, {'role': 'user', 'content': '吃的不是小馄饨吗？'}))
-    result = asyncio.run(ReplyPipeline(orchestrator, reviewer=None, rewriter=None).run(request, context))
+    result = asyncio.run(ReplyPipeline(orchestrator, reviewer=NullReviewer(), rewriter=UnavailableRewriter(), discover_runtime_ports=False).run(request, context))
     assert result.state is ReplyState.COMPLETED
+    assert result.reviewer_calls == result.rewrite_calls == 0
     assert len(requests) == 1
     messages = requests[0].normalized_messages()
     expected = ['system', 'user', 'assistant', 'system']

@@ -126,6 +126,7 @@ def test_relationship_commands_reuse_slow_bounded_reducer_policy() -> None:
         change.field for change in boundary.delta.changes
     ) == (
         "trust",
+        "tension",
         "familiarity",
         "growth_window_start",
         "growth_used",
@@ -137,7 +138,7 @@ def test_relationship_commands_reuse_slow_bounded_reducer_policy() -> None:
     )
     assert conflict.snapshot.trust == 98
     assert conflict.snapshot.comfort == 98
-    assert conflict.snapshot.tension == 4
+    assert conflict.snapshot.tension == 3
 
     repair = reduce_private_world_command(
         conflict.snapshot,
@@ -145,7 +146,7 @@ def test_relationship_commands_reuse_slow_bounded_reducer_policy() -> None:
     )
     assert repair.snapshot.trust == 99
     assert repair.snapshot.comfort == 99
-    assert repair.snapshot.tension == 2
+    assert repair.snapshot.tension == 1
 
 
 def test_stage_confirmation_uses_typed_bounded_stage() -> None:

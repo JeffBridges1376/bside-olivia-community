@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import shutil
 import stat
 import subprocess
@@ -73,6 +74,43 @@ def _managed_installation(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return installation
+
+
+def test_build_update_cli_stages_explicit_hash_pinned_startup_video(tmp_path):
+    source, commit = _clean_payload_repo(tmp_path)
+    video = tmp_path / 'approved.mp4'
+    content = b'\x00\x00\x00\x18ftypisom' + b'synthetic-fixture'
+    video.write_bytes(content)
+    digest = hashlib.sha256(content).hexdigest()
+    package = tmp_path / 'with-animation.oliviapatch'
+    assert installer_cli.main(['build-update', '--source', str(source), '--output', str(package),
+        '--version', '1.0.0', '--source-commit', commit, '--startup-video', str(video),
+        '--startup-video-sha256', digest]) == 0
+    with zipfile.ZipFile(package) as archive:
+        relative = 'installer/assets/startup.mp4'
+        assert archive.read('payload/' + relative) == content
+        manifest = json.loads(archive.read('manifest.json'))
+        assert next(row for row in manifest['files'] if row['path'] == relative)['sha256'] == digest
+        receipt = json.loads(archive.read('payload/installer/assets/startup.json'))
+        assert receipt['sha256'] == digest and str(tmp_path) not in json.dumps(receipt)
+    installation = _managed_installation(tmp_path)
+    apply_component_update(installation, package,
+        expected_manifest_sha256=Path(str(package) + '.manifest.sha256').read_text().strip())
+    state = json.loads((installation / '.olivia-update-state.json').read_text())
+    active = installation / state['active_components']['local_backend']['payload_path']
+    assert (active / relative).read_bytes() == content
+
+
+@pytest.mark.parametrize('digest', [None, '0' * 64, 'invalid'])
+def test_invalid_startup_media_never_publishes_update(tmp_path, digest):
+    source, commit = _clean_payload_repo(tmp_path)
+    video = tmp_path / 'approved.mp4'
+    video.write_bytes(b'\x00\x00\x00\x18ftypisom')
+    package = tmp_path / 'invalid.oliviapatch'
+    with pytest.raises(ComponentPackageBuildError, match='STARTUP_VIDEO_'):
+        build_component_package(source, package, version='1.0.0', expected_source_commit=commit,
+            startup_video=video, startup_video_sha256=digest)
+    assert not package.exists()
 
 
 def test_nested_export_preserves_locked_file_bytes_with_windows_autocrlf(tmp_path):

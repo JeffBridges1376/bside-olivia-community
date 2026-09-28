@@ -145,6 +145,9 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
     const title = node("div", "QQ / 微信聊天", "olivia-chat-title");
     const copy = node("div", "在这里选择并绑定聊天方式。微信直接扫码；QQ 可以由 Olivia 一键准备本地 QQ 组件，不需要手填 OneBot 参数。", "olivia-chat-copy");
     const content = document.createElement("div");
+    let qqOwnerDraft = "";
+    let qqSaving = false;
+    let renderedStatus = null;
     root.append(title, copy, content);
     anchor.after(root);
 
@@ -281,8 +284,10 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       const left = document.createElement("div");
       const listener = status.listeners?.qq;
       const setupState = status.qq?.state;
-      const state = setupState && setupState !== "IDLE" ? setupState : listener;
-      left.append(node("div", "QQ（实验功能）", "olivia-chat-name"), node("div", stateLabel(state), "olivia-chat-state"));
+      const state = ["FAILED", "READY_RESTART"].includes(setupState) ? setupState : listener || setupState;
+      const liveState = node("div", stateLabel(state), "olivia-chat-state");
+      liveState.dataset.qqLiveState = "true";
+      left.append(node("div", "QQ（实验功能）", "olivia-chat-name"), liveState);
       top.append(left);
       box.append(top);
 
@@ -357,26 +362,41 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
         const managed = node("div", null, "olivia-chat-subcard");
         managed.append(node("div", "OneBot 已就绪", "olivia-chat-name"));
         managed.append(node("div", "刚扫码登录的是机器人账号，已自动识别。下方请填写你用来和机器人聊天的个人 QQ 号。", "olivia-chat-copy"));
+        if (status.qq?.owner_masked) {
+          const saved = node("div", `已保存聊天 QQ：${status.qq.owner_masked}。${["READY_RESTART", "CONFIGURED_RESTART"].includes(state) ? "请重启 Olivia 后生效。" : state === "CONNECTED" ? "接收连接已建立；实际回复状态见下方。" : "当前状态：" + stateLabel(state) + "。"}`, "olivia-chat-copy");
+          saved.setAttribute("role", "status");
+          managed.append(saved);
+        }
         const owner = input("用于和机器人聊天的个人 QQ 号");
+        owner.value = qqOwnerDraft;
+        owner.addEventListener("input", () => { qqOwnerDraft = owner.value; });
         owner.inputMode = "numeric";
         owner.setAttribute("aria-label", "用于和机器人聊天的个人 QQ 号");
         owner.style.marginTop = "10px";
         managed.append(owner);
         const controls = node("div", null, "olivia-chat-actions");
-        controls.append(action("连接并保存", async () => {
+        controls.append(action("连接并保存", async (button) => {
+          qqSaving = true;
+          owner.disabled = true;
+          button.textContent = "正在验证并保存…";
           try {
             await request(QQ_CONFIGURE, {method: "POST", body: {managed: true, owner: owner.value.trim()}});
+            qqSaving = false;
             await refresh(false);
           } catch (error) { renderError(managed, error); }
+          finally {
+            qqSaving = false;
+            owner.disabled = false;
+            button.textContent = "连接并保存";
+          }
         }));
         managed.append(controls);
         box.append(managed);
       }
 
-      if (status.reply_errors?.qq) {
-        box.append(node("div", "普通聊天回复异常", "olivia-chat-error"));
-        renderError(box, {code: status.reply_errors.qq});
-      }
+      const replyHealth = node("div");
+      replyHealth.dataset.qqReplyHealth = "true";
+      box.append(replyHealth);
       if (status.e2e_verified_at?.qq) {
         box.append(node("div", "曾通过端到端验证：QQ 收到过测试回复。当前连接及回复异常请以上方状态为准。", "olivia-chat-copy"));
       } else if (listener === "CONNECTED") {
@@ -398,19 +418,50 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
         clearTimeout(pollTimer);
         pollTimer = null;
       }
+      if (!root.isConnected) return;
       const wechatBusy = ["STARTING", "SCAN_REQUIRED", "SCANNED", "VERIFY_REQUIRED"].includes(status.wechat?.state);
       const napcatBusy = ["DOWNLOADING", "INSTALLER_READY", "INSTALLER_OPENED", "STARTING", "AWAITING_QQ_LOGIN", "ONEBOT_PROBING", "ONEBOT_CONFIG_PENDING"].includes(status.napcat?.state);
       const transportBusy = Object.values(status.listeners || {}).some((value) => ["CONNECTING", "RECONNECTING"].includes(value));
-      if (wechatBusy || napcatBusy || transportBusy) pollTimer = setTimeout(() => refresh(true), 2000);
+      const connected = Object.values(status.listeners || {}).some((value) => ["CONNECTED", "LISTENING"].includes(value));
+      if (wechatBusy || napcatBusy || transportBusy || connected)
+        pollTimer = setTimeout(() => refresh(true), wechatBusy || napcatBusy || transportBusy ? 2000 : 10000);
+    };
+
+    const updateReplyHealth = (status) => {
+      const state = content.querySelector("[data-qq-live-state]");
+      if (state) state.textContent = stateLabel(["FAILED", "READY_RESTART"].includes(status.qq?.state)
+        ? status.qq.state : status.listeners?.qq || status.qq?.state);
+      const health = content.querySelector("[data-qq-reply-health]");
+      if (health) {
+        health.replaceChildren();
+        if (status.reply_errors?.qq) {
+          health.append(node("div", "普通聊天回复异常", "olivia-chat-copy"));
+          renderError(health, {code: status.reply_errors.qq});
+        }
+      }
     };
 
     async function refresh(silent = false) {
+      if (!root.isConnected) return;
+      if (qqSaving) { pollTimer = setTimeout(() => refresh(true), 2000); return; }
       try {
         const status = await request(STATUS);
+        if (!root.isConnected) return;
+        if (qqSaving) { pollTimer = setTimeout(() => refresh(true), 2000); return; }
         const selected = Array.isArray(status.selected_channels) ? status.selected_channels : [];
         if (selected.includes("qq") && status.napcat?.state === "AWAITING_QQ_LOGIN") {
           try { status.qq_login = await request(NAPCAT_LOGIN); }
           catch (_) { status.qq_login = {}; }
+        }
+        // Health changes must remain visible without rebuilding fields while
+        // someone types, selects text, or keeps advanced connection fields open.
+        const {reply_errors, last_seen_at, delivery_health, ...presentation} = status;
+        const signature = JSON.stringify(presentation);
+        const editing = content.contains(document.activeElement);
+        if (silent && (editing || signature === renderedStatus)) {
+          updateReplyHealth(status);
+          schedule(status);
+          return;
         }
         const fragment = document.createDocumentFragment();
         if (!selected.length) {
@@ -421,9 +472,13 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
           if (selected.length === 1) fragment.append(renderChannelChoice(selected));
         }
         content.replaceChildren(fragment);
+        renderedStatus = signature;
+        updateReplyHealth(status);
         schedule(status);
       } catch (error) {
+        if (!root.isConnected) return;
         if (!silent) content.replaceChildren(node("div", error?.code || error?.message || "读取聊天设置失败", "olivia-chat-error"));
+        pollTimer = setTimeout(() => refresh(true), 10000);
       }
     }
 

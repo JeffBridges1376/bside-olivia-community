@@ -70,6 +70,47 @@ def _source() -> dict[str, object]:
     }
 
 
+def test_chat_order_evidence_survives_two_projections_without_private_identifiers():
+    from runtime.diagnostics.support_bundle import project_chat_task
+    raw = {
+        'channel': 'qq', 'letter_id': 'im-' + 'abcdef01' * 8,
+        'delivery_status': 'DELIVERED', 'generation_attempts': 2,
+        'life_received_at': '2026-09-26T14:39:00+08:00',
+        'user_sent_at': '2026-09-26T14:38:00+08:00',
+        'private_world_occurred_at': '2026-09-26T06:39:07+00:00',
+        'source_messages': {'651930410': 'private-message'},
+        'account_id': '651930410', 'reply_text': 'private-reply', 'key': 'sk-private',
+    }
+    projected = project_chat_task(raw)
+    assert projected['timeline'] == {
+        'platform_sent_at': '2026-09-26T06:38:00Z',
+        'processing_started_at': '2026-09-26T06:39:00Z',
+        'delivered_at': '2026-09-26T06:39:07Z',
+    }
+    assert projected['turn_ref'].startswith('chat-')
+    assert projected['generation_attempts'] == 2
+    assert project_chat_task(projected) == projected
+    source = _source()
+    source['tasks']['items'][0].update(projected)
+    with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(source))) as archive:
+        encoded = archive.read('tasks.json')
+    exported = json.loads(encoded)['items'][0]
+    assert exported['turn_ref'] == projected['turn_ref']
+    assert exported['timeline'] == projected['timeline']
+    for private in ('651930410', 'private-message', 'private-reply', 'sk-private', raw['letter_id']):
+        assert private.encode() not in encoded
+
+
+def test_chat_order_evidence_ignores_malformed_and_unrelated_identifiers():
+    from runtime.diagnostics.support_bundle import project_chat_task
+    raw = {'channel': 'qq', 'letter_id': '651930410', 'turn_ref': 'private-secret',
+           'generation_attempts': True, 'life_received_at': 'private-message',
+           'user_sent_at': '2026-09-26T14:38:00',  # no timezone: do not guess
+           'private_world_occurred_at': '2200-01-01T00:00:00Z',
+           'timeline': {'platform_sent_at': 'private', 'private-secret': '2026-09-26T00:00:00Z'}}
+    assert project_chat_task(raw) == {'channel': 'qq'}
+
+
 def test_memory_install_diagnostics_only_keep_safe_stage_and_counts():
     source = _source()
     source["health"]["checks"]["memory_install"] = {

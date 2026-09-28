@@ -31,18 +31,18 @@ def refresh(tmp_path, payload):
 
 
 @pytest.mark.parametrize("nested", [False, True])
-def test_day_envelope_commits_same_content_without_extra_call(tmp_path, nested):
+def test_legacy_generated_envelope_cannot_bypass_decision_contract(tmp_path, nested):
     payload = ({"current": {**CURRENT, "projects": [PROJECT]}} if nested
                else {"current": CURRENT, "projects": [PROJECT]})
     original = deepcopy(payload)
     store, runtime, calls = refresh(tmp_path, payload)
-    assert runtime.error_code is None
-    assert len(calls) == 1
+    assert runtime.error_code == 'DAILY_LIFE_GENERATION_UNAVAILABLE'
+    assert len(calls) == 2
     assert payload == original
-    assert store.has_source(SOURCE)
+    assert not store.has_source(SOURCE)
     state = store.snapshot(NOW)
-    assert {k: state["current"][k] for k in CURRENT} == CURRENT
-    assert {k: state["projects"][0][k] for k in PROJECT} == PROJECT
+    assert state['current'] is None
+    assert state['projects'] == []
 
 
 @pytest.mark.parametrize("payload", [
@@ -58,7 +58,7 @@ def test_day_envelope_commits_same_content_without_extra_call(tmp_path, nested):
 def test_invalid_day_envelope_keeps_store_empty(tmp_path, payload):
     store, runtime, calls = refresh(tmp_path, payload)
     assert runtime.error_code == "DAILY_LIFE_GENERATION_UNAVAILABLE"
-    assert len(calls) == 1
+    assert len(calls) == 2
     assert not store.has_source(SOURCE)
     state = store.snapshot(NOW)
     assert state["current"] is None

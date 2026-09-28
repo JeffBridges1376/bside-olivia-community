@@ -203,7 +203,7 @@ const panel = {isConnected: true, __oliviaCompanionStatusNode: statusNode};
 
 # The shipped CEF surface needs explicit no-drag/pointer and display-state guards.
 def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
-    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v48"
+    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v52"
     for declaration in (
             'const STATUS_PATH = "/toy/companion/status";',
             'const MEMORY_PATH = "/toy/companion/memory";',
@@ -255,7 +255,7 @@ def test_original_settings_management_ui_has_fixed_bounded_contract() -> None:
 def test_proactive_letters_use_native_mailbox_routes_and_settings_contract() -> None:
     source = BOOTSTRAP_JAVASCRIPT
 
-    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v48"
+    assert SETTINGS_UI_VERSION == "p03.original-settings-manage.v52"
     assert 'const PROACTIVE_STATUS_PATH = "/toy/proactive/status";' in source
     assert 'const PROACTIVE_SETTINGS_PATH = "/toy/proactive/settings";' in source
     assert "login_check_enabled" in source
@@ -575,6 +575,7 @@ source = source.replace(/\}\)\(\);\s*$/, `
 class Element {
   constructor(tag) { this.tagName = tag; this.children = []; this.style = {}; this.textContent = ""; }
   append(...items) { this.children.push(...items); }
+  prepend(...items) { this.children.unshift(...items); }
   replaceChildren(...items) { this.children = items; }
   setAttribute() {}
   addEventListener() {}
@@ -583,6 +584,7 @@ class Element {
 const document = {
   currentScript: { dataset: { apiBase: "http://127.0.0.1:8899" } },
   createElement: (tag) => new Element(tag),
+  createDocumentFragment: () => new Element("fragment"),
   querySelectorAll: () => [],
   querySelector: () => null,
   documentElement: new Element("html"),

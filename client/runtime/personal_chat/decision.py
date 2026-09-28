@@ -27,6 +27,10 @@ proactive=true时输入是应用检查，不是用户新发言；基于真实关
 
 
 INSTRUCTION += VOICE_POLICY
+INSTRUCTION += ('\n优先回应本轮用户的新内容；recent_dialogue里的用户原话和你的旧回复都是历史，不是本轮新发言。'
+                '上一轮已经说过的调侃、质问或解释，不要在接下来的不同回复里原句或近义重复。'
+                '用户明确追问才展开相关内容；旧回复中的猜测不是事实证据，用户更正后不能继续沿用。'
+                '分清谁向谁索要照片、谁发了图片以及图片是谁拍的，不能交换双方角色。\n')
 
 
 def decode(raw, *, user, now, proactive=False):

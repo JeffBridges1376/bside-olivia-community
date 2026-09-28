@@ -27,13 +27,40 @@ def test_letter_voice_volume_is_adjustable_and_remembered():
         assert page.evaluate("!!customElements.get('olivia-letter-audio')")
         page.locator('body').evaluate('el => el.innerHTML = `<olivia-letter-audio audio-url="http://127.0.0.1:8876/toy/media/voice.wav"></olivia-letter-audio>`')
         assert page.locator('olivia-letter-audio .voice-controls').count(), errors
-        slider = page.get_by_role('slider', name='语音音量')
+        slider = page.get_by_role('slider', name='语音音量', include_hidden=True)
         assert slider.input_value() == '100'
+        assert not slider.is_visible()
+        page.get_by_label('调节语音音量').click()
         slider.fill('35')
         assert page.locator('olivia-letter-audio').evaluate('el => el.audio.volume') == pytest.approx(.35)
         page.locator('body').evaluate('el => el.innerHTML = `<olivia-letter-audio audio-url="http://127.0.0.1:8876/toy/media/voice.wav"></olivia-letter-audio>`')
-        assert page.get_by_role('slider', name='语音音量').input_value() == '35'
+        assert page.get_by_role('slider', name='语音音量', include_hidden=True).input_value() == '35'
+        assert page.locator('.olivia-audio-toolbar').count() == 1
+        page.locator('body').evaluate('''el => {
+            el.replaceChildren();
+            const paper=document.createElement('div');el.append(paper);
+            const audio=document.createElement('olivia-letter-audio');
+            audio.setAttribute('audio-url','http://127.0.0.1:8876/toy/media/voice.wav');
+            paper.append(audio);
+            paper.className='mail-box-reply-content mail-box-reply-content-text';
+        }''')
+        page.wait_for_function("document.querySelector('.mail-box-reply-content').previousElementSibling?.className === 'olivia-audio-toolbar'")
+        assert page.locator('.mail-box-reply-content .olivia-audio-toolbar').count() == 0
         browser.close()
+
+
+def test_media_root_resolves_link_before_containment_check(tmp_path, monkeypatch):
+    import local_server
+    from pathlib import Path
+    # Model a Windows directory junction without requiring link privileges.
+    source = tmp_path / 'profile'
+    destination = tmp_path / 'shared-media'
+    destination.mkdir()
+    original = Path.resolve
+    monkeypatch.setattr(local_server, '_local_data_root', lambda: source)
+    monkeypatch.setattr(Path, 'resolve', lambda self, *a, **kw:
+                        destination if self == source / 'media' else original(self, *a, **kw))
+    assert local_server._media_root() == destination
 
 
 def test_waveform_media_read_allows_only_trusted_origin(tmp_path, monkeypatch):

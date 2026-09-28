@@ -108,6 +108,7 @@ def test_contact_priority_bypasses_ordinary_cooldown_and_planning(tmp_path, monk
     from runtime.reply.proactive_letters import write_json, read_json
     now = 10000
     rows = [row('a', 1000), row('b', 2000)]
+    monkeypatch.setattr(server.store, 'letters', rows)
     for item in rows:
         qualify(item)
     intent = candidate(rows, HIGH, now)
@@ -124,7 +125,8 @@ def test_contact_priority_bypasses_ordinary_cooldown_and_planning(tmp_path, monk
     calls = []
     async def no_planning(*args, **kwargs):
         pytest.fail('Qualified contact invitations do not need discretionary planning')
-    async def publish(candidate, plan):
+    async def publish(candidate, plan, *, turn):
+        assert turn['intent']['id'] == candidate['id']
         calls.append((candidate, plan))
         # Simulate an interrupted publication: no delivered invitation yet.
     monkeypatch.setattr(server, '_proactive_complete', no_planning)
@@ -144,8 +146,13 @@ def test_contact_priority_bypasses_ordinary_cooldown_and_planning(tmp_path, monk
     assert len(calls) == 3
 
 
-def test_invitation_publication_is_once_and_uses_existing_commit(monkeypatch):
+def test_invitation_publication_is_once_and_uses_existing_commit(monkeypatch, tmp_path):
     import local_server as server
+    from runtime.reply.proactive_letters import scan_pending, write_json
+    monkeypatch.setattr(server.time, 'time', lambda: 4000)
+    monkeypatch.setattr(server, '_state_root', lambda: tmp_path)
+    monkeypatch.setattr(server, 'daily_life_runtime', None)
+    write_json(tmp_path / 'proactive/settings.json', {'enabled': True})
     monkeypatch.setattr('runtime.personal_chat.contact_invitation.preview_configured', lambda root: True)
     rows = [row('a', 1000), row('b', 2000)]
     for item in rows:
@@ -161,12 +168,15 @@ def test_invitation_publication_is_once_and_uses_existing_commit(monkeypatch):
     async def complete(*args, **kwargs):
         return '不然我们加个联系方式吧，你想用QQ还是微信？'
     monkeypatch.setattr(server, '_proactive_complete', complete)
-    intent = candidate(rows, HIGH, 4000)
-    asyncio.run(server._publish_proactive(intent, {'title': '聊两句', 'format': 'text'}))
+    server._refresh_proactive_context()
+    intent = scan_pending(tmp_path, now=4000)
+    assert intent.get('kind') == 'contact_invitation'
+    turn = asyncio.run(server._prepare_proactive_turn(intent, now=datetime.fromtimestamp(4000, timezone.utc)))
+    asyncio.run(server._publish_proactive(intent, {'title': '聊两句', 'format': 'text'}, turn=turn))
     assert status(rows, HIGH)['state'] == 'invited'
     assert rows[-1]['content'] == '' and rows[-1]['origin'] == 'proactive'
     assert commits == [rows[-1]['letter_id']]
-    asyncio.run(server._publish_proactive(intent, {'title': '聊两句', 'format': 'text'}))
+    asyncio.run(server._publish_proactive(intent, {'title': '聊两句', 'format': 'text'}, turn=turn))
     assert len(commits) == 1 and len(rows) == 3
 
 
