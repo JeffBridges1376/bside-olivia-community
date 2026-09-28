@@ -1,6 +1,5 @@
 """Task budgets layered on top of provider wire capabilities."""
 from typing import Mapping
-from urllib.parse import urlsplit
 
 from runtime.reply.model_capabilities import model_capabilities
 
@@ -14,19 +13,6 @@ def reasoning_request_parameters(
         return parameters
     if capabilities.thinking == "qwen" and capabilities.reasoning_effort:
         parameters["max_completion_tokens"] = 10000
-    endpoint = urlsplit(base_url)
-    if (
-        capabilities.thinking == "deepseek"
-        and model.casefold() in {"deepseek-v4-flash", "deepseek-flash"}
-        and endpoint.scheme == "https"
-        and endpoint.hostname == "api.deepseek.com"
-        and endpoint.path.rstrip("/") in {"", "/v1"}
-        and purpose in {"text_letter_max_reasoning", "media_reply_low_reasoning", "background_reasoning", "personal_chat_json"}
-    ):
-        # Explicit capability overrides take precedence over task defaults.
-        if "reasoning_effort" not in options.get("capabilities", {}):
-            parameters["reasoning_effort"] = "high"
-        parameters["max_tokens"] = 10000
     if purpose in {"media_reply_low_reasoning", "recall_check"} and capabilities.reasoning_effort:
         parameters["reasoning_effort"] = "low"
     if purpose == "recall_check" and capabilities.reasoning_effort:

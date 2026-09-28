@@ -13,7 +13,6 @@ import json
 import os
 import re
 import uuid
-from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
@@ -30,16 +29,13 @@ from runtime.reply.model_request_policy import reasoning_request_parameters
 
 
 PROVIDER_USER_AGENT = "Olivia-Community/0.1"
+# The Olivia relay is the only supported provider; it always requires an account key.
+_RELAY_HOST = "175.24.191.6"
 
 
 def provider_request_headers(base_url: str, *, session_id: str | None = None) -> dict[str, str]:
-    """Identify Olivia honestly and keep Go routing stable per conversation."""
-    headers = {"User-Agent": PROVIDER_USER_AGENT}
-    endpoint = urlsplit(base_url)
-    if (endpoint.scheme == 'https' and endpoint.hostname == 'opencode.ai'
-            and endpoint.path.rstrip('/') == '/zen/go/v1'):
-        headers['x-opencode-session'] = session_id or str(uuid.uuid4())
-    return headers
+    """Identify Olivia honestly to the relay."""
+    return {"User-Agent": PROVIDER_USER_AGENT}
 
 
 ALLOWED_ROLES = frozenset({"system", "user", "assistant"})
@@ -303,7 +299,7 @@ class ManagedLLMConfig:
 
     @property
     def is_preset(self) -> bool:
-        return urlsplit(self.base_url).hostname in {"api.deepseek.com", "opencode.ai"}
+        return urlsplit(self.base_url).hostname == _RELAY_HOST
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "ManagedLLMConfig":
@@ -348,7 +344,7 @@ class ManagedLLMConfig:
         max_retries = raw.get("max_retries", 2)
         requires_api_key = raw.get("requires_api_key", True)
         if type(requires_api_key) is not bool or (
-            not requires_api_key and parsed.hostname in {"api.deepseek.com", "opencode.ai"}
+            not requires_api_key and parsed.hostname == _RELAY_HOST
         ):
             raise ValueError("invalid managed LLM authentication")
         if type(max_retries) is not int or not 0 <= max_retries <= 8:
@@ -869,18 +865,6 @@ class OpenAICompatibleAdapter(Gateway):
             return self.config.reasoning_timeout_seconds
         return self.config.timeout_seconds
 
-    def _uses_official_review_responses(self, scope: GatewayRequestScope | None) -> bool:
-        endpoint = urlsplit(self.config.base_url)
-        return (
-            scope is GatewayRequestScope.JSON_MAX_REASONING
-            and self._uses_max_reasoning(scope)
-            and model_capabilities(self.config.base_url, self.config.model, self.config.provider_options).thinking == "deepseek"
-            and self.config.model.casefold() in {"deepseek-v4-flash", "deepseek-flash"}
-            and endpoint.scheme == "https"
-            and endpoint.hostname == "api.deepseek.com"
-            and endpoint.path.rstrip("/") in {"", "/v1"}
-        )
-
     def timeout_seconds_for_scope(
         self,
         scope: GatewayRequestScope,
@@ -916,8 +900,6 @@ class OpenAICompatibleAdapter(Gateway):
             "stream": stream,
         }
         if scope in {GatewayRequestScope.SONG_CONTENT, GatewayRequestScope.PERSONAL_CHAT_JSON, GatewayRequestScope.PROACTIVE_PLANNING, GatewayRequestScope.RECALL_CHECK} and capabilities.json_mode:
-            body["response_format"] = {"type": "json_object"}
-        if self._uses_official_review_responses(scope) and capabilities.json_mode:
             body["response_format"] = {"type": "json_object"}
         if max_reasoning:
             body.update(reasoning_request_parameters(
@@ -1091,26 +1073,6 @@ class OpenAICompatibleAdapter(Gateway):
         if response_format is not None and scope is GatewayRequestScope.BACKGROUND_REASONING:
             # The life runtime owns its one semantic correction attempt.
             return await self._structured_completion(messages, response_format, request, scope=scope, attempts=1)
-        if self._uses_official_review_responses(scope):
-            normalized = validate_messages(messages, max_input_chars=self.config.max_input_chars)
-            capabilities = model_capabilities(self.config.base_url, self.config.model, self.config.provider_options)
-            body = {
-                "model": self.config.model,
-                "input": list(normalized),
-                "stream": False,
-                "reasoning": {"effort": capabilities.reasoning_effort},
-            }
-            if capabilities.json_mode:
-                body["text"] = {"format": deepcopy(dict(response_format)) if response_format is not None
-                                else {"type": "json_object"}}
-            data = await self._post_json(
-                body, request, max_reasoning=True,
-                endpoint="https://api.deepseek.com/responses",
-            )
-            text = _extract_official_review_response_text(data)
-            if len(text) > self.config.max_output_chars:
-                raise InvalidGatewayInput("OUTPUT_TOO_LONG")
-            return GatewayResponse(text, request, self.config.provider, self.config.model)
         body = self._body(
             messages,
             stream=False,
@@ -1176,13 +1138,9 @@ class OpenAICompatibleAdapter(Gateway):
         if scope is GatewayRequestScope.BACKGROUND_REASONING and messages and messages[0]['role'] == 'system':
             # Keep the long, stable system prefix first for upstream caching.
             current = [{**messages[0], 'content': messages[0]['content'] + '\n' + instruction['content']}, *messages[1:]]
-        official_review = self._uses_official_review_responses(scope)
-        responses = self.config.api_style == 'responses' or official_review
+        responses = self.config.api_style == 'responses'
         for attempt in range(attempts):
             body = self._body(current, stream=False, max_reasoning=self._uses_max_reasoning(scope), scope=scope)
-            if official_review:
-                body = {'model':self.config.model, 'input':body['messages'], 'stream':False,
-                        'reasoning':{'effort':caps.reasoning_effort}}
             if scope is None and self.config.api_style == 'chat_completions':
                 body.update(caps.reasoning_parameters(False))
             body.pop('response_format', None)
@@ -1201,8 +1159,7 @@ class OpenAICompatibleAdapter(Gateway):
                     body['response_format'] = {'type':'json_object'}
             try:
                 data = await self._post_json(body, request, max_reasoning=self._uses_max_reasoning(scope),
-                                             background_reasoning=scope is GatewayRequestScope.BACKGROUND_REASONING,
-                                             **({'endpoint':'https://api.deepseek.com/responses'} if official_review else {}))
+                                             background_reasoning=scope is GatewayRequestScope.BACKGROUND_REASONING)
             except ProviderRejected as error:
                 if getattr(error, 'diagnostic_detail', None) != 'unsupported_response_format' or attempt + 1 == attempts:
                     raise
@@ -1214,7 +1171,7 @@ class OpenAICompatibleAdapter(Gateway):
                 error = ProviderProtocolError('structured_truncated')
                 error.diagnostic_stage = 'structured_completion'
                 raise error
-            text = _extract_official_review_response_text(data) if official_review else _extract_response_text(data)
+            text = _extract_response_text(data)
             if len(text) > self.config.max_output_chars:
                 raise InvalidGatewayInput('OUTPUT_TOO_LONG')
             # Remove a complete Markdown wrapper only; never guess missing JSON.
@@ -1478,41 +1435,6 @@ class OpenAICompatibleAdapter(Gateway):
             finally:
                 record_usage(usage, purpose=purpose_for(request), outcome=outcome)
         raise ProviderUnavailable()
-
-
-def _extract_official_review_response_text(data: Mapping[str, Any]) -> str:
-    if (
-        data.get("status") != "completed"
-        or data.get("error") is not None
-        or data.get("incomplete_details") is not None
-        or not isinstance(data.get("output"), list)
-    ):
-        raise ProviderProtocolError()
-    parts: list[str] = []
-    for item in data["output"]:
-        if not isinstance(item, Mapping):
-            raise ProviderProtocolError()
-        if item.get("type") == "reasoning":
-            continue
-        if (
-            item.get("type") != "message"
-            or item.get("role") != "assistant"
-            or item.get("status") != "completed"
-            or not isinstance(item.get("content"), list)
-        ):
-            raise ProviderProtocolError()
-        for block in item["content"]:
-            if (
-                not isinstance(block, Mapping)
-                or block.get("type") != "output_text"
-                or not isinstance(block.get("text"), str)
-            ):
-                raise ProviderProtocolError()
-            parts.append(block["text"])
-    text = "".join(parts).strip()
-    if not text:
-        raise ProviderEmptyResponse()
-    return text
 
 
 def _extract_response_text(data: Mapping[str, Any]) -> str:

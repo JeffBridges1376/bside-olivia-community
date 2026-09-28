@@ -789,7 +789,7 @@ def _configure_memory_environment(
     )
     environment.setdefault(
         "OLIVIA_MEMORY_LLM_DEFAULT_API_KEY_ENV",
-        environment.get("OLIVIA_LLM_API_KEY_ENV", "DEEPSEEK_API_KEY"),
+        environment.get("OLIVIA_LLM_API_KEY_ENV", "OLIVIA_LLM_API_KEY"),
     )
     environment.setdefault(
         "OLIVIA_MEMORY_WRITE_TIMEOUT_SECONDS",

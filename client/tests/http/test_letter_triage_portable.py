@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 from aiohttp import web
-from aiohttp.test_utils import TestClient, TestServer
+from aiohttp.test_utils import TestServer
 
 import music_reply
 from runtime.media import latentsync_reply
@@ -463,68 +463,6 @@ def test_public_mock_gateway_routes_configured_tool_result(
     assert result.reply_mode == ("singing_video" if expected_mode == "musical_video" else expected_mode)
     assert result.status == "completed"
     assert gateway.network_call_count == 0
-
-
-def test_deepseek_flash_thinking_omits_tool_choice_and_routes_valid_structured_call():
-    async def exercise():
-        seen: dict[str, object] = {}
-        arguments = _route_arguments(
-            mode="musical_video",
-            reason_code="performance_carries_this_reply",
-            emotion_level="mixed",
-            music_contexts=["explicit_performance_or_adaptation_request"],
-            music_role="performance",
-            music_intent="perform",
-            request_disposition="fulfill",
-            direct_response_sufficient=False,
-            music_materially_better=True,
-        )
-
-        async def handler(request: web.Request) -> web.Response:
-            seen["body"] = await request.json()
-            return web.json_response(
-                {
-                    "choices": [
-                        {
-                            "message": {
-                                "tool_calls": [
-                                    {
-                                        "function": {
-                                            "name": "select_reply_mode",
-                                            "arguments": json.dumps(arguments),
-                                        }
-                                    }
-                                ]
-                            }
-                        }
-                    ]
-                }
-            )
-
-        app = web.Application()
-        app.router.add_post("/v1/chat/completions", handler)
-        async with TestClient(TestServer(app)) as client:
-            gateway = create_gateway(
-                GatewayConfig(
-                    provider="openai_compatible",
-                    base_url=str(client.make_url("/v1")),
-                    model="deepseek-v4-flash",
-                )
-            )
-            result = await LetterReplyRouter(
-                gateway,
-                routing_context=RoutingContext(True),
-            ).classify("synthetic current letter")
-        return result, seen["body"]
-
-    result, body = asyncio.run(exercise())
-
-    assert result.reply_mode == "singing_video"
-    assert result.status == "completed"
-    assert body["model"] == "deepseek-v4-flash"
-    assert "thinking" not in body
-    assert "tool_choice" not in body
-    assert body["tools"][0]["function"]["name"] == "select_reply_mode"
 
 
 def test_current_work_relevance_requires_trusted_current_work():

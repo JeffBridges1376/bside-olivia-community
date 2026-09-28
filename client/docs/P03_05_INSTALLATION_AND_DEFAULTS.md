@@ -117,8 +117,8 @@
   },
   "llm": {
     "provider": "openai_compatible",
-    "base_url": "https://api.deepseek.com",
-    "model": "configured-model",
+    "base_url": "https://175.24.191.6/v1",
+    "model": "qwen3.7-flash",
     "api_key_secret": "llm-primary",
     "timeout_seconds": 30,
     "max_retries": 0,
@@ -219,7 +219,7 @@ Setup Wizard 运行在本地 Control Center 的 setup 模式，不连接外部 U
 
 ```text
 1. 欢迎与数据目录
-2. 主模型 endpoint、模型和 API key
+2. 获取或导入 Olivia 账户 Key
 3. Persona READY 检查
 4. PrivateWorld 数据库创建
 5. Mem0 与 embedding 安装选择
@@ -234,7 +234,7 @@ Setup Wizard 运行在本地 Control Center 的 setup 模式，不连接外部 U
 
 要求：
 
-- API key 输入不回显；
+- Olivia Key 输入不回显；
 - probe 不输出 provider 原始响应；
 - 所有文件路径通过文件选择器指定并验证；
 - 不自动扫描整个磁盘、Steam 目录或用户文档；

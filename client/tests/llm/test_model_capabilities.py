@@ -8,12 +8,6 @@ def test_unknown_model_uses_no_vendor_extensions():
     assert caps.tool_choice and caps.json_mode and not caps.stream_usage
 
 
-def test_existing_pro_does_not_silently_switch_to_maximum_reasoning():
-    assert not model_capabilities('https://api.deepseek.com', 'deepseek-v4-pro').scoped_reasoning
-    assert model_capabilities('https://api.deepseek.com', 'deepseek-v4-pro',
-        {'capabilities':{'reasoning_effort':'max'}}).scoped_reasoning
-
-
 @pytest.mark.parametrize('name', ['qwen-flash', 'qwen3.5-plus', 'qwen3.7-flash-2026-09-01'])
 def test_qwen_family_uses_its_own_thinking_switch(name):
     caps = model_capabilities('https://example.test/v1', name)
@@ -57,7 +51,6 @@ def test_custom_capabilities_apply_to_actual_gateway_body():
 @pytest.mark.parametrize('model,expected', [
     ('qwen-flash', {'enable_thinking':False}),
     ('qwen3.5-plus', {'enable_thinking':False}),
-    ('deepseek-v4-pro', {'thinking':{'type':'disabled'}}),
     ('custom/unlisted-v1', {}),
 ])
 def test_compatible_http_endpoints_receive_only_matching_parameters(model, expected):
@@ -99,24 +92,6 @@ def test_memory_capability_overrides_reach_sdk(model):
     assert seen == [{'messages': []}]
 
 
-def test_official_review_respects_json_and_effort_overrides(monkeypatch):
-    import asyncio
-    from llm_gateway import GatewayConfig, OpenAICompatibleAdapter, GatewayRequestScope
-    adapter = OpenAICompatibleAdapter(GatewayConfig(provider='openai_compatible',
-        base_url='https://api.deepseek.com', model='deepseek-flash',
-        provider_options={'capabilities': {'json_mode': False, 'reasoning_effort': 'low'}}))
-    seen = []
-    async def post(body, request_id, **kwargs):
-        seen.append(body)
-        return {'status': 'completed', 'output': [{'type': 'message', 'role': 'assistant',
-            'status': 'completed', 'content': [{'type': 'output_text', 'text': '{"ok":true}'}]}]}
-    monkeypatch.setattr(adapter, '_post_json', post)
-    asyncio.run(adapter.complete_structured_scoped([{'role':'user','content':'Return JSON.'}],
-        response_format={'type':'json_object'}, scope=GatewayRequestScope.JSON_MAX_REASONING))
-    assert seen[0]['reasoning'] == {'effort': 'low'}
-    assert 'text' not in seen[0]
-
-
 @pytest.mark.parametrize('deferred', [False, True])
 def test_shared_memory_initialization_preserves_capabilities(tmp_path, monkeypatch, deferred):
     from runtime.memory import local_memory
@@ -129,40 +104,6 @@ def test_shared_memory_initialization_preserves_capabilities(tmp_path, monkeypat
         environ={}, llm_fallback={'base_url':'https://proxy.test/v1', 'model':'qwen-flash',
             'provider_options': options}, defer_initialization=deferred)
     assert captured[0]['config'].llm_provider_options == options
-
-
-@pytest.mark.parametrize('scope_name', ['TEXT_LETTER_MAX_REASONING', 'BACKGROUND_REASONING', 'JSON_MAX_REASONING'])
-@pytest.mark.parametrize('stream', [False, True])
-@pytest.mark.parametrize('base_url,model,official', [
-    ('https://api.deepseek.com', 'deepseek-v4-flash', True),
-    ('https://api.deepseek.com/v1/', 'deepseek-flash', True),
-    ('https://api.deepseek.com.example/v1', 'deepseek-flash', False),
-    ('https://api.deepseek.com/proxy', 'deepseek-flash', False),
-    ('https://opencode.ai/zen/go/v1', 'deepseek-v4-flash', False),
-])
-def test_flash_task_budget_is_scoped_to_official_letter_and_background(scope_name, stream, base_url, model, official):
-    from llm_gateway import GatewayConfig, OpenAICompatibleAdapter, GatewayRequestScope
-    scope = GatewayRequestScope[scope_name]
-    adapter = OpenAICompatibleAdapter(GatewayConfig(provider='openai_compatible', base_url=base_url, model=model))
-    body = adapter._body([{'role':'user','content':'Hello'}], stream=stream,
-        max_reasoning=adapter._uses_max_reasoning(scope), scope=scope)
-    bounded = official and scope_name != 'JSON_MAX_REASONING'
-    assert body['reasoning_effort'] == ('high' if bounded else 'max')
-    assert body.get('max_tokens') == (10000 if bounded else None)
-
-
-@pytest.mark.parametrize('scope_name', ['TEXT_LETTER_MAX_REASONING', 'BACKGROUND_REASONING'])
-def test_bounded_flash_still_rejects_truncated_reply(monkeypatch, scope_name):
-    import asyncio
-    from llm_gateway import GatewayConfig, OpenAICompatibleAdapter, GatewayRequestScope, ProviderProtocolError
-    adapter = OpenAICompatibleAdapter(GatewayConfig(provider='openai_compatible',
-        base_url='https://api.deepseek.com', model='deepseek-flash'))
-    async def post(body, request_id, **kwargs):
-        assert body['reasoning_effort'] == 'high' and body['max_tokens'] == 10000
-        return {'choices':[{'finish_reason':'length','message':{'content':'partial'}}]}
-    monkeypatch.setattr(adapter, '_post_json', post)
-    with pytest.raises(ProviderProtocolError):
-        asyncio.run(adapter.complete_scoped([{'role':'user','content':'Hello'}], scope=GatewayRequestScope[scope_name]))
 
 
 def test_memory_factory_consumes_options_without_leaking_them_to_mem0_sdk(tmp_path, monkeypatch):

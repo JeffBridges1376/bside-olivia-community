@@ -129,7 +129,7 @@ webplayer.dat.orig
 
 保存或删除 LLM 设置后，当前版本会明确返回 `restart_required: true`。原因是回复、情绪分流和私人世界分析在进程启动时共同捕获同一 provider graph；进程内热替换会让并发任务跨两个 provider 状态运行。关闭并重新打开 Olivia 后，稳定启动器会加载新的公开配置与 DPAPI 密钥。公开路由、状态及错误码契约见 `contracts/initial_setup_api_contract.json` 和对应 schema。
 
-启动时若没有 `OLIVIA_LLM_API_KEY`、`DEEPSEEK_API_KEY` 或 `OPENAI_API_KEY`，命令行会明确提示未配置，不能把 safe-static 回退误认为真实模型回信。
+启动时若没有 Olivia 账户 Key，命令行会明确提示未配置，不能把 safe-static 回退误认为真实模型回信。环境变量中的 `DEEPSEEK_API_KEY`、`OPENAI_API_KEY` 不会被使用。
 
 ## 本地组件补丁与回滚
 

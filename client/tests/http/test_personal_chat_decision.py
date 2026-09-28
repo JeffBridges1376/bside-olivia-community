@@ -106,18 +106,6 @@ def test_chat_channel_is_kept_in_shared_recent_history():
     assert '不是一封信' in projected['source_note']
 
 
-def test_personal_json_keeps_high_reasoning_and_ten_thousand_cap():
-    from llm_gateway import GatewayConfig, GatewayRequestScope, OpenAICompatibleAdapter
-    gateway = OpenAICompatibleAdapter(GatewayConfig(provider='openai_compatible',
-        base_url='https://api.deepseek.com/v1', model='deepseek-flash'))
-    scope = GatewayRequestScope.PERSONAL_CHAT_JSON
-    body = gateway._body([{'role':'user','content':'Return JSON'}], stream=False,
-                         max_reasoning=gateway._uses_max_reasoning(scope), scope=scope)
-    assert body['response_format'] == {'type':'json_object'}
-    assert body['reasoning_effort'] == 'high' and body['max_tokens'] == 10000
-    assert not gateway._uses_official_review_responses(scope)
-
-
 def test_retry_discards_unpublished_audio_and_decisions():
     import asyncio
     from runtime.personal_chat.events import PersonalMessage

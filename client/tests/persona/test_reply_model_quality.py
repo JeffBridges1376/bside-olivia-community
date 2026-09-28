@@ -3147,14 +3147,14 @@ def test_quality_model_default_timeout_allows_slow_configured_provider(
     assert review_gateway.config.fallback_provider == "none"
 
     monkeypatch.setenv("OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS", "20")
-    monkeypatch.setenv("OLIVIA_REPLY_REVIEW_MODEL", "deepseek-v4-flash")
+    monkeypatch.setenv("OLIVIA_REPLY_REVIEW_MODEL", "qwen3.7-flash")
     overridden_reviewer, overridden_rewriter = create_model_quality_ports(orchestrator)
 
     assert overridden_reviewer is not None
     assert overridden_rewriter is not None
     assert overridden_reviewer.adapter.config.timeout_seconds == 20.0
     assert overridden_rewriter.timeout_seconds == 20.0
-    assert overridden_reviewer.adapter.transport.reasoning_timeout_seconds == 600.0
-    assert overridden_rewriter.reasoning_timeout_seconds == 600.0
-    assert overridden_reviewer.adapter.transport.gateway.config.model == "deepseek-v4-flash"
-    assert overridden_reviewer.adapter.config.model == "deepseek-v4-flash"
+    assert overridden_reviewer.adapter.transport.reasoning_timeout_seconds is None
+    assert overridden_rewriter.reasoning_timeout_seconds is None
+    assert overridden_reviewer.adapter.transport.gateway.config.model == "qwen3.7-flash"
+    assert overridden_reviewer.adapter.config.model == "qwen3.7-flash"

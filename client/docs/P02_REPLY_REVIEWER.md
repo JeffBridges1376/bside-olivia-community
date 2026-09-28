@@ -133,7 +133,7 @@ Other review layers keep their existing response schema.
 
 Well-formed hard evidence conditionally spends at most one additional model
 call per candidate. The call uses the same configured quality Gateway and
-`deepseek-v4-flash`; it does not create a provider or retry path. The narrow
+model; it does not create a provider or retry path. The narrow
 adjudicator receives the candidate, one shared context per trusted context
 class, and claims that refer to it by `context_id`. `claim_kind` and
 `support_source` remain descriptive output only; neither can select or expand
@@ -201,9 +201,8 @@ accepted warning.
   rewrite;
 - `OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS` sets a bounded 0.1-120 second timeout;
   the default is the smaller of 12 seconds and the configured Provider timeout.
-  This control applies only to non-max review, including video modes. A scoped
-  `deepseek-v4-flash` text Letter review instead uses the public
-  `reasoning_timeout_seconds` setting shared by its max-reasoning stages.
+  This control applies to all review modes, including text Letters and video
+  modes.
 
 Provider absence, timeout, transport errors, non-JSON output, and
 schema-invalid output become sanitized `REVIEWER_UNAVAILABLE` or
