@@ -159,6 +159,10 @@ git diff --check
 
 更多入口见 [文档索引](client/docs/README.md) 与 [仓库结构](client/docs/REPOSITORY_LAYOUT.md)。提交前请阅读 [贡献指南](CONTRIBUTING.md)、[安全政策](SECURITY.md) 和 [行为准则](CODE_OF_CONDUCT.md)。
 
+## 贡献者
+
+感谢 [@QiLiangaiBashan](https://github.com/QiLiangaiBashan) 贡献独立记忆迁移工具、用户说明和迁移回归测试（[PR #508](https://github.com/Ornn8/bside-olivia-community/pull/508)）。
+
 ## 隐私、版权与分发
 
 源码仓库不包含原版程序及资源归档、私人信件、API key、用户数据库、声音参考、生成媒体或第三方模型权重。安装器包含经清单和哈希校验的核心依赖；大型模型及其他可选离线组件按各自许可证和分发范围提供。
