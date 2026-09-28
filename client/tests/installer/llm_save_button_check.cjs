@@ -9,26 +9,30 @@ class Element {
   async click(){if(!this.disabled) await this.listeners.click();}
 }
 const section=(from,to)=>source.slice(source.indexOf(from),source.indexOf(to));
-let saves=0;
+const relay=[];
 const context={document:{createElement:tag=>new Element(tag)},
  text:(tag,value)=>Object.assign(new Element(tag),{textContent:value}),actions:()=>new Element('div'),
- SETUP_STATUS_PATH:'status',LLM_TEST_PATH:'test',LLM_SAVE_PATH:'save',LLM_DELETE_PATH:'delete',
- requestSetup:async(path)=>{if(path==='save')saves++; return {llm:{base_url:'http://127.0.0.1:19000/v1',model:'fixture',key_configured:false}};}};
+ confirmAction:async()=>true,
+ SETUP_STATUS_PATH:'status',LLM_DELETE_PATH:'delete',
+ requestSetup:async(path,body)=>{
+   if(path==='/toy/relay/action') relay.push(body.action);
+   return {llm:{base_url:'https://175.24.191.6/v1',model:'qwen3.7-flash',key_configured:false}};
+ }};
 vm.createContext(context);
 vm.runInContext(section('  const button =','  const confirmAction =')+section('  const setupInput =','  const formatBytes =')+'\nglobalThis.render=renderLlmSetupPanel;',context);
 (async()=>{
- const panel=new Element('div'); await context.render(panel,false);
  const all=e=>[e,...e.children.flatMap(all)];
- const test=all(panel).find(e=>e.textContent==='测试连接');
- const save=all(panel).find(e=>e.textContent==='保存');
- await test.click();
- console.log(JSON.stringify({disabled:save.disabled,opacity:save.style.opacity,cursor:save.style.cursor}));
- await save.click(); assert.equal(saves,1,'save click must reach endpoint');
- await test.click();
- assert.equal(save.style.opacity,'1','successful test must restore enabled appearance');
- assert.equal(save.style.cursor,'pointer');
+ const panel=new Element('div'); await context.render(panel,false);
+ const connect=all(panel).find(e=>e.textContent==='连接并保存');
+ const remove=all(panel).find(e=>e.textContent==='删除 Key');
+ assert(!all(panel).some(e=>e.textContent==='测试连接' || e.textContent==='保存'),'only the Olivia connect action remains');
+ assert.equal(remove.hidden,true,'no saved key means nothing to delete');
+ await connect.click();
+ assert.deepEqual(relay,['connect'],'connect click must reach the relay endpoint');
+ assert.equal(connect.disabled,false,'successful connection must restore the enabled button');
+ assert.equal(connect.style.opacity,'1');
+ assert.equal(connect.style.cursor,'pointer');
+ assert.equal(remove.hidden,false,'a saved key can then be deleted');
  const initialPanel=new Element('div');await context.render(initialPanel,true);
- assert(!all(initialPanel).some(e=>e.textContent==='保存'),'first-run uses one connect-and-save action');
- await all(initialPanel).find(e=>e.textContent==='连接并保存').click();
- assert.equal(saves,2,'first-run must save automatically after a successful connection test');
+ assert(all(initialPanel).some(e=>e.textContent==='连接并保存'),'first-run uses one connect-and-save action');
 })().catch(e=>{console.error(e.message);process.exitCode=1});

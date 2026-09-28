@@ -683,8 +683,8 @@ def test_original_settings_management_ui_renders_untrusted_data_as_text_only() -
     assert "http://" not in source.replace("http://www.w3.org/2000/svg", "")
     assert "setup.llm.api_key" not in source
     assert 'key.input.value = ""' in source
-    assert "https://api.deepseek.com" in source
-    assert "https://opencode.ai/zen/go/v1" in source
+    assert "https://api.deepseek.com" not in source
+    assert "https://opencode.ai/zen/go/v1" not in source
 
 
 def test_original_settings_clear_memory_uses_two_explicit_confirmations() -> None:
@@ -838,8 +838,8 @@ const statusPayload = (status) => ({
           setup_completed: true,
           show_initial_setup: false,
           llm: {
-            base_url: "https://api.deepseek.com",
-            model: "deepseek-v4-flash",
+            base_url: "https://175.24.191.6/v1",
+            model: "qwen3.7-flash",
             key_configured: false,
           },
           }) };

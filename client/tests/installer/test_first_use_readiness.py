@@ -65,7 +65,7 @@ def test_setup_completion_checks_live_memory_before_persisting(tmp_path, availab
     async def probe(*args):
         pass
     service = LLMSetupService(tmp_path, memory_ready=ready, probe=probe)
-    payload = {'base_url': 'http://127.0.0.1:8999/v1', 'model': 'local-model', 'api_key': ''}
+    payload = {'base_url': 'https://175.24.191.6/v1', 'model': 'qwen3.7-flash', 'api_key': 'olivia-synthetic'}
     asyncio.run(service.test(payload))
     service.save(payload)
     if available is True:

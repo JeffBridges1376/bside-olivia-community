@@ -13,6 +13,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from llm_gateway import ManagedLLMConfig
 
+from original_client_relay_api import RELAY_BASE, RELAY_MODEL
 from original_client_setup_api import (
     ERROR_HTTP_STATUSES,
     LLM_DELETE_PATH,
@@ -49,7 +50,6 @@ def test_initial_setup_public_contract_matches_routes_and_schema() -> None:
     Draft202012Validator(schema).validate(contract)
     assert set(contract["routes"]) == {
         SETUP_STATUS_PATH,
-        "/toy/setup/llm/models",
         LLM_TEST_PATH,
         LLM_SAVE_PATH,
         LLM_DELETE_PATH,
@@ -184,8 +184,8 @@ def test_test_then_save_persists_only_dpapi_key_and_non_secret_config(
             SESSION_HEADER: str(service.status()["session_token"]),
         }
         body = {
-            "base_url": "https://opencode.ai/zen/go/v1",
-            "model": "deepseek-v4-flash",
+            "base_url": RELAY_BASE,
+            "model": RELAY_MODEL,
             "api_key": "fixture-private-key",
         }
         async with TestClient(TestServer(app)) as client:
@@ -199,8 +199,8 @@ def test_test_then_save_persists_only_dpapi_key_and_non_secret_config(
             assert await tested.json() == {"status": "AVAILABLE"}
             assert probes == [
                 (
-                    "https://opencode.ai/zen/go/v1",
-                    "deepseek-v4-flash",
+                    RELAY_BASE,
+                    RELAY_MODEL,
                     "fixture-private-key",
                 )
             ]
@@ -216,8 +216,8 @@ def test_test_then_save_persists_only_dpapi_key_and_non_secret_config(
                 (
                     ManagedLLMConfig(
                         provider="openai_compatible",
-                        base_url="https://opencode.ai/zen/go/v1",
-                        model="deepseek-v4-flash",
+                        base_url=RELAY_BASE,
+                        model=RELAY_MODEL,
                         max_retries=2,
                     ),
                     "fixture-private-key",
@@ -228,17 +228,17 @@ def test_test_then_save_persists_only_dpapi_key_and_non_secret_config(
                 "/toy/setup/status", headers={"Origin": TRUSTED_ORIGIN}
             )).json()
             assert status_payload["llm"] == {
-                "base_url": "https://opencode.ai/zen/go/v1",
+                "base_url": RELAY_BASE,
                 "key_configured": True,
                 "max_retries": 2,
-                "model": "deepseek-v4-flash",
+                "model": RELAY_MODEL,
                 "provider": "openai_compatible",
             }
             assert "fixture-private-key" not in json.dumps(status_payload)
 
         config = json.loads((tmp_path / "config" / "llm.json").read_text(encoding="utf-8"))
-        assert config["base_url"] == "https://opencode.ai/zen/go/v1"
-        assert config["model"] == "deepseek-v4-flash"
+        assert config["base_url"] == RELAY_BASE
+        assert config["model"] == RELAY_MODEL
         assert config["schema_version"] == 3
         assert config["provider"] == "openai_compatible"
         assert config["max_retries"] == 2
@@ -251,43 +251,6 @@ def test_test_then_save_persists_only_dpapi_key_and_non_secret_config(
             protected_path.read_bytes()
         ).hexdigest()
         assert "fixture-private-key" not in protected
-
-    asyncio.run(scenario())
-
-
-@pytest.mark.parametrize("model", ["deepseek-v4-flash", "qwen3.8-flash", "qwen3.8-max"])
-def test_setup_connection_probe_identifies_the_client_to_provider(
-    tmp_path: Path, model: str,
-) -> None:
-    async def scenario() -> None:
-        seen: dict[str, str | None] = {}
-
-        async def completion(request: web.Request) -> web.Response:
-            seen["user_agent"] = request.headers.get("User-Agent")
-            seen["body"] = await request.json()
-            return web.json_response(
-                {"choices": [{"message": {"role": "assistant", "content": "OK"}}]}
-            )
-
-        app = web.Application()
-        app.router.add_post("/v1/chat/completions", completion)
-        async with TestClient(TestServer(app)) as client:
-            service = LLMSetupService(tmp_path)
-            await service.test(
-                {
-                    "base_url": str(client.make_url("/v1")),
-                    "model": model,
-                    "api_key": "fixture-private-key",
-                }
-            )
-
-        assert seen["user_agent"] == "Olivia-Community/0.1"
-        if model.startswith("qwen"):
-            assert seen["body"]["enable_thinking"] is False
-            assert seen["body"]["max_completion_tokens"] == 16
-            assert "max_tokens" not in seen["body"]
-        else:
-            assert seen["body"]["max_tokens"] == 2
 
     asyncio.run(scenario())
 
@@ -388,8 +351,8 @@ def test_setup_rejects_extra_fields_and_invalid_trusted_origins(tmp_path: Path) 
                     SESSION_HEADER: str(service.status()["session_token"]),
                 },
                 json={
-                    "base_url": "https://api.deepseek.com",
-                    "model": "deepseek-v4-flash",
+                    "base_url": RELAY_BASE,
+                    "model": RELAY_MODEL,
                     "api_key": "fixture-key",
                     "unexpected": True,
                 },
@@ -412,7 +375,7 @@ def test_setup_rejects_extra_fields_and_invalid_trusted_origins(tmp_path: Path) 
         raise AssertionError("non-HTTPS trusted origin was accepted")
 
 
-def test_setup_stored_key_cannot_be_probed_against_changed_endpoint(
+def test_setup_rejects_any_endpoint_other_than_the_olivia_relay(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
@@ -427,8 +390,8 @@ def test_setup_stored_key_cannot_be_probed_against_changed_endpoint(
             json.dumps(
                 {
                     "schema_version": 1,
-                    "base_url": "https://api.deepseek.com",
-                    "model": "deepseek-v4-flash",
+                    "base_url": RELAY_BASE,
+                    "model": RELAY_MODEL,
                 }
             ),
             encoding="utf-8",
@@ -450,12 +413,13 @@ def test_setup_stored_key_cannot_be_probed_against_changed_endpoint(
                 },
                 json={
                     "base_url": "https://collector.example/v1",
-                    "model": "deepseek-v4-flash",
+                    "model": RELAY_MODEL,
                     "api_key": "",
                 },
             )
-            assert response.status == 200
-            assert probes == [("https://collector.example/v1", "deepseek-v4-flash", "")]
+            assert response.status == 403
+            assert (await response.json())["error_code"] == "LLM_SETUP_HOST_FORBIDDEN"
+            assert probes == []
 
     asyncio.run(scenario())
 
@@ -527,8 +491,8 @@ def test_runtime_apply_failure_rolls_back_saved_config_and_key(tmp_path: Path) -
     asyncio.run(
         service.test(
             {
-                "base_url": "https://new.example/v1",
-                "model": "new-model",
+                "base_url": RELAY_BASE,
+                "model": RELAY_MODEL,
                 "api_key": "replacement-key",
             }
         )
@@ -537,8 +501,8 @@ def test_runtime_apply_failure_rolls_back_saved_config_and_key(tmp_path: Path) -
     with pytest.raises(LLMSetupError, match="LLM_SETUP_SAVE_FAILED"):
         service.save(
             {
-                "base_url": "https://new.example/v1",
-                "model": "new-model",
+                "base_url": RELAY_BASE,
+                "model": RELAY_MODEL,
                 "api_key": "replacement-key",
             }
         )
@@ -609,8 +573,8 @@ def test_failed_rollback_keeps_the_new_key_referenced_by_config(
         ),
     )
     body = {
-        "base_url": "https://new.example/v1",
-        "model": "new-model",
+        "base_url": RELAY_BASE,
+        "model": RELAY_MODEL,
         "api_key": "replacement-key",
     }
     asyncio.run(service.test(body))
@@ -633,8 +597,8 @@ def test_interrupted_save_keeps_previous_provider_key_generation_active(
     old_key.write_text("old-ciphertext\n", encoding="utf-8")
     old_config = {
         "schema_version": 2,
-        "base_url": "https://api.deepseek.com",
-        "model": "deepseek-v4-flash",
+        "base_url": RELAY_BASE,
+        "model": RELAY_MODEL,
         "key_file": old_key.name,
         "key_sha256": hashlib.sha256(old_key.read_bytes()).hexdigest(),
     }
@@ -642,8 +606,8 @@ def test_interrupted_save_keeps_previous_provider_key_generation_active(
     config_path.write_text(json.dumps(old_config), encoding="utf-8")
     service = _service(tmp_path, [])
     service._tested_digest = service._digest(
-        "https://opencode.ai/zen/go/v1",
-        "deepseek-v4-flash",
+        RELAY_BASE,
+        RELAY_MODEL,
         "new-fixture-key",
     )
 
@@ -654,11 +618,30 @@ def test_interrupted_save_keeps_previous_provider_key_generation_active(
     with pytest.raises(LLMSetupError, match="LLM_SETUP_SAVE_FAILED"):
         service.save(
             {
-                "base_url": "https://opencode.ai/zen/go/v1",
-                "model": "deepseek-v4-flash",
+                "base_url": RELAY_BASE,
+                "model": RELAY_MODEL,
                 "api_key": "new-fixture-key",
             }
         )
 
     assert json.loads(config_path.read_text(encoding="utf-8")) == old_config
     assert old_key.read_text(encoding="utf-8") == "old-ciphertext\n"
+
+
+def test_saved_retired_provider_is_ignored_and_reported_as_unconfigured(tmp_path: Path) -> None:
+    config_root = tmp_path / "config"
+    config_root.mkdir(parents=True)
+    key_name = f"deepseek_api_key.{'a' * 32}.dpapi"
+    (config_root / key_name).write_text("protected:legacy\n", encoding="utf-8")
+    (config_root / "llm.json").write_text(json.dumps({
+        "schema_version": 3, "provider": "openai_compatible",
+        "base_url": "https://api.deepseek.com", "model": "deepseek-v4-pro", "max_retries": 2,
+        "key_file": key_name,
+        "key_sha256": hashlib.sha256((config_root / key_name).read_bytes()).hexdigest(),
+    }), encoding="utf-8")
+
+    status = LLMSetupService(tmp_path).status()
+
+    assert status["llm"]["base_url"] == RELAY_BASE
+    assert status["llm"]["model"] == RELAY_MODEL
+    assert status["llm"]["key_configured"] is False

@@ -55,8 +55,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const MEMORY_RESUME_PATH = "/toy/companion/memory/resume";
   const MEMORY_RETRY_PATH = "/toy/companion/memory/retry";
   const SETUP_STATUS_PATH = "/toy/setup/status";
-  const LLM_TEST_PATH = "/toy/setup/llm/test";
-  const LLM_SAVE_PATH = "/toy/setup/llm/save";
   const LLM_DELETE_PATH = "/toy/setup/llm/delete";
   const SETUP_COMPLETE_PATH = "/toy/setup/complete";
   const MEM0_CAPABILITY_PATH = "/toy/capabilities/mem0";
@@ -1927,10 +1925,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     window.setTimeout(refreshVisibleBalance,15000);
   };
 
-  const renderLlmSetupPanel = async (panel, initialMode, preferOlivia = false) => {
+  const renderLlmSetupPanel = async (panel, initialMode) => {
     panel.replaceChildren(
-      text("h3", initialMode ? "连接回信服务" : "大模型连接", "text-text-title text-title-m"),
-      text("p", "API key 仅加密保存在这台电脑上，不会显示在页面或日志中。", "text-text-secondary text-body-m font-regular")
+      text("h3", "连接回信服务", "text-text-title text-title-m"),
+      text("p", "Olivia 只使用 Olivia 账户 Key。Key 仅加密保存在这台电脑上，不会显示在页面或日志中。", "text-text-secondary text-body-m font-regular")
     );
     let setup;
     try {
@@ -1939,282 +1937,57 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       panel.append(text("p", "初始设置服务暂不可用。", "text-text-secondary text-body-m font-regular"));
       return;
     }
-    const provider = document.createElement("select");
-    provider.className = "rounded-3 border border-grey-5 bg-transparent px-4 py-2.5 text-text-body text-body-m";
-    const oliviaBaseUrl = "https://175.24.191.6/v1";
-    const isOliviaEndpoint = value => value.trim().replace(/\/+$/, "") === oliviaBaseUrl;
-    const qwenBaseUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1";
-    const qwenModels = ["qwen3.8-max", "qwen3.8-flash"];
-    const isDeepSeekEndpoint = (value) => /^https:\/\/api\.deepseek\.com(?:\/v1)?\/?$/i.test(value.trim());
-    const isQwenEndpoint = (value) => (
-      /^https:\/\/dashscope\.aliyuncs\.com\/compatible-mode\/v1\/?$/i.test(value.trim())
-      || /^https:\/\/[a-z0-9][a-z0-9-]*\.[a-z0-9-]+\.maas\.aliyuncs\.com\/compatible-mode\/v1\/?$/i.test(value.trim())
-    );
-    for (const [value, label] of [
-      ["olivia", "Olivia 回信服务"],
-      ["deepseek", "DeepSeek 官方"],
-      ["opencode-go", "OpenCode Go"],
-      ["qwen", "阿里云百炼 Qwen"],
-      ["custom", "自定义 OpenAI 兼容接口"],
-    ]) {
-      const option = document.createElement("option");
-      option.value = value;
-      option.textContent = label;
-      provider.append(option);
-    }
-    const providerLabel = document.createElement("label");
-    providerLabel.style.display = "grid";
-    providerLabel.style.gap = "6px";
-    providerLabel.append(
-      text("span", "服务商", "text-text-secondary text-body-m font-regular"),
-      provider
-    );
-    const base = setupInput("接口地址");
-    const model = setupInput("模型");
-    const key = setupInput("API key（自定义接口留空表示无需鉴权；预设接口留空沿用已保存的 key）", "password");
-    base.input.maxLength = 512;
-    model.input.maxLength = 128;
-    key.input.maxLength = 512;
-    base.input.value = setup.llm.base_url || "https://api.deepseek.com";
-    model.input.value = setup.llm.model || (
-      isQwenEndpoint(base.input.value)
-        ? qwenModels[0]
-        : "deepseek-v4-pro"
-    );
+    const key = setupInput("导入已有的 Olivia Key（已获取 Key 时留空）", "password");
+    key.input.maxLength = 128;
     key.input.value = "";
-    const inferProvider = () => {
-      if (isOliviaEndpoint(base.input.value)) return "olivia";
-      if (isDeepSeekEndpoint(base.input.value)) return "deepseek";
-      if (base.input.value === "https://opencode.ai/zen/go/v1") return "opencode-go";
-      if (isQwenEndpoint(base.input.value)) return "qwen";
-      return "custom";
-    };
-    provider.value = inferProvider();
-    if (preferOlivia) {
-      provider.value = "olivia";
-      base.input.value = oliviaBaseUrl;
-      model.input.value = "qwen3.7-flash";
-    }
-    provider.addEventListener("change", () => {
-      if (provider.value === "olivia") {
-        base.input.value = oliviaBaseUrl;
-        model.input.value = "qwen3.7-flash";
-      } else if (provider.value === "deepseek") {
-        base.input.value = "https://api.deepseek.com";
-        model.input.value = "deepseek-v4-pro";
-      } else if (provider.value === "opencode-go") {
-        base.input.value = "https://opencode.ai/zen/go/v1";
-        model.input.value = "deepseek-v4-pro";
-      } else if (provider.value === "qwen") {
-        const currentBase = base.input.value.trim();
-        if (!isQwenEndpoint(currentBase)) {
-          base.input.value = qwenBaseUrl;
-        }
-        model.input.value = qwenModels[0];
-      }
-      invalidateTest();
-      knownModels = [];
-      updateModelControl();
-      if (["deepseek", "qwen", "olivia"].includes(provider.value)) void syncModels();
-    });
-    const state = text("p", "请先测试连接。自定义本地接口无需 key 时可留空；需要鉴权时请填写 key。", "text-text-secondary text-body-m font-regular");
-    if (initialMode) state.textContent = setup.llm.key_configured
-      ? "已找到保存的 Key，无需重新填写。可以测试连接，或直接点击开始使用。"
-      : "填写服务 Key 后点击连接并保存。使用其他服务可展开下方设置。";
+    const state = text("p", setup.llm.key_configured
+      ? "已找到保存的 Key，无需重新填写。"
+      : "还没有 Key？请先在「Olivia 账户」获取，或在上方粘贴已有的 Key。", "text-text-secondary text-body-m font-regular");
     state.setAttribute("aria-live", "polite");
-    const currentConfig = () => ({
-      base_url: base.input.value.trim(),
-      model: model.input.value.trim(),
-      api_key: key.input.value.trim(),
-    });
-    let testedConfig = null;
     let setupBusy = false;
-    const matchesTest = () => {
-      const current = currentConfig();
-      return testedConfig !== null && Object.keys(current).every(name => current[name] === testedConfig[name]);
-    };
-    const invalidateTest = () => {
-      const valid = matchesTest();
-      setButtonsBusy([save], setupBusy || !valid);
-      if (!setupBusy && testedConfig !== null) {
-        state.textContent = valid ? "连接成功，可以保存。" : "配置已变化，请重新测试连接。";
-      }
-    };
-    const testConnection = button(initialMode ? "连接并保存" : "测试连接", async () => {
-      const requestedConfig = currentConfig();
-      testedConfig = null;
+    const errors = {RELAY_NOT_CONFIGURED:"请先在「Olivia 账户」获取 Key，或粘贴已有的 Key。",
+      LLM_SETUP_FIELDS_INVALID:"Key 格式不正确，应以 olivia- 开头。",
+      RELAY_AUTH_FAILED:"Key 已失效，请检查或联系管理员。"};
+    const connect = button("连接并保存", async () => {
+      if (setupBusy) return;
+      const typed = key.input.value.trim();
       setupBusy = true;
-      setButtonsBusy([testConnection, save], true);
-      state.textContent = "正在测试连接……";
+      setButtonsBusy([connect, removeKey], true);
+      state.textContent = "正在连接 Olivia 回信服务…";
       try {
-        await requestSetup(LLM_TEST_PATH, requestedConfig);
-        testedConfig = requestedConfig;
-      } catch (_error) {
-        state.textContent = _error.code === 'LLM_SETUP_REGION_OPT_IN_REQUIRED'
-          ? 'OpenCode 要求先授权使用中国托管模型。请在 OpenCode 账户的 Go 页面开启后重新测试。'
-          : "连接失败，请检查地址、模型和 API key。";
-        save.disabled = true;
-      } finally {
-        setupBusy = false;
-        testConnection.disabled = false;
-        testConnection.style.opacity = "1";
-        testConnection.style.cursor = "pointer";
-        invalidateTest();
-      }
-      if (initialMode && matchesTest()) await saveConfig();
-    });
-    const saveConfig = async () => {
-      if (setupBusy || !matchesTest()) {
-        if (!setupBusy) state.textContent = "请重新测试连接后保存。";
-        return;
-      }
-      const requestedConfig = currentConfig();
-      setupBusy = true;
-      setButtonsBusy([testConnection, save], true);
-      state.textContent = "正在安全保存……";
-      try {
-        if (isOliviaEndpoint(requestedConfig.base_url) && requestedConfig.api_key) {
-          await requestSetup("/toy/relay/action", {action:"import_key", key:requestedConfig.api_key});
-        } else {
-          await requestSetup(LLM_SAVE_PATH, requestedConfig);
-        }
+        await requestSetup("/toy/relay/action", typed ? {action:"import_key", key:typed} : {action:"connect"});
         key.input.value = "";
-        setup.llm.key_configured = Boolean(requestedConfig.api_key) || setup.llm.key_configured;
-        void syncModels();
-        state.textContent = "已保存。下一次发送立即生效。";
-      } catch (_error) {
-        state.textContent = "保存失败，请重新测试连接。";
+        setup.llm.key_configured = true;
+        removeKey.hidden = false;
+        state.textContent = "已连接并保存 Olivia 回信服务，下一次发送生效。";
+      } catch (e) {
+        state.textContent = errors[e.code] || "连接失败，请检查 Key 或稍后重试。";
       } finally {
         setupBusy = false;
-        testedConfig = null;
-        testConnection.disabled = false;
-        testConnection.style.opacity = "1";
-        testConnection.style.cursor = "pointer";
-        save.disabled = true;
+        setButtonsBusy([connect, removeKey], false);
       }
-    };
-    const save = button("保存", saveConfig);
-    save.disabled = true;
-    const removeKey = button("删除 API key", async () => {
-      if (!await confirmAction("确认删除这台电脑上保存的 API key？")) {
+    });
+    const removeKey = button("删除 Key", async () => {
+      if (setupBusy || !await confirmAction("确认删除这台电脑上保存的回信服务连接？")) {
         return;
       }
-      testedConfig = null;
       setupBusy = true;
-      setButtonsBusy([testConnection, save, removeKey], true);
+      setButtonsBusy([connect, removeKey], true);
       try {
         await requestSetup(LLM_DELETE_PATH, {});
         key.input.value = "";
-        state.textContent = "API key 已删除。下一次发送立即生效。";
+        state.textContent = "连接已删除。下一次发送立即生效。";
       } catch (_error) {
-        state.textContent = "API key 删除失败，请重试。";
+        state.textContent = "删除失败，请重试。";
       } finally {
         setupBusy = false;
-        testConnection.disabled = false;
-        removeKey.disabled = false;
-        testConnection.style.opacity = "1";
-        removeKey.style.opacity = "1";
-        invalidateTest();
+        setButtonsBusy([connect, removeKey], false);
       }
     });
-    base.input.addEventListener("input", invalidateTest);
-    model.input.addEventListener("input", invalidateTest);
-    key.input.addEventListener("input", invalidateTest);
+    removeKey.hidden = !setup.llm.key_configured || initialMode;
     const controls = actions();
-    controls.append(testConnection);
-    if (!initialMode) controls.append(save);
-    const useAccountKey = button("使用我的 Olivia Key", async () => {
-      if (setupBusy) return;
-      setupBusy=true; useAccountKey.disabled=true;
-      state.textContent="正在连接 Olivia 回信服务…";
-      try {
-        await requestSetup("/toy/relay/action", {action:"connect"});
-        provider.value="olivia";base.input.value=oliviaBaseUrl;model.input.value="qwen3.7-flash";
-        key.input.value="";setup.llm.key_configured=true;
-        void syncModels();
-        state.textContent="已连接并保存 Olivia 回信服务，下一次发送生效。";
-      } catch (e) { state.textContent=e.code === "RELAY_NOT_CONFIGURED" ? "请先在「Olivia 账户」获取 Key。" : "连接失败，请检查 Key 或稍后重试。"; }
-      finally {setupBusy=false;useAccountKey.disabled=false;testedConfig=null;save.disabled=true;}
-    });
-    controls.append(useAccountKey);
-    if (setup.llm.key_configured) {
-      controls.append(removeKey);
-    }
-    if (initialMode) {
-      const advanced = document.createElement("details");
-      advanced.append(text("summary", "进阶设置（自定义接口与模型）"), base.wrapper, model.wrapper);
-      panel.append(providerLabel, key.wrapper, controls, state, advanced);
-    } else {
-      panel.append(providerLabel, base.wrapper, model.wrapper, key.wrapper, controls, state);
-    }
-    const modelSelect = document.createElement("select");
-    modelSelect.className = provider.className;
-    modelSelect.style.width = "100%";
-    modelSelect.setAttribute("aria-label", "模型");
-    const modelStatus = text("p", "", "text-text-secondary text-body-m font-regular");
-    modelStatus.setAttribute("aria-live", "polite");
-    let modelRequest = 0;
-    let knownModels = [];
-    const updateModelControl = () => {
-      const official = isDeepSeekEndpoint(base.input.value);
-      const qwen = provider.value === "qwen";
-      const olivia = provider.value === "olivia";
-      model.input.hidden = official || qwen || olivia;
-      modelSelect.hidden = !official && !qwen && !olivia;
-      refreshModels.hidden = !official;
-      modelStatus.hidden = !official && !qwen && !olivia;
-      const selected = model.input.value;
-      modelSelect.replaceChildren();
-      const choices = olivia ? ["qwen3.7-flash"] : qwen ? [...qwenModels, selected] : [selected, ...knownModels];
-      for (const value of [...new Set(choices)].filter(Boolean)) {
-        const option = document.createElement("option");
-        option.value = value;
-        option.textContent = olivia ? "Qwen3.8 Flash" : value;
-        option.style.background = "#222426";
-        modelSelect.append(option);
-      }
-      modelSelect.value = selected;
-    };
-    const syncModels = async () => {
-      updateModelControl();
-      if (provider.value === "olivia") {
-        modelStatus.textContent = "填写管理员分配的 Olivia 用户 Key，测试连接后保存。";
-        return;
-      }
-      if (provider.value === "qwen") {
-        modelStatus.textContent = "可选 qwen3.8-max 或 qwen3.8-flash；业务空间可填写专属 OpenAI 兼容地址。";
-        return;
-      }
-      if (modelSelect.hidden) return;
-      if (!key.input.value.trim() && !setup.llm.key_configured) {
-        modelStatus.textContent = "填写 API key 后自动获取模型列表。";
-        return;
-      }
-      const serial = ++modelRequest;
-      const requested = currentConfig();
-      modelStatus.textContent = "正在获取模型列表…";
-      try {
-        const result = await requestSetup("/toy/setup/llm/models", requested);
-        if (serial !== modelRequest || requested.base_url !== currentConfig().base_url || requested.api_key !== currentConfig().api_key) return;
-        if (!Array.isArray(result.models) || !result.models.length) throw new Error();
-        knownModels = result.models;
-        updateModelControl();
-        modelStatus.textContent = "模型列表已同步，当前选择保持不变。";
-      } catch (_error) {
-        if (serial !== modelRequest || requested.base_url !== currentConfig().base_url || requested.api_key !== currentConfig().api_key) return;
-        modelStatus.textContent = "模型列表获取失败，已保留当前模型。请检查服务连接和 Key 后刷新。";
-      }
-    };
-    const refreshModels = button("刷新模型列表", syncModels);
-    modelSelect.addEventListener("change", () => {
-      model.input.value = modelSelect.value;
-      invalidateTest();
-    });
-    base.input.addEventListener("change", () => { knownModels = []; void syncModels(); });
-    key.input.addEventListener("change", () => void syncModels());
-    model.wrapper.append(modelSelect, refreshModels, modelStatus);
-    updateModelControl();
-    void syncModels();
+    controls.append(connect, removeKey);
+    panel.append(key.wrapper, controls, state);
   };
 
   const formatBytes = (value) => {
@@ -3162,7 +2935,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         navigation.append(connectionTab, accountTab);
         viewport.append(connection, account);
         content.append(navigation, viewport);
-        void renderLlmSetupPanel(connection, false, true);
+        void renderLlmSetupPanel(connection, false);
         mountRelayAccount(account);
         show("connection");
       } else {
@@ -3908,107 +3681,42 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const box = document.createElement("div"); box.className = "flex flex-col gap-4 text-text-body text-body-m";
     box.setAttribute("data-olivia-gpu-settings", "true");
     box.append(text("div", "媒体生成服务", "text-text-body text-title-m"),
-      text("p", "选择云端后，生成所需的回信文字和素材会发送到你指定的服务。聊天模型仍使用原来的设置。", "text-text-secondary text-body-m"));
-    const field = (label, input) => {
-      const row = document.createElement("label"); row.className = "flex flex-col gap-2";
-      input.className = "rounded-3 px-4 py-3";
-      input.style.cssText = "background:transparent;color:inherit;border:1px solid #8886;width:100%;box-sizing:border-box";
-      row.append(text("span", label), input); box.append(row); return input;
-    };
-    const mode = field("生成位置", document.createElement("select"));
-    for (const [value, label] of [["local","本机 GPU"],["remote","云端服务"]]) {
-      const option = document.createElement("option"); option.value=value; option.textContent=label; mode.append(option);
-    }
-    const url = field("服务地址", document.createElement("input")); url.type="url"; url.placeholder="填写完整的 HTTPS 服务地址";
-    const key = field("API Key", document.createElement("input")); key.type="password"; key.autocomplete="new-password";
-    key.placeholder="点击领取测试 Key 自动保存，也可手动填写";
+      text("p", "语音、图片和视频统一由 Olivia 云端生成，使用你的 Olivia 账户 Key，无需另外配置。", "text-text-secondary text-body-m"));
     const state = text("p", "正在读取…", "text-text-secondary text-body-m"); state.setAttribute("role","status");
-    const controls=actions(); let busy=false, loaded=false, savedURL="", hasKey=false;
+    let busy=false, hasKey=false;
     const billing = document.createElement("div");
     billing.setAttribute("data-olivia-gpu-billing", "true");
     billing.setAttribute("aria-live", "polite");
     billing.style.cssText="display:flex;flex-direction:column;gap:24px;line-height:1.6";
     const hint = value => text("p", value, "text-text-secondary text-body-m");
-    const clearBilling = () => { billing.replaceChildren(hint("连接后可查看余额与消费记录。")); };
     const refreshBilling = async () => {
       if (busy) return;
-      clearBilling();
-      if (!hasKey || !savedURL || url.value.trim()!==savedURL || key.value.trim()) {
-        billing.replaceChildren(text("p", "请先保存连接设置，再读取该账户的账单。")); return;
-      }
-      busy=true; billingRefresh.disabled=true; setButtonsBusy(Array.from(controls.querySelectorAll("button")),true);
-      mode.disabled=url.disabled=key.disabled=true;
+      if (!hasKey) { billing.replaceChildren(hint("获取 Olivia Key 后可查看余额与消费记录。")); return; }
+      busy=true; billingRefresh.disabled=true;
       billing.replaceChildren(text("p", "正在读取账单…"));
       try {
         const account = await requestSetup("/toy/generation/action", {action:"billing_statement"});
         drawUnifiedStatement(billing,account);
       } catch (_error) { billing.replaceChildren(hint("余额暂时无法读取，请稍后刷新。")); }
-      finally { busy=false; billingRefresh.disabled=false; mode.disabled=url.disabled=key.disabled=false; setButtonsBusy(Array.from(controls.querySelectorAll("button")),false); }
+      finally { busy=false; billingRefresh.disabled=false; }
     };
     const billingSection=document.createElement("section");billingSection.style.cssText="margin-top:16px;padding-top:24px;border-top:1px solid #8884";
     const billingHeader=document.createElement("div");billingHeader.style.cssText="display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:24px";
     const billingTitle=text("h3","账户余额");billingTitle.style.cssText="font-size:18px;font-weight:600;margin:0";
     const billingRefresh=button("刷新账单",refreshBilling);
     billingHeader.append(billingTitle,billingRefresh);billingSection.append(billingHeader,billing);
-    clearBilling();
-    const errors={GPU_NOT_CONFIGURED:"请填写服务地址和 API Key；更换地址时需填写对应的 Key。",
-      RELAY_NOT_CONFIGURED:"请先到回信服务的 Olivia 账户页获取或导入 Key。",
-      GPU_INSUFFICIENT_BALANCE:"Olivia 可用余额不足，请到回信服务的 Olivia 账户页充值。音频需预留 ¥1，视频需预留 ¥5。",
-      CLOUD_URL_INVALID:"请填写完整的 HTTPS 服务地址，不要附加接口路径。",
-      GPU_KEY_INVALID:"API Key 格式不正确，请重新粘贴。", GPU_SETTINGS_SAVE_FAILED:"设置保存失败，原配置未改变。",
-      GPU_SETTINGS_UNAVAILABLE:"原连接设置无法读取，请重新填写。",
-      GPU_CONNECTION_FAILED:"无法连接 GPU 服务，请检查网络与服务地址后重试。",
-      GPU_TLS_FAILED:"HTTPS 证书校验失败。请核对电脑日期时间，并检查 Windows 证书更新；将此错误码发给管理员。",
-      GPU_CONNECTION_TIMEOUT:"连接 GPU 服务超时，请检查网络后重试。",
-      GPU_CONNECT_FAILED:"无法建立网络连接，请检查防火墙、网络与服务地址。",
-      GPU_AUTH_FAILED:"Key 验证未通过，请重新复制完整 Key。",
-      GPU_QUEUE_FULL:"当前生成队列已满，请稍后重试，无需更换 Key。",
-      GPU_CLAIM_DISABLED:"该服务尚未开放自助领取，请联系管理员。",
-      GPU_CLAIM_REVOKED:"此匿名身份已停用，请联系管理员。",
-      GPU_CLAIM_LIMIT:"本轮测试领取名额已满，请联系管理员。",
-      GPU_CLAIM_FAILED:"领取未成功，请检查服务地址或稍后重试。",
-      GPU_IDENTITY_STORAGE_FAILED:"匿名身份无法读取或保存，未创建新身份，请检查本机数据目录。",
-      GPU_ENCRYPTION_TOOL_MISSING:"找不到 Windows PowerShell，无法加密保存 Key。请将错误码发给管理员。",
-      GPU_ENCRYPTION_FAILED:"Windows 用户加密失败，Key 未保存。请将错误码发给管理员。",
-      GPU_SETTINGS_PERMISSION_DENIED:"没有权限写入客户端数据目录，原配置未改变。请检查目录权限或安全软件拦截。",
-      GPU_SETTINGS_WRITE_FAILED:"配置文件写入失败，原配置未改变。请检查磁盘剩余空间与文件占用。",
-      GPU_REQUEST_FAILED:"GPU 服务请求未成功，请核对 Key 或联系管理员。",
-      GPU_RESPONSE_INVALID:"GPU 服务返回的数据不兼容，请联系管理员。",
-      LLM_SETUP_UNAVAILABLE:"本机服务响应异常，请更新补丁并完全退出后重启客户端。"};
-    const render = data => {
-      clearBilling();
-      loaded=true; mode.value=data.route; url.value=data.url; savedURL=data.url; hasKey=data.has_key; key.value="";
-      key.placeholder=hasKey ? "已保存，留空保留；更换地址时须重新填写" : "填写该服务提供的 API Key";
-      state.textContent=data.error_code ? (errors[data.error_code] || data.error_code) :
-        (data.route==="remote" ? "已启用云端生成。设置对后续任务生效。" : "当前使用本机生成。");
-    };
-    const perform = async action => {
-      if (busy || (!loaded && action!=="settings_status")) return;
-      busy=true; setButtonsBusy(Array.from(controls.querySelectorAll("button")),true);
-      mode.disabled=url.disabled=key.disabled=true; state.textContent="正在处理…";
+    const load = async () => {
       try {
         if (!setupSessionToken) await requestSetup(SETUP_STATUS_PATH);
-        const body={action};
-        if (action==="settings_save" || action==="settings_test") Object.assign(body,{url:url.value.trim(),key:key.value.trim()});
-        if (action==="settings_save") body.route=mode.value;
-        if (action==="settings_claim") body.url=url.value.trim();
-        const result=await requestSetup("/toy/generation/action",body);
-        if (action==="settings_test") {
-          const names={tts:"语音",video:"视频",cover:"翻唱",original:"歌曲",lipsync:"口型视频",separate:"人声分离",image:"图片"};
-          state.textContent="连接成功，可用功能："+result.kinds.map(k=>names[k]||k).join("、")+"。尚未保存设置。";
-        } else { render(result); if(action==="settings_claim") state.textContent="测试 Key 已领取并加密保存，云端生成已启用。重复领取会保留同一身份。"; if(action!=="settings_status") void refreshVideoReplySetting(); }
-      } catch(error) {
-        const code = typeof error.code === 'string' && /^[A-Z][A-Z0-9_]{0,95}$/.test(error.code) ? error.code : 'GPU_LOCAL_API_UNAVAILABLE';
-        state.textContent=(errors[code] || '本机配置服务连接失败，请完全退出客户端后重启。')+`（${code}）`;
+        const data = await requestSetup("/toy/generation/action", {action:"settings_status"});
+        hasKey = data.has_key;
+        state.textContent = hasKey ? "已使用 Olivia 账户 Key 启用云端生成。" : "请先到回信服务的 Olivia 账户页获取或导入 Key。";
+      } catch (_error) {
+        state.textContent = "本机配置服务连接失败，请完全退出客户端后重启。";
       }
-      finally {busy=false;mode.disabled=url.disabled=key.disabled=false;setButtonsBusy(Array.from(controls.querySelectorAll("button")),false);}
+      await refreshBilling();
     };
-    url.addEventListener("input",()=>{clearBilling();key.placeholder=hasKey && url.value.trim()===savedURL ? "留空保留已保存的 Key" : "请填写此地址对应的 API Key";});
-    key.addEventListener("input",clearBilling);
-    controls.append(button("使用我的 Olivia Key",()=>perform("settings_use_olivia")),button("测试连接",()=>perform("settings_test")),button("保存生成设置",()=>perform("settings_save")),
-      button("清除连接",()=>perform("settings_clear")),button("重新读取",()=>perform("settings_status")));
-    box.append(controls,state,text("p","Key 使用 Windows 当前用户加密保存，不会在页面回显。云端不可用时任务会报错，不会自动切换到本机。","text-text-secondary text-caption-m"));
-    box.append(billingSection); section.append(box); void perform("settings_status").then(()=>{if(hasKey)return refreshBilling();});
+    box.append(state, billingSection); section.append(box); void load();
   };
 
   const mountCloudService = (section) => {

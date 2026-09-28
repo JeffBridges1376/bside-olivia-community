@@ -14,12 +14,6 @@
       "request_fields": [],
       "response_fields": ["schema_version", "status", "login_observed", "setup_completed", "show_initial_setup", "skipped", "llm", "session_token?"]
     },
-    "/toy/setup/llm/models": {
-      "methods": ["POST", "OPTIONS"],
-      "status_values": ["AVAILABLE"],
-      "request_fields": ["base_url", "model", "api_key"],
-      "response_fields": ["status", "models"]
-    },
     "/toy/setup/llm/test": {
       "methods": ["POST", "OPTIONS"],
       "status_values": ["AVAILABLE"],
@@ -48,7 +42,6 @@
   "error_codes": {
     "LLM_SETUP_CONFIRMATION_REQUIRED": {"http_statuses": [403], "status": "FAILED", "response_fields": ["status", "error_code"]},
     "LLM_SETUP_CONNECTION_FAILED": {"http_statuses": [503], "status": "FAILED", "response_fields": ["status", "error_code"]},
-    "LLM_SETUP_REGION_OPT_IN_REQUIRED": {"http_statuses": [403], "status": "FAILED", "response_fields": ["status", "error_code"]},
     "LLM_SETUP_CONTENT_TYPE_INVALID": {"http_statuses": [415], "status": "FAILED", "response_fields": ["status", "error_code"]},
     "LLM_SETUP_DPAPI_FAILED": {"http_statuses": [503], "status": "FAILED", "response_fields": ["status", "error_code"]},
     "LLM_SETUP_DPAPI_UNAVAILABLE": {"http_statuses": [503], "status": "FAILED", "response_fields": ["status", "error_code"]},

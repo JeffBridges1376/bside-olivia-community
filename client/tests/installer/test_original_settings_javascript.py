@@ -127,8 +127,8 @@ def test_original_settings_actions_remain_bounded_and_in_client() -> None:
 def test_llm_save_and_delete_copy_says_changes_apply_immediately() -> None:
     source = BOOTSTRAP_JAVASCRIPT
 
-    assert "已保存。下一次发送立即生效。" in source
-    assert "API key 已删除。下一次发送立即生效。" in source
+    assert "已连接并保存 Olivia 回信服务，下一次发送生效。" in source
+    assert "连接已删除。下一次发送立即生效。" in source
     assert "重启 Olivia 后生效" not in source
     assert "confirmAction" in source
     assert "window.open" not in source
@@ -250,22 +250,18 @@ vm.runInNewContext(source, context);
 def test_original_settings_reuses_llm_setup_after_login() -> None:
     source = BOOTSTRAP_JAVASCRIPT
     assert 'const SETUP_STATUS_PATH = "/toy/setup/status"' in source
-    assert 'const LLM_TEST_PATH = "/toy/setup/llm/test"' in source
-    assert 'const LLM_SAVE_PATH = "/toy/setup/llm/save"' in source
+    assert "/toy/setup/llm/test" not in source
+    assert "/toy/setup/llm/save" not in source
+    assert "/toy/setup/llm/models" not in source
     assert 'const SETUP_COMPLETE_PATH = "/toy/setup/complete"' in source
     assert 'const LLM_DELETE_PATH = "/toy/setup/llm/delete"' in source
     assert 'const MEM0_CAPABILITY_PATH = "/toy/capabilities/mem0"' in source
     assert 'const MEM0_CAPABILITY_ACTION_PATH = "/toy/capabilities/mem0/action"' in source
     assert "/toy/capabilities/mem0/import" not in source
     assert "show_initial_setup" in source
-    assert "API key" in source
-    assert "OpenCode Go" in source
-    assert "DeepSeek 官方" in source
-    assert "阿里云百炼 Qwen" in source
-    assert "qwen3.8-max" in source
-    assert "qwen3.8-flash" in source
-    assert "https://dashscope.aliyuncs.com/compatible-mode/v1" in source
-    assert "业务空间" in source
+    assert "Olivia Key" in source
+    for retired in ("OpenCode Go", "DeepSeek", "dashscope", "自定义 OpenAI 兼容接口"):
+        assert retired not in source
     assert "导入离线包（暂不可用）" not in source
     assert "等待可信签名与受限导入校验完成" not in source
     assert 'options.headers[SETUP_SESSION_HEADER] = setupSessionToken' in source
