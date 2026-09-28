@@ -883,7 +883,7 @@ def main(argv: list[str] | None = None) -> int:
     client_environment = _load_llm_environment(client_environment, data_root)
     _configure_memory_environment(backend_environment, data_root)
     if backend_environment.get("OLIVIA_LLM_REQUIRES_API_KEY") != "0" and not any(backend_environment.get(name) for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")):
-        print("LLM_API_KEY_NOT_CONFIGURED: 请先在启动此程序的进程环境中设置 API key；当前仅提供明确的 safe-static/degraded 回退。")
+        print("LLM_API_KEY_NOT_CONFIGURED: 尚未连接 Olivia 账户 Key，请在设置的“回信服务 → Olivia 账户”中获取或导入。")
     server = None
     try:
         if health != "READY":
