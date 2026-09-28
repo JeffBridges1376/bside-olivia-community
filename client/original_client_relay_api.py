@@ -7,6 +7,7 @@ from original_client_setup_api import LLMSetupError, _authorize, _body, _headers
 from runtime.remote_generation import gpu_tls_context
 
 RELAY_BASE = 'https://175.24.191.6/v1'
+RELAY_MODEL = 'qwen3.7-flash'
 
 
 async def relay_request(base, key, method, path, payload=None):
@@ -69,9 +70,12 @@ def mount_relay_api(app, setup):
         staging = key_path.with_suffix('.staging')
         staging.write_text(setup._protect(key), encoding='utf-8')
         staging.replace(key_path)
+        refresh = app.get('olivia_gpu_refresh')
+        if refresh is not None:
+            refresh()  # Cloud generation uses the same account key.
 
     async def connect(key):
-        payload = {'base_url':RELAY_BASE, 'model':'qwen3.7-flash', 'api_key':key}
+        payload = {'base_url':RELAY_BASE, 'model':RELAY_MODEL, 'api_key':key}
         await setup.test(payload)
         setup.save(payload)
 
@@ -90,7 +94,7 @@ def mount_relay_api(app, setup):
                     active = setup._active_key_path()
                     active_key = setup._unprotect(active.read_text(encoding='utf-8').strip()) if active else None
                     return web.json_response({'configured':bool(key) and not pending_path.exists(), 'registration_pending':bool(key) and pending_path.exists(), 'key_prefix':key[:15] if key and not pending_path.exists() else '',
-                        'connected':bool(key) and key == active_key and config.base_url.rstrip('/') == RELAY_BASE and config.model == 'qwen3.7-flash'}, headers=_headers(origin))
+                        'connected':bool(key) and key == active_key and config.base_url.rstrip('/') == RELAY_BASE and config.model == RELAY_MODEL}, headers=_headers(origin))
                 if operation == 'claim':
                     if not key:
                         key = 'olivia-'+secrets.token_urlsafe(32)

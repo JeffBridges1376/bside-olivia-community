@@ -15,7 +15,6 @@ from jsonschema import Draft202012Validator
 
 import pytest
 
-from installer import configure
 import installer.start_local as start_local
 from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT, SETTINGS_UI_VERSION
 from original_client_setup_api import LLMSetupService, _dpapi_protect
@@ -161,8 +160,8 @@ def test_launcher_loads_user_managed_llm_config_without_exposing_key(tmp_path: P
         json.dumps(
             {
                 "schema_version": 1,
-                "base_url": "https://opencode.ai/zen/go/v1",
-                "model": "deepseek-v4-flash",
+                "base_url": "https://175.24.191.6/v1",
+                "model": "qwen3.7-flash",
             }
         ),
         encoding="utf-8",
@@ -170,9 +169,47 @@ def test_launcher_loads_user_managed_llm_config_without_exposing_key(tmp_path: P
 
     environment = start_local._load_llm_environment({}, data_root)
 
-    assert environment["OLIVIA_LLM_BASE_URL"] == "https://opencode.ai/zen/go/v1"
-    assert environment["OLIVIA_LLM_MODEL"] == "deepseek-v4-flash"
-    assert environment["OLIVIA_LLM_API_KEY_ENV"] == "DEEPSEEK_API_KEY"
+    assert environment["OLIVIA_LLM_BASE_URL"] == "https://175.24.191.6/v1"
+    assert environment["OLIVIA_LLM_MODEL"] == "qwen3.7-flash"
+    assert environment["OLIVIA_LLM_API_KEY_ENV"] == "OLIVIA_LLM_API_KEY"
+
+
+@pytest.mark.parametrize("base_url,model", [
+    ("https://api.deepseek.com", "deepseek-v4-pro"),
+    ("https://opencode.ai/zen/go/v1", "deepseek-v4-flash"),
+    ("http://127.0.0.1:8000/v1", "local-model"),
+])
+def test_launcher_silently_ignores_retired_custom_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    base_url: str,
+    model: str,
+) -> None:
+    data_root = tmp_path / "data"
+    config_root = data_root / "config"
+    config_root.mkdir(parents=True)
+    key_name = f"deepseek_api_key.{'f' * 32}.dpapi"
+    key_path = config_root / key_name
+    key_path.write_text("retired-provider-ciphertext\n", encoding="utf-8")
+    (config_root / "llm.json").write_text(json.dumps({
+        "schema_version": 3, "provider": "openai_compatible", "base_url": base_url,
+        "model": model, "max_retries": 2, "requires_api_key": True, "key_file": key_name,
+        "key_sha256": hashlib.sha256(key_path.read_bytes()).hexdigest(),
+    }), encoding="utf-8")
+    unprotected = []
+    monkeypatch.setattr(start_local, "_load_dpapi_key", lambda path: unprotected.append(path) or "legacy-secret")
+
+    environment = start_local._load_llm_environment(
+        {"DEEPSEEK_API_KEY": "inherited-deepseek-key"}, data_root, include_secret=True,
+    )
+
+    assert unprotected == []
+    assert environment["OLIVIA_LLM_BASE_URL"] == "https://175.24.191.6/v1"
+    assert environment["OLIVIA_LLM_MODEL"] == "qwen3.7-flash"
+    assert environment["OLIVIA_LLM_API_KEY_ENV"] == "OLIVIA_LLM_API_KEY"
+    assert "OLIVIA_LLM_API_KEY" not in environment
+    assert "DEEPSEEK_API_KEY" not in environment
+    assert "legacy-secret" not in environment.values()
 
 
 def test_launcher_reuses_saved_non_deepseek_provider_schema_on_restart(
@@ -190,8 +227,8 @@ def test_launcher_reuses_saved_non_deepseek_provider_schema_on_restart(
             {
                 "schema_version": 3,
                 "provider": "openai_compatible",
-                "base_url": "https://gateway.example/v1",
-                "model": "vendor/not-deepseek",
+                "base_url": "https://175.24.191.6/v1",
+                "model": "qwen3.7-flash",
                 "max_retries": 4,
                 "key_file": key_name,
                 "key_sha256": hashlib.sha256(key_path.read_bytes()).hexdigest(),
@@ -210,8 +247,8 @@ def test_launcher_reuses_saved_non_deepseek_provider_schema_on_restart(
     )
 
     assert environment["OLIVIA_LLM_PROVIDER"] == "openai_compatible"
-    assert environment["OLIVIA_LLM_BASE_URL"] == "https://gateway.example/v1"
-    assert environment["OLIVIA_LLM_MODEL"] == "vendor/not-deepseek"
+    assert environment["OLIVIA_LLM_BASE_URL"] == "https://175.24.191.6/v1"
+    assert environment["OLIVIA_LLM_MODEL"] == "qwen3.7-flash"
     assert environment["OLIVIA_LLM_MAX_RETRIES"] == "4"
     assert environment["OLIVIA_LLM_REQUIRES_API_KEY"] == "1"
 
@@ -242,8 +279,8 @@ def test_launcher_isolates_valid_saved_key_from_inherited_generic_keys(
         json.dumps(
             {
                 "schema_version": 2,
-                "base_url": "https://api.deepseek.com",
-                "model": "deepseek-v4-flash",
+                "base_url": "https://175.24.191.6/v1",
+                "model": "qwen3.7-flash",
                 "key_file": key_name,
                 "key_sha256": hashlib.sha256(key_path.read_bytes()).hexdigest(),
             }
@@ -284,8 +321,8 @@ def test_launcher_disables_saved_provider_when_dpapi_unprotect_fails(
             {
                 "schema_version": 3,
                 "provider": "openai_compatible",
-                "base_url": "https://gateway.example/v1",
-                "model": "vendor/not-deepseek",
+                "base_url": "https://175.24.191.6/v1",
+                "model": "qwen3.7-flash",
                 "max_retries": 2,
                 "key_file": key_name,
                 "key_sha256": hashlib.sha256(key_path.read_bytes()).hexdigest(),
@@ -330,8 +367,8 @@ def test_launcher_keeps_deleted_managed_key_disabled_after_restart(tmp_path: Pat
             {
                 "schema_version": 3,
                 "provider": "openai_compatible",
-                "base_url": "https://gateway.example/v1",
-                "model": "vendor/not-deepseek",
+                "base_url": "https://175.24.191.6/v1",
+                "model": "qwen3.7-flash",
                 "max_retries": 2,
                 "key_file": key_name,
                 "key_sha256": hashlib.sha256(key_path.read_bytes()).hexdigest(),
@@ -379,8 +416,8 @@ def test_launcher_prefers_explicit_olivia_key_to_valid_saved_key(
         json.dumps(
             {
                 "schema_version": 2,
-                "base_url": "https://api.deepseek.com",
-                "model": "deepseek-v4-flash",
+                "base_url": "https://175.24.191.6/v1",
+                "model": "qwen3.7-flash",
                 "key_file": key_name,
                 "key_sha256": hashlib.sha256(key_path.read_bytes()).hexdigest(),
             }
@@ -544,11 +581,11 @@ def test_launcher_ignores_invalid_user_managed_llm_config(tmp_path: Path) -> Non
         inherited, data_root, include_secret=True
     )
 
-    assert environment["OLIVIA_LLM_BASE_URL"] == "https://api.deepseek.com"
-    assert environment["OLIVIA_LLM_MODEL"] == "deepseek-v4-pro"
+    assert environment["OLIVIA_LLM_BASE_URL"] == "https://175.24.191.6/v1"
+    assert environment["OLIVIA_LLM_MODEL"] == "qwen3.7-flash"
     assert environment["OLIVIA_LLM_PROVIDER"] == "none"
-    assert environment["DEEPSEEK_API_KEY"] == inherited["DEEPSEEK_API_KEY"]
-    assert environment["OPENAI_API_KEY"] == inherited["OPENAI_API_KEY"]
+    assert "DEEPSEEK_API_KEY" not in environment
+    assert "OPENAI_API_KEY" not in environment
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows DPAPI is required")
@@ -1337,7 +1374,7 @@ def test_launcher_allows_mem0_cold_start_before_opening_client(
     assert len(client_commands) == 1
 
 
-def test_launcher_loads_configured_dpapi_key_without_environment_or_key_output(
+def test_launcher_ignores_retired_deepseek_key_file(
     tmp_path: Path,
     monkeypatch,
     capsys,
@@ -1359,12 +1396,9 @@ def test_launcher_loads_configured_dpapi_key_without_environment_or_key_output(
     )
     for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(configure.getpass, "getpass", lambda _prompt: expected)
-
-    assert configure.main(["--installation", str(root)]) == 0
     protected_path = root / "data" / "config" / "deepseek_api_key.dpapi"
-    assert protected_path.is_file()
-    assert protected_path.read_text(encoding="utf-8").strip() != expected
+    protected_path.parent.mkdir(parents=True, exist_ok=True)
+    protected_path.write_text("retired-provider-ciphertext\n", encoding="utf-8")
 
     health = iter(("UNAVAILABLE", "READY", "READY", "READY"))
     backend_environments: list[dict[str, str]] = []
@@ -1406,7 +1440,8 @@ def test_launcher_loads_configured_dpapi_key_without_environment_or_key_output(
     monkeypatch.setattr(start_local.subprocess, "call", call)
 
     assert start_local.main(["--install-root", str(root), "--port", "8899"]) == 0
-    assert backend_environments[0]["DEEPSEEK_API_KEY"] == expected
+    assert "DEEPSEEK_API_KEY" not in backend_environments[0]
+    assert "OLIVIA_LLM_API_KEY" not in backend_environments[0]
     assert "DEEPSEEK_API_KEY" not in client_environments[0]
     assert expected not in client_environments[0].values()
     captured = capsys.readouterr()
@@ -1449,7 +1484,7 @@ def test_launcher_preserves_compatible_llm_environment_overrides(
     monkeypatch.setattr(start_local.subprocess, "Popen", popen)
     monkeypatch.setattr(start_local.subprocess, "call", lambda *_args, **_kwargs: 0)
     overrides = {
-        "OLIVIA_LLM_BASE_URL": "https://gateway.example/v1",
+        "OLIVIA_LLM_BASE_URL": "https://175.24.191.6/v1",
         "OLIVIA_LLM_MODEL": "compatible-model",
         "OLIVIA_LLM_API_STYLE": "responses",
         "OLIVIA_LLM_STREAM": "false",
@@ -1504,9 +1539,9 @@ def test_launcher_supplies_deepseek_defaults_when_llm_overrides_are_absent(
     monkeypatch.setattr(start_local.subprocess, "call", lambda *_args, **_kwargs: 0)
     defaults = {
         "OLIVIA_LLM_PROVIDER": "openai_compatible",
-        "OLIVIA_LLM_BASE_URL": "https://api.deepseek.com",
-        "OLIVIA_LLM_MODEL": "deepseek-v4-pro",
-        "OLIVIA_LLM_API_KEY_ENV": "DEEPSEEK_API_KEY",
+        "OLIVIA_LLM_BASE_URL": "https://175.24.191.6/v1",
+        "OLIVIA_LLM_MODEL": "qwen3.7-flash",
+        "OLIVIA_LLM_API_KEY_ENV": "OLIVIA_LLM_API_KEY",
         "OLIVIA_LLM_API_STYLE": "chat_completions",
         "OLIVIA_LLM_STREAM": "true",
         "OLIVIA_LLM_TIMEOUT_SECONDS": "180",

@@ -10,28 +10,23 @@ from runtime.cloud_service import CloudError
 def mount_cloud_api(app, service, setup, gpu_settings=None):
     from runtime.remote_generation import RemoteGeneration
     from runtime.gpu_settings import GPUSettings
+    def account_key():
+        getter = app.get('olivia_relay_stored_key')
+        return getter() if getter else None
     gpu_settings = gpu_settings or GPUSettings(service.path.parent)
+    gpu_settings.account_key = gpu_settings.account_key or account_key
     gpu_settings.load()
+    # The relay refreshes generation credentials whenever the account key changes.
+    app['olivia_gpu_refresh'] = gpu_settings.load
     from runtime.music_settings import MusicSettings
     music_settings = MusicSettings(service.path.parent)
     music_settings.load()
-    # Only explicit selection shares Olivia credentials; custom servers never receive them.
     async def generation(request):
         origin = _authorize(request, confirm=True)
         setup.require_session(request.headers.get(SESSION_HEADER, ''))
         body = await _body(request)
         operation = body.pop('action', None)
         try:
-            if operation == 'settings_use_olivia':
-                if body:
-                    raise CloudError('GPU_REQUEST_INVALID', 400)
-                getter = app.get('olivia_relay_stored_key')
-                key = getter() if getter else None
-                if not key:
-                    raise CloudError('RELAY_NOT_CONFIGURED', 400)
-                url = 'https://175.24.191.6'
-                await gpu_settings.test(url, key)
-                return web.json_response(gpu_settings.save('remote', url, key), headers=_headers(origin))
             if operation == 'billing_quote':
                 if set(body) not in ({'video'}, {'video', 'original'}) or type(body['video']) is not bool or type(body.get('original', False)) is not bool:
                     raise CloudError('GPU_REQUEST_INVALID', 400)
@@ -72,14 +67,6 @@ def mount_cloud_api(app, service, setup, gpu_settings=None):
                 return web.json_response(music_settings.save(body['options']), headers=_headers(origin))
             if operation == 'settings_status' and not body:
                 return web.json_response(gpu_settings.status(), headers=_headers(origin))
-            if operation == 'settings_save' and set(body) == {'route', 'url', 'key'}:
-                return web.json_response(gpu_settings.save(**body), headers=_headers(origin))
-            if operation == 'settings_clear' and not body:
-                return web.json_response(gpu_settings.clear(), headers=_headers(origin))
-            if operation == 'settings_test' and set(body) == {'url', 'key'}:
-                return web.json_response(await gpu_settings.test(**body), headers=_headers(origin))
-            if operation == 'settings_claim' and set(body) == {'url'} and isinstance(body['url'], str):
-                return web.json_response(await gpu_settings.claim(body['url']), headers=_headers(origin))
             remote = RemoteGeneration(os.environ.get('OLIVIA_GPU_API_URL', ''), os.environ.get('OLIVIA_GPU_API_KEY', ''))
             result = await remote.request(operation, body)
             if operation in ('billing_prices', 'billing_account', 'billing_statement'):

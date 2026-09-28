@@ -15,11 +15,11 @@
 
 BSide Olivia Community 是面向 Windows 的非官方本地陪伴复刻项目。它复用用户合法取得的原版客户端，在隔离副本中接入本机后端，保留写信、等待和回信体验，并加入长期记忆、林离世界、语音与翻唱。
 
-**本地运行不等于所有模型都离线。** 信件、记忆数据库和生成媒体保存在本机；文字回信及部分记忆、世界整理使用你配置的 LLM API，相关上下文会发送给该服务。语音、翻唱和口型组件按需在本地运行。Live 实时对话目前暂停开发。
+**本地运行不等于所有模型都离线。** 信件、记忆数据库和生成媒体保存在本机；文字回信及部分记忆、世界整理使用 Olivia 云端服务，相关上下文会发送给该服务。语音、翻唱和口型视频使用同一个 Olivia 账户 Key 在云端生成。Live 实时对话目前暂停开发。
 
 ## 安装与升级
 
-需要 Windows 10/11 x64、合法取得的原版客户端 `0.0.9.627`，以及 DeepSeek API key 或自行配置的 OpenAI-compatible 服务。文字回信不要求独立显卡；媒体组件有各自的显存和磁盘要求。
+需要 Windows 10/11 x64、合法取得的原版客户端 `0.0.9.627`，以及 Olivia 账户 Key。文字回信不要求独立显卡；媒体组件有各自的显存和磁盘要求。
 
 前往 [GitHub 最新发行](https://github.com/Ornn8/bside-olivia-community/releases/latest)，按用途选择：
 
@@ -37,15 +37,11 @@ BSide Olivia Community 是面向 Windows 的非官方本地陪伴复刻项目。
 
 1.1.0 起，安装器、程序与升级补丁采用统一版本号。`2250.10` 等旧标识仅保留在历史发行与兼容记录中。
 
-首次启动时配置 API key。密钥由当前 Windows 用户通过 DPAPI 加密保存；解密值仅用于后端，不写入日志。升级保留信件、记忆与已有组件。安装失败时请保留日志和诊断信息，通过 [Issues](https://github.com/Ornn8/bside-olivia-community/issues) 反馈，勿附 API key 或未经处理的私人信件。
+首次启动时获取或导入 Olivia 账户 Key。密钥由当前 Windows 用户通过 DPAPI 加密保存；解密值仅用于后端，不写入日志。升级保留信件、记忆与已有组件。安装失败时请保留日志和诊断信息，通过 [Issues](https://github.com/Ornn8/bside-olivia-community/issues) 反馈，勿附 Olivia Key 或未经处理的私人信件。
 
-### LLM 服务商与模型
+### Olivia 账户 Key
 
-设置中的“大模型连接”提供 DeepSeek 官方、OpenCode Go、阿里云百炼 Qwen 和自定义 OpenAI-compatible 接口。选择阿里云百炼 Qwen 时默认使用 `qwen3.8-max`，也可选择 `qwen3.8-flash`；官方兼容地址 `https://dashscope.aliyuncs.com/compatible-mode/v1` 仍可直接使用。需要业务空间时，可以在“接口地址”中填写该空间的专属 OpenAI-compatible 地址；已保存的模型不会因为重新打开设置而自动改写。
-
-Qwen 文字回信和后台生活状态使用高思考（`enable_thinking=true`、`reasoning_effort=high`），思考与正文合计上限为 10,000 tokens。语音、音乐和独立记忆提取仍沿用各自参数。接口参数说明见[阿里云百炼官方文档](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions)。
-
-`qwen3.8-max` 与 `qwen3.8-flash` 已有隔离 provider 实测，用于确认连接参数和回复链路。该证据只说明隔离配置下的模型行为，不等同于每台设备的安装、升级或完整客户端验收；安装包与真实客户端仍按对应发行说明和验收记录单独核对。
+文字回信、记忆整理、世界状态和语音、图片、视频生成统一使用 Olivia 云端服务，只需要一个 Olivia 账户 Key：在设置的“回信服务 → Olivia 账户”中获取，或导入已有的 Key。不再支持 DeepSeek、OpenCode Go、阿里云百炼等自填大模型接口，也不再支持自填 GPU 生成服务地址；升级后旧的自填配置会被忽略，请改用 Olivia 账户 Key。长期记忆组件仍按原方式在本地能力设置中安装和配置。
 
 详细步骤见 [Windows 安装、升级与回滚](client/docs/WINDOWS_FULL_PATCH.md)。各版附件和已知问题以发行说明为准。
 
@@ -108,7 +104,7 @@ flowchart LR
 | 模块 | 当前职责 |
 | --- | --- |
 | 本机服务 | Python 3.12、aiohttp、后台任务、持久化与恢复 |
-| 模型网关 | OpenAI-compatible API；支持 DeepSeek 与 Qwen，推理内容与最终正文分开处理 |
+| 模型网关 | Olivia 云端回信服务（OpenAI-compatible 协议），推理内容与最终正文分开处理 |
 | 人格 | 带来源与层级的人格资产，按上下文预算装配 |
 | 记忆与世界 | Mem0、离线 embedding、SQLite 生活事项与关系账本；隐藏关系数值不直接进入回信 |
 | 语音 | Breeze TTS 2 与对应音色组件 |

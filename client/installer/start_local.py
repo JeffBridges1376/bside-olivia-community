@@ -133,9 +133,11 @@ def _load_llm_environment(
 ) -> dict[str, str]:
     """Load public provider settings while retaining safe defaults on corruption."""
 
+    from original_client_relay_api import RELAY_BASE, RELAY_MODEL
+
     values = environment.copy()
-    base_url = "https://api.deepseek.com"
-    model = "deepseek-v4-pro"
+    base_url = RELAY_BASE
+    model = RELAY_MODEL
     provider = "openai_compatible"
     max_retries = 2
     requires_api_key = True
@@ -143,17 +145,18 @@ def _load_llm_environment(
     config_path = data_root / "config" / "llm.json"
     saved_key_binding = False
     managed_key_absent = False
-    managed_key_authoritative = False
     try:
         payload = json.loads(config_path.read_text(encoding="utf-8"))
         managed = ManagedLLMConfig.from_mapping(payload)
+        if managed.base_url.rstrip("/") != RELAY_BASE:
+            # Only the Olivia account key is supported; older custom providers are ignored.
+            raise FileNotFoundError
         base_url = managed.base_url
         model = managed.model
         provider = managed.provider
         max_retries = managed.max_retries
         requires_api_key = managed.requires_api_key
         if payload.get("schema_version") in {2, 3}:
-            managed_key_authoritative = True
             has_key_binding = "key_file" in payload or "key_sha256" in payload
             if has_key_binding:
                 name = payload.get("key_file")
@@ -181,9 +184,9 @@ def _load_llm_environment(
     except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
         provider = "none"
         key_path = Path()
-    if managed_key_authoritative:
-        values.pop("DEEPSEEK_API_KEY", None)
-        values.pop("OPENAI_API_KEY", None)
+    # Third-party provider keys must never be forwarded to the Olivia relay.
+    values.pop("DEEPSEEK_API_KEY", None)
+    values.pop("OPENAI_API_KEY", None)
     if (
         saved_key_binding
         and include_secret
@@ -200,9 +203,7 @@ def _load_llm_environment(
         "OLIVIA_LLM_PROVIDER": provider,
         "OLIVIA_LLM_BASE_URL": base_url,
         "OLIVIA_LLM_MODEL": model,
-        "OLIVIA_LLM_API_KEY_ENV": (
-            "OLIVIA_LLM_API_KEY" if managed_key_authoritative else "DEEPSEEK_API_KEY"
-        ),
+        "OLIVIA_LLM_API_KEY_ENV": "OLIVIA_LLM_API_KEY",
         "OLIVIA_LLM_API_STYLE": "chat_completions",
         "OLIVIA_LLM_STREAM": "true",
         "OLIVIA_LLM_TIMEOUT_SECONDS": "180",
@@ -222,19 +223,6 @@ def _load_llm_environment(
         })
     if values.get("OLIVIA_LLM_API_KEY"):
         values["OLIVIA_LLM_API_KEY_ENV"] = "OLIVIA_LLM_API_KEY"
-    generic_key_present = any(
-        values.get(name) for name in ("DEEPSEEK_API_KEY", "OPENAI_API_KEY")
-    )
-    if (
-        include_secret
-        and not saved_key_binding
-        and key_path != Path()
-        and not values.get("OLIVIA_LLM_API_KEY")
-        and not generic_key_present
-    ):
-        configured_key = _load_dpapi_key(key_path)
-        if configured_key:
-            values["DEEPSEEK_API_KEY"] = configured_key
     return values
 
 
