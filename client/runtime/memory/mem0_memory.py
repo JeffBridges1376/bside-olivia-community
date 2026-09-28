@@ -332,19 +332,6 @@ class Mem0Backend(Protocol):
     ) -> object: ...
 
 
-def _flash_memory_reasoning(base_url: str, model: str) -> bool:
-    endpoint = urlsplit(base_url)
-    return (
-        endpoint.scheme == "https"
-        and model.casefold() == "deepseek-v4-flash"
-        and (endpoint.hostname, endpoint.path.rstrip("/")) in {
-            ("opencode.ai", "/zen/go/v1"),
-            ("api.deepseek.com", ""),
-            ("api.deepseek.com", "/v1"),
-        }
-    )
-
-
 @dataclass(frozen=True)
 class Mem0Config:
     enabled: bool
@@ -354,7 +341,7 @@ class Mem0Config:
     collection_name: str = "olivia_conversation_memory_v1"
     llm_base_url: str = ""
     llm_model: str = ""
-    llm_api_key_env: str = "DEEPSEEK_API_KEY"
+    llm_api_key_env: str = "OLIVIA_LLM_API_KEY"
     embedding_model: str = MEM0_EMBEDDING_MODEL
     embedding_dims: int = 512
     embedding_cache: Path | None = None
@@ -470,8 +457,6 @@ class Mem0Config:
         environ: Mapping[str, str] | None = None,
     ) -> dict[str, object]:
         environment = environ if environ is not None else os.environ
-        capabilities = model_capabilities(self.llm_base_url, self.llm_model, self.llm_provider_options)
-        flash_reasoning = capabilities.thinking == "deepseek" and _flash_memory_reasoning(self.llm_base_url, self.llm_model)
         return {
             **({"_olivia_provider_options": dict(self.llm_provider_options)} if self.llm_provider_options else {}),
             "custom_instructions": _MEMORY_LANGUAGE_INSTRUCTIONS,
@@ -491,8 +476,6 @@ class Mem0Config:
                     "api_key": environment.get(self.llm_api_key_env, ""),
                     "openai_base_url": self.llm_base_url,
                     "temperature": 0.1,
-                    # This budget includes reasoning; final extraction guards remain separate.
-                    **({"max_tokens": 32768} if flash_reasoning else {}),
                 },
             },
             "embedder": {
@@ -860,7 +843,7 @@ def load_mem0_config(
     ).strip()
     key_env = environment.get(
         "OLIVIA_MEMORY_LLM_API_KEY_ENV",
-        environment.get("OLIVIA_LLM_API_KEY_ENV", "DEEPSEEK_API_KEY"),
+        environment.get("OLIVIA_LLM_API_KEY_ENV", "OLIVIA_LLM_API_KEY"),
     ).strip()
     if enabled and (not llm_base_url or not llm_model):
         error = "MEM0_LLM_CONFIG_INCOMPLETE"
@@ -898,7 +881,7 @@ def load_mem0_config(
         or "olivia_conversation_memory_v1",
         llm_base_url=llm_base_url,
         llm_model=llm_model,
-        llm_api_key_env=key_env or "DEEPSEEK_API_KEY",
+        llm_api_key_env=key_env or "OLIVIA_LLM_API_KEY",
         embedding_model=environment.get(
             "OLIVIA_MEMORY_EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5"
         ).strip()
@@ -2401,36 +2384,9 @@ def _guard_extraction_client(provider: object, *, model: str = "", provider_opti
         return
     endpoint = urlsplit(str(getattr(client, "base_url", "")))
     capabilities = model_capabilities(endpoint.geturl(), model, provider_options)
-    overrides = (provider_options or {}).get("capabilities", {})
-    flash_reasoning = capabilities.thinking == "deepseek" and _flash_memory_reasoning(endpoint.geturl(), model)
-    go_flash = flash_reasoning and endpoint.hostname == "opencode.ai"
-    deepseek_memory = endpoint.hostname == "api.deepseek.com" or (
-        endpoint.scheme == "https"
-        and endpoint.hostname == "opencode.ai"
-        and endpoint.path.rstrip("/") == "/zen/go/v1"
-        and model.casefold() in {"deepseek-v4-flash", "deepseek-v4-pro"}
-    )
 
     def guarded_create(*args: object, **kwargs: object) -> object:
-        if flash_reasoning:
-            kwargs["extra_body"] = {
-                **(kwargs.get("extra_body") or {}), "thinking": {"type": "enabled"},
-            }
-            effort = overrides.get("reasoning_effort", "low")
-            if effort is not None:
-                kwargs["reasoning_effort"] = effort
-            # This route's JSON mode was less reliable in paired extraction
-            # replays. Keep the SDK's JSON instructions and outer validator;
-            # omit only the wire-level mode, not the extraction contract.
-            if go_flash and "json_mode" not in overrides and kwargs.get("response_format") == {"type": "json_object"}:
-                kwargs.pop("response_format")
-        elif deepseek_memory and (capabilities.thinking == "deepseek" or "thinking" not in overrides):
-            # Preserve the existing memory-only provider-host default for legacy
-            # model aliases, while allowing an explicit dialect override.
-            kwargs["extra_body"] = {
-                **(kwargs.get("extra_body") or {}), "thinking": {"type": "disabled"},
-            }
-        elif capabilities.thinking == "qwen":
+        if capabilities.thinking == "qwen":
             kwargs["extra_body"] = {
                 **(kwargs.get("extra_body") or {}), **capabilities.reasoning_parameters(False),
             }
@@ -2458,31 +2414,14 @@ def _default_factory(config: Mapping[str, object]) -> Mem0Backend:
         raise ImportError("Mem0 Memory.from_config is unavailable")
     llm_config = config.get("llm")
     provider_config = llm_config.get("config") if isinstance(llm_config, Mapping) else None
-    keyless = (
-        isinstance(provider_config, Mapping)
-        and provider_config.get("api_key") == ""
-        and urlsplit(str(provider_config.get("openai_base_url", ""))).hostname
-        not in {None, "api.deepseek.com", "opencode.ai", "api.openai.com"}
-    )
     factory_config = dict(config)
     provider_options = factory_config.pop("_olivia_provider_options", {})
-    if keyless:
-        # Mem0 treats an empty key as an ambient credential; prevent that fallback.
-        factory_config["llm"] = {**llm_config, "config": {**provider_config, "api_key": "olivia-no-auth"}}
+    if isinstance(provider_config, Mapping) and provider_config.get("api_key") == "":
+        # Mem0 treats an empty key as "use OPENAI_API_KEY"; never send an ambient
+        # credential to the Olivia relay. The relay rejects this placeholder.
+        factory_config["llm"] = {**llm_config, "config": {**provider_config, "api_key": "olivia-no-key"}}
     backend = _initialization_step('BACKEND', memory_type.from_config, factory_config)
     provider = getattr(backend, "llm", None)
-    if keyless and provider is not None:
-        import httpx
-        from openai import OpenAI
-        def omit_auth(request):
-            request.headers.pop("Authorization", None)
-        previous_client = provider.client
-        provider.client = OpenAI(
-            api_key="olivia-no-auth",
-            base_url=str(provider_config["openai_base_url"]),
-            http_client=httpx.Client(event_hooks={"request": [omit_auth]}),
-        )
-        previous_client.close()
     if callable(getattr(provider, "generate_response", None)):
         llm_config = config.get("llm")
         provider_config = llm_config.get("config") if isinstance(llm_config, Mapping) else None

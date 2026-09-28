@@ -2,7 +2,6 @@
 from dataclasses import dataclass
 import re
 from typing import Mapping
-from urllib.parse import urlsplit
 
 
 @dataclass(frozen=True)
@@ -20,9 +19,7 @@ class ModelCapabilities:
         return self.thinking == "qwen" or (self.thinking != "none" and self.reasoning_effort is not None)
 
     def reasoning_parameters(self, enabled: bool) -> dict[str, object]:
-        if self.thinking == "deepseek":
-            result = {"thinking": {"type": "enabled" if enabled else "disabled"}}
-        elif self.thinking == "qwen":
+        if self.thinking == "qwen":
             result = {"enable_thinking": enabled}
         else:
             return {}
@@ -35,11 +32,7 @@ def model_capabilities(base_url: str, model: str, options: Mapping | None = None
     if options is not None and not isinstance(options, Mapping):
         raise ValueError("invalid provider options")
     name = model.casefold()
-    host = urlsplit(base_url).hostname
-    if name.startswith("deepseek-v4-") or name == "deepseek-flash":
-        effort = "max" if name == "deepseek-flash" or name.startswith("deepseek-v4-flash") else None
-        defaults = ModelCapabilities("deepseek", effort, stream_usage=host == "api.deepseek.com", tool_choice=False)
-    elif re.fullmatch(r"qwen3\.8-(?:flash|max)(?:-.*)?", name):
+    if re.fullmatch(r"qwen3\.8-(?:flash|max)(?:-.*)?", name):
         defaults = ModelCapabilities("qwen", "high", stream_usage=True)
     elif re.fullmatch(r"qwen3\.[567]-(?:flash|plus|max)(?:-.*)?", name) or name in {"qwen-flash", "qwen-plus"}:
         defaults = ModelCapabilities("qwen", stream_usage=True)
@@ -49,7 +42,7 @@ def model_capabilities(base_url: str, model: str, options: Mapping | None = None
     if not isinstance(overrides, Mapping) or set(overrides) - set(defaults.__dataclass_fields__):
         raise ValueError("invalid provider capabilities")
     values = {**defaults.__dict__, **overrides}
-    if not isinstance(values['thinking'], str) or values['thinking'] not in {'none', 'deepseek', 'qwen'}:
+    if not isinstance(values['thinking'], str) or values['thinking'] not in {'none', 'qwen'}:
         raise ValueError("invalid provider thinking capabilities")
     if values['reasoning_effort'] is not None and (
         not isinstance(values['reasoning_effort'], str) or values['reasoning_effort'] not in {'low', 'medium', 'high', 'max'}

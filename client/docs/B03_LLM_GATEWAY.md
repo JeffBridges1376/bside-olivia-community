@@ -42,7 +42,7 @@ rtk python tools/healthcheck.py --profile llm
 | `api_key_env` / `requires_api_key` | 只保存环境变量名，不保存密钥 |
 | `api_style` | `chat_completions` 或 `responses` |
 | `timeout_seconds` / `max_retries` / `retry_backoff_seconds` | 单次请求超时、429/5xx/网络失败重试预算 |
-| `reasoning_timeout_seconds` | 文本信件使用 `deepseek-v4-flash` max thinking 时的单阶段超时；默认 600 秒，范围 0.05-1800 秒 |
+| `reasoning_timeout_seconds` | 文本信件开启思考时的单阶段超时；默认 600 秒，范围 0.05-1800 秒 |
 | `stream` | 内部事件编排是否消费 provider 流；HTTP `/toy` 仍是非 SSE 响应 |
 | `max_input_chars` / `max_output_chars` | 输入消息总长度和输出长度上限；模板的输入默认值为 30,000，与 `GatewayConfig` 和 `ReplyRequest` 的公共默认一致 |
 | `fallback_provider` | 显式降级登记；默认 `none`，不会无提示生成占位回信 |
@@ -50,7 +50,7 @@ rtk python tools/healthcheck.py --profile llm
 | persona_file / feature_enabled | 可选 legacy DRAFT 文件和总开关；默认配置不再引用该文件 |
 | persona_config / persona_evidence_file | 候选结构化配置与短 provenance/evidence 索引；候选包默认独立关闭，不会替换 DRAFT |
 
-仅 `text_letter` 的生成、五层 review、条件 adjudication、一次 rewrite 与 recheck 使用可信的进程内 scope，向 OpenAI-compatible Chat Completions（OpenCode Go 或 DeepSeek 官方同形端点）发送 `thinking={"type":"enabled"}` 与 `reasoning_effort="max"`。scope 不写入 `Idempotency-Key` 或 `X-Request-ID`；视频、音乐、Live、历史导入和 tool call 保持原 payload 与 `timeout_seconds`。Provider 返回的 `reasoning_content` 只在传输层丢弃，不进入回复、日志或记忆。
+仅 `text_letter` 的生成、五层 review、条件 adjudication、一次 rewrite 与 recheck 使用可信的进程内 scope，向 Olivia 回信服务的 Chat Completions 发送 Qwen 的 `enable_thinking=true`（模型支持推理强度时同时发送对应档位）。scope 不写入 `Idempotency-Key` 或 `X-Request-ID`；视频、音乐、Live、历史导入和 tool call 保持原 payload 与 `timeout_seconds`。Provider 返回的 `reasoning_content` 只在传输层丢弃，不进入回复、日志或记忆。
 
 Persona 2.0 的宪法层、公开设定与稳定写作规则始终装配；具体 `anchor.*` 人物事实只在当前信件明确询问林离本人，或当前信件没有明确主题但最近上下文正在追问林离时渐进披露。当前信件优先，每次最多装配 4 条锚点，不使用宽泛词面兜底，避免把用户自己的经历误判为林离设定并稀释模型注意力。
 
@@ -81,10 +81,9 @@ calls = await gateway.complete_with_tools(
   `stream=false` 发起一次请求；它不会回退到自由文本。
 - `api_style="chat_completions"` 发送 OpenAI Chat Completions 的
   `tools`/`tool_choice` 形状，并读取
-  `choices[0].message.tool_calls[*].function`。唯一兼容例外是
-  `openai_compatible` 的 `deepseek-v4-flash`：其默认 thinking 模式不接受
-  `tool_choice`，因此该请求省略该字段，但仍只发送一次带唯一 function schema 的
-  请求，并在本地严格要求恰好一个有效调用；不会回退为文本或接受任意调用。
+  `choices[0].message.tool_calls[*].function`。能力配置关闭 `tool_choice` 时
+  省略该字段，但仍只发送一次带唯一 function schema 的请求，并在本地严格要求
+  恰好一个有效调用；不会回退为文本或接受任意调用。
 - `api_style="responses"` 将同一输入函数 schema 转为 Responses 的
   `type/name/description/parameters` 形状，并读取
   `output[*]` 中 `type="function_call"` 的 `name` 和 `arguments`。

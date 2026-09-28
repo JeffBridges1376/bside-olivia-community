@@ -384,36 +384,10 @@ def _write_verified_embedding_cache(config: Mem0Config) -> None:
     )
 
 
-@pytest.mark.parametrize("base_url,model,expected", [
-    ("https://opencode.ai/zen/go/v1", "deepseek-v4-flash", 32768),
-    ("https://opencode.ai/zen/go/v1/", "deepseek-v4-flash", 32768),
-    ("https://opencode.ai/zen/go/v1", "other-model", None),
-    ("https://opencode.ai/zen/v1", "deepseek-v4-flash", None),
-    ("https://api.deepseek.com", "deepseek-v4-flash", 32768),
-    ("https://api.deepseek.com/", "deepseek-v4-flash", 32768),
-    ("https://api.deepseek.com/v1", "deepseek-v4-flash", 32768),
-    ("https://api.deepseek.com/v1/", "deepseek-v4-flash", 32768),
-    ("https://api.deepseek.com/v1", "deepseek-chat", None),
-    ("https://api.deepseek.com/v1", "deepseek-reasoner", None),
-    ("https://api.deepseek.com/v1", "deepseek-v4-pro", None),
-    ("http://api.deepseek.com/v1", "deepseek-v4-flash", None),
-    ("https://api.deepseek.com/other", "deepseek-v4-flash", None),
-    ("https://api.deepseek.com.evil.invalid/v1", "deepseek-v4-flash", None),
-    ("https://opencode.ai.evil.invalid/zen/go/v1", "deepseek-v4-flash", None),
-    ("http://opencode.ai/zen/go/v1", "deepseek-v4-flash", None),
-])
-def test_flash_extraction_has_bounded_reasoning_budget(tmp_path, base_url, model, expected):
-    config = replace(_config(tmp_path), llm_base_url=base_url, llm_model=model)
-    mapping = config.provider_config({})
-    assert mapping["llm"]["config"].get("max_tokens") == expected
-    assert config.write_timeout_seconds == 30
-    assert config.search_timeout_seconds == 8
-
-
 def test_version_and_config_match_current_mem0_oss_contract(tmp_path: Path) -> None:
     assert MEM0_OSS_VERSION == "2.0.18"
     config = _config(tmp_path)
-    mapping = config.provider_config({"DEEPSEEK_API_KEY": "fixture-secret"})
+    mapping = config.provider_config({"OLIVIA_LLM_API_KEY": "fixture-secret"})
     assert replace(config, user_id="u" * 128).user_id == "u" * 128
     with pytest.raises(ValueError, match="user_id is invalid"):
         replace(config, user_id="u" * 129)

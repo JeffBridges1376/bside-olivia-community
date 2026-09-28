@@ -703,49 +703,7 @@ def test_reply_pipeline_total_timeout_covers_all_quality_stages(monkeypatch):
     assert local_server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value) == 235.0 + RECALL_CHECK_TIMEOUT_SECONDS
 
 
-def test_deepseek_flash_reply_pipeline_timeout_covers_reasoning_and_adjudication(
-    monkeypatch,
-):
-    config = GatewayConfig(
-        provider="openai_compatible",
-        api_style="chat_completions",
-        model="deepseek-v4-flash",
-        timeout_seconds=180.0,
-        reasoning_timeout_seconds=720.0,
-    )
-    monkeypatch.setattr(local_server, "LLM_CONFIG", config)
-    monkeypatch.setattr(local_server, "LLM_TIMEOUT_SECONDS", 180.0)
-    monkeypatch.delenv("OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS", raising=False)
-
-    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value) == 5765.0 + RECALL_CHECK_TIMEOUT_SECONDS
-    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.SPOKEN_VIDEO.value) == 905.0 + RECALL_CHECK_TIMEOUT_SECONDS
-
-    monkeypatch.setenv("OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS", "20")
-    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.TEXT_LETTER.value) == 5765.0 + RECALL_CHECK_TIMEOUT_SECONDS
-    assert local_server._reply_pipeline_timeout_seconds(ReplyMode.SPOKEN_VIDEO.value) == 785.0 + RECALL_CHECK_TIMEOUT_SECONDS
-
-
-def test_explicit_deepseek_reviewer_extends_non_deepseek_outer_pipeline_budget(
-    monkeypatch,
-):
-    config = GatewayConfig(
-        provider="openai_compatible",
-        api_style="chat_completions",
-        model="vendor/not-deepseek",
-        timeout_seconds=90.0,
-        reasoning_timeout_seconds=600.0,
-    )
-    monkeypatch.setattr(local_server, "LLM_CONFIG", config)
-    monkeypatch.setattr(local_server, "LLM_TIMEOUT_SECONDS", 90.0)
-    monkeypatch.setenv("OLIVIA_REPLY_REVIEW_MODEL", "deepseek-v4-flash")
-    monkeypatch.setenv("OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS", "20")
-
-    assert local_server._reply_pipeline_timeout_seconds(
-        ReplyMode.TEXT_LETTER.value
-    ) == 4295.0 + RECALL_CHECK_TIMEOUT_SECONDS
-
-
-@pytest.mark.parametrize("model", ["deepseek-v4-flash", "qwen3.8-flash", "qwen3.8-max"])
+@pytest.mark.parametrize("model", ["qwen3.8-flash", "qwen3.8-max"])
 def test_run_reply_pipeline_scopes_letter_generation_for_bounded_reasoning(
     monkeypatch, model,
 ):
@@ -758,7 +716,7 @@ def test_run_reply_pipeline_scopes_letter_generation_for_bounded_reasoning(
 
     config = GatewayConfig(
         provider="openai_compatible",
-        base_url="https://api.deepseek.com" if model.startswith("deepseek") else "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         api_style="chat_completions",
         model=model,
         timeout_seconds=180.0,

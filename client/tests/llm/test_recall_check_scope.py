@@ -9,8 +9,6 @@ MESSAGES = ({'role': 'user', 'content': 'Return the recall check as JSON.'},)
 
 
 @pytest.mark.parametrize('base_url,model,expected', [
-    ('https://api.deepseek.com/v1', 'deepseek-v4-flash',
-     {'thinking': {'type': 'enabled'}, 'reasoning_effort': 'low', 'max_tokens': 24000}),
     ('https://dashscope.aliyuncs.com/compatible-mode/v1', 'qwen3.8-flash',
      {'enable_thinking': True, 'reasoning_effort': 'low', 'max_completion_tokens': 24000}),
     ('https://dashscope.aliyuncs.com/compatible-mode/v1', 'qwen3.7-flash', {'enable_thinking': True}),
@@ -34,7 +32,6 @@ def test_recall_check_is_low_reasoning_json_on_normal_endpoint(monkeypatch, base
 
     assert result.text == '{"complete":true}'
     assert len(seen) == 1
-    assert not adapter._uses_official_review_responses(GatewayRequestScope.RECALL_CHECK)
 
 
 def test_recall_check_respects_disabled_provider_capabilities():

@@ -95,7 +95,7 @@ def test_real_adapter_empty_stop_reaches_reviewer_feedback(monkeypatch, second_e
     from llm_gateway import GatewayConfig, OpenAICompatibleAdapter
     from runtime.reply.reply_context import ReplyContext, ReplyMode, TrustedTime
     adapter = OpenAICompatibleAdapter(GatewayConfig(provider="openai_compatible",
-        base_url="https://go.example.test/v1", model="deepseek-v4-flash"))
+        base_url="https://175.24.191.6/v1", model="qwen3.7-flash"))
     bodies = []
 
     async def post(body, request_id, **kwargs):
@@ -122,8 +122,7 @@ def test_real_adapter_empty_stop_reaches_reviewer_feedback(monkeypatch, second_e
     assert len(focus) == 2
     assert focus[1]["messages"][0]["content"] == focus[0]["messages"][0]["content"] + FEEDBACK
     assert focus[1]["messages"][1:] == focus[0]["messages"][1:]
-    assert all(body["thinking"] == {"type": "enabled"} and body["reasoning_effort"] == "max"
-               for _, body in bodies)
+    assert all(body["enable_thinking"] is True for _, body in bodies)
     assert all(body.get('response_format') == ({'type': 'json_object'} if layer == 'autonomy_life' else None)
                for layer, body in bodies)
     assert "PRIVATE_SYNTHETIC_REASONING" not in json.dumps(bodies)

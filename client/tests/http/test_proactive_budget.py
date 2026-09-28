@@ -9,7 +9,6 @@ import pytest
 @pytest.mark.parametrize('base_url,model,expected', [
     ('https://dashscope.aliyuncs.com/compatible-mode/v1', 'qwen3.8-max', {'enable_thinking': False}),
     ('https://dashscope.aliyuncs.com/compatible-mode/v1', 'qwen3.8-flash', {'enable_thinking': False}),
-    ('https://api.deepseek.com', 'deepseek-v4-flash', {'thinking': {'type': 'disabled'}}),
     ('https://example.invalid/v1', 'custom', {}),
 ])
 def test_planning_keeps_model_without_forcing_reasoning(base_url, model, expected):
