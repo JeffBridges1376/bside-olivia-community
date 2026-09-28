@@ -178,3 +178,15 @@ def test_actual_letter_wrapper_carries_id_without_initializing_user_server(confi
     assert asyncio.run(namespace['generate_reply']('synthetic-letter','hello',idempotency_key='retry-id'))
     assert seen[0][0]['X-Olivia-Turn-Id'] == 'letter:synthetic-letter'
     assert seen[0][1] == 'retry-id'
+
+
+def test_account_key_missing_only_when_billing_needs_a_key(monkeypatch):
+    monkeypatch.setenv('OLIVIA_JEV_BILLING_ENABLED', '0')
+    monkeypatch.setattr(billing, '_account_key', lambda: None)
+    assert billing.account_key_missing() is False
+    monkeypatch.setenv('OLIVIA_JEV_BILLING_ENABLED', '1')
+    for getter in (lambda: None, lambda: 'sk-other', lambda: 'olivia-', lambda: 1 / 0):
+        monkeypatch.setattr(billing, '_account_key', getter)
+        assert billing.account_key_missing() is True
+    monkeypatch.setattr(billing, '_account_key', lambda: 'olivia-synthetic-account')
+    assert billing.account_key_missing() is False

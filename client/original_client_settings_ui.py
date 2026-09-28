@@ -14,6 +14,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   window.__oliviaExplainRelayFailure = payload => {
     const data = payload?.data || payload;
     const messages = {
+      OLIVIA_KEY_REQUIRED: "还没有连接 Olivia 账户 Key，请先在设置的“回信服务 → Olivia 账户”获取或导入 Key，再寄信。",
       LLM_QUOTA_EXHAUSTED: "大模型服务余额或额度不足，请检查中转账户；重复寄信不会恢复额度。",
       LLM_AUTH_FAILED: "大模型服务认证失败，请检查当前账户或 Key 是否有效。",
       LLM_USAGE_PENDING: "这次模型请求中断，用量正在等待核对。请保留诊断包，暂勿反复寄信。",
@@ -3384,7 +3385,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         }).catch(() => {});
         error.message = clientCode;
       }
-      const messages = {LLM_QUOTA_EXHAUSTED:"大模型服务余额或额度不足，请检查账户额度后重试。",
+      const messages = {OLIVIA_KEY_REQUIRED:"还没有连接 Olivia 账户 Key，请先在设置的“回信服务 → Olivia 账户”获取或导入 Key，再寄信。",
+        LLM_QUOTA_EXHAUSTED:"大模型服务余额或额度不足，请检查账户额度后重试。",
         REPLY_ROUTE_CLIENT_TIMEOUT:"回信形式检测超时，请稍后重试。",
         REPLY_ROUTE_CLIENT_CONNECTION:"无法连接回信形式检测服务，请检查本地服务是否运行。",
         REPLY_ROUTE_CLIENT_RESPONSE_INVALID:"本地回信形式检测接口返回格式异常，请导出诊断包。",
