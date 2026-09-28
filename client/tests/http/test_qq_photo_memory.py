@@ -174,7 +174,8 @@ def test_delivered_photo_scene_does_not_move_world_current_location(tmp_path):
         await vision.commit_image_memory(server, row)
         state = world.snapshot(datetime.now(timezone.utc))
         assert state['current']['location'] == '家中厨房'
-        context = json.loads(world.reply_context('照片在哪里', now=datetime.now(timezone.utc)))
+        # Meals and schedule vary by time of day; give the image a stable budget.
+        context = json.loads(world.reply_context('照片在哪里', now=datetime.now(timezone.utc), max_chars=6000))
         assert context['image_observations'][0]['scene_location'] == 'record_shop'
         assert '不证明林离此刻仍在该处' in context['image_observations'][0]['meaning']
     asyncio.run(scenario())
