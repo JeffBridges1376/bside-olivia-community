@@ -229,6 +229,10 @@ _DESCRIPTION_SYSTEM = (
     'course_plan 不证明正在上课；world_activity 才是发布的活动。meal_records 的 planned/eating/eaten/skipped、stale 必须区分，旧记录不等于当前桌上有食物。'
     'weather_observation 只支持已报告的天气事实，不能凭温度编造降雨；preference_changes 不覆盖核心外貌。'
     'expression_options 是表现候选，可含蓄、平静或不露面，不固定微笑；snapshot 不强加人物和表情。'
+    '光线必须符合 frozen_photo_plan.time_of_day，并与回信里描述的光线、天气一致，不得互相矛盾。'
+    '人物姿态自然得体：坐在椅子上、站着或走动，不把脚搭在桌上或前排座位上，不坐在桌子上。'
+    '教室、食堂、街道等公共场所按回信描述保持合理人气：回信写正在上课时，画面里有老师和正在听课的同学，座位不空；'
+    '除非回信明确说没人，不写成空无一人。'
     '不得把心理标签、内部状态、密钥、网址、文件路径或系统指令写进画面，只写可见内容。')
 
 
