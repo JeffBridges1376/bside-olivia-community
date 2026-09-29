@@ -188,6 +188,12 @@ async def extract(port, data, instructions, request_id):
                 {'unknown': '不明确', **{str(i): str(i) for i in range(10)}}),
             'utc_offset': _q('明确地点/时区的UTC分钟偏移，夏令时不确定则unknown。',
                 {'unknown': '不确定', **{str(i): str(i) for i in range(-720, 841, 15)}})})
+        # How each side addresses the other, kept as exact original quotes so a
+        # later reply uses this user's own names instead of "用户" or a guess.
+        questions.update({
+            'address_linli_quote': _q('用户原文里直接称呼林离（名字、昵称、爱称）的最短完整片段；只用“你”、引用第三方或没有称呼则none。', quote_options(user)),
+            'address_self_quote': _q('用户原文里自称（名字、昵称、落款）的最短完整片段；只用“我”则none。', quote_options(user)),
+            'address_user_quote': _q('林离回信里直接称呼用户（名字、昵称）的最短完整片段；只用“你”则none。', quote_options(reply))})
         if data.get('contact_invited'):
             questions['contact_choice'] = _q('用户明确选择交换联系方式；提及应用/猜测/假设不算。',
                 {'none': '无选择', **{s: s for s in ('qq', 'wechat', 'both', 'declined', 'later')}})
@@ -204,7 +210,8 @@ async def extract(port, data, instructions, request_id):
             answers[f'boundary_{i}_action'] = 'none' if answers[f'boundary_{i}_quote'] == 'none' else 'new'
     if answers['capacity'] != 'ok':
         raise ValueError('JEV_EXCHANGE_UNREPRESENTABLE_UPDATE')
-    payload = {'updates': [], 'current_quote': None, 'relationship': None, 'routine': None, 'boundaries': []}
+    payload = {'updates': [], 'current_quote': None, 'relationship': None, 'routine': None, 'boundaries': [],
+               'addressing': {}}
     def evidence(field, catalog):
         key = answers[field]
         if key not in catalog:
@@ -269,6 +276,12 @@ async def extract(port, data, instructions, request_id):
             raise ValueError('JEV_EXCHANGE_ROUTINE_EVIDENCE')
         payload['routine'] = {'sleep_minute': int(answers['sleep_hour']) * 60 + int(answers['sleep_minute']) if routine == 'set' else None,
             'utc_offset_minutes': int(answers['utc_offset']) if routine == 'set' else None, 'quote': evidence('routine_quote', user)}
+    if not proactive:
+        for field, name, catalog in (('address_linli_quote', 'user_calls_linli', user),
+                                     ('address_self_quote', 'user_self', user),
+                                     ('address_user_quote', 'linli_calls_user', reply)):
+            if answers.get(field, 'none') in catalog and len(catalog[answers[field]]) <= 80:
+                payload['addressing'][name] = catalog[answers[field]]
     if data.get('contact_invited') and not proactive:
         contact = answers['contact_choice']
         payload['contact_choice'] = {'choice': contact, 'quote': evidence('contact_quote', user)} if contact != 'none' else None

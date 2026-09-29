@@ -698,6 +698,8 @@ class DailyLifeRuntime:
                     try:
                         committed = self.store.record_exchange(source_id, user_text, reply_text, payload["updates"], occurred_at=occurred_at,
                                                           current_quote=payload.get("current_quote"), relationship=payload.get("relationship"), received_at=received_at, routine=payload.get("routine"), boundaries=boundary_changes, origin=origin, contact_choice=payload.get("contact_choice"), development=candidates)
+                        if payload.get("addressing"):
+                            self.store.record_addressing(source_id, payload["addressing"], occurred_at=occurred_at)
                         await self._consider_exchange_world(source_id, user_text, reply_text, occurred_at)
                         return committed
                     except ValueError as exc:

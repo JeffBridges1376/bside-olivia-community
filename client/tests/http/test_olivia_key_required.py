@@ -114,3 +114,27 @@ def test_letter_failed_for_low_balance_says_so(monkeypatch):
     monkeypatch.setattr(local_server, 'generate_reply', generate)
     asyncio.run(local_server._run_reply_job('low-balance', 'synthetic', idempotency_key=None))
     assert letter['error_code'] == 'LLM_QUOTA_EXHAUSTED'
+
+
+def test_reply_world_fragments_carry_the_addressing_profile(monkeypatch, tmp_path):
+    """Replies must call this user by their own names, not "用户" or a guess."""
+    import json
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from runtime.private_world.daily_life import DailyLifeStore
+    now = datetime(2026, 9, 29, 7, tzinfo=timezone.utc)
+    store = DailyLifeStore(tmp_path / 'life.sqlite3')
+    store.record_addressing('reply:a:1', {'user_calls_linli': '小离，', 'user_self': '你的老姜。'}, occurred_at=now)
+
+    class Port:
+        async def ask(self, state, questions, *, purpose):
+            return {key: 'skip' for key in questions}
+
+    monkeypatch.setattr('runtime.reply.jev_questions.configured_questions', lambda: Port())
+    monkeypatch.setattr(local_server.letters_adapter, 'daily_life', SimpleNamespace(store=store))
+    monkeypatch.setattr(local_server.letters_adapter, 'recent_letter_fragments', lambda *a, **k: ())
+    fragments = asyncio.run(local_server.letters_adapter.prepare_daily_life_fragments('你还记得吗', now=now))
+    addressing = next(f for f in fragments if f.fragment_id == 'linli.addressing')
+    value = json.loads(addressing.text)
+    assert [q['quote'] for q in value['quotes']['user_calls_linli']] == ['小离，']
+    assert '不要称对方为“用户”' in value['meaning']

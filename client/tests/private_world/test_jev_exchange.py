@@ -357,7 +357,29 @@ def test_realistic_letter_with_existing_projects_fits_one_packet():
     state, questions, purpose = port.calls[0]
     size = len(json.dumps(dict(state=state, questions=questions, purpose=purpose), ensure_ascii=False, separators=(',', ':')).encode())
     assert size < 32768
-    assert len(questions) == 52
+    assert len(questions) == 55  # includes three addressing quotes
     assert state['sources'] == {key: data[key] for key in ('user_letter', 'linli_reply')}
     assert _EXCHANGE_LIFE_PROMPT not in str(state)
     assert all(value == key for key, value in questions['update_0_quote']['criteria'].items() if key != 'none')
+
+
+def test_exchange_keeps_how_each_side_addresses_the_other_as_original_quotes():
+    """Addressing comes from what was actually written, never a model-made name."""
+    from runtime.private_world.jev_exchange import extract
+    data = {'user_letter': '吃完了，小离，你也早点午睡。落款，你的老姜。', 'linli_reply': '好呀老姜，我这就去睡。',
+            'previous_state': {'projects': [], 'shared': []}, 'active_boundaries': [], 'origin': 'user'}
+    def choose(key, q, state):
+        picks = {'address_linli_quote': '小离，', 'address_self_quote': '你的老姜。', 'address_user_quote': '好呀老姜，'}
+        if key in picks:
+            quotes = {k: v for k, v in state['quotes'].items()}
+            text = {**{k: data['user_letter'][s:e] for k, (s, e) in quotes.items() if k.startswith('u')},
+                    **{k: data['linli_reply'][s:e] for k, (s, e) in quotes.items() if k.startswith('r')}}
+            return next(k for k, v in text.items() if v == picks[key])
+        return first(key, q, state)
+    result = asyncio.run(extract(Port(choose), data, '', 'life:addr'))
+    assert result['addressing'] == {'user_calls_linli': '小离，', 'user_self': '你的老姜。', 'linli_calls_user': '好呀老姜，'}
+
+    proactive = {**data, 'origin': 'proactive'}
+    port = Port(first)
+    assert asyncio.run(extract(port, proactive, '', 'life:p'))['addressing'] == {}
+    assert not any(key.startswith('address_') for key in port.calls[0][1])

@@ -711,3 +711,19 @@ def test_exchange_over_budget_is_explicit_and_never_commits_partial_state(tmp_pa
         asyncio.run(runtime.consume_exchange("reply:new:1", user_text, "好。", occurred_at=NOW))
     assert not store.has_source("reply:new:1")
     assert store.exchange_state() == before
+
+
+def test_addressing_profile_keeps_latest_exact_quotes_per_side(tmp_path):
+    from datetime import datetime, timedelta, timezone
+    from runtime.private_world.daily_life import DailyLifeStore
+    store = DailyLifeStore(tmp_path / "life.sqlite3")
+    now = datetime(2026, 9, 29, 7, tzinfo=timezone.utc)
+    store.record_addressing("reply:a:1", {"user_calls_linli": "小离，", "user_self": "你的老姜。"}, occurred_at=now - timedelta(days=2))
+    store.record_addressing("reply:b:1", {"user_calls_linli": "离离，", "linli_calls_user": "好呀老姜，"}, occurred_at=now - timedelta(days=1))
+    store.record_addressing("reply:b:1", {"user_calls_linli": "离离，"}, occurred_at=now - timedelta(days=1))  # idempotent
+    store.record_addressing("reply:c:1", {"user_calls_linli": "小离，", "bogus_kind": "x", "user_self": "长" * 81}, occurred_at=now)
+    profile = store.addressing_profile(now=now)
+    assert [item["quote"] for item in profile["user_calls_linli"]] == ["小离，", "离离，"]  # latest first, distinct
+    assert [item["quote"] for item in profile["user_self"]] == ["你的老姜。"]
+    assert [item["quote"] for item in profile["linli_calls_user"]] == ["好呀老姜，"]
+    assert store.addressing_profile(now=now - timedelta(days=3)) == {}
