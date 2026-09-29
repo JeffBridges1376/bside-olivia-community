@@ -21,8 +21,9 @@ BSide Olivia Community 是面向 Windows 的非官方陪伴复刻项目。它复
 
 | 版本 | 状态 | 说明 |
 | --- | --- | --- |
-| [2.0.5](https://github.com/Ornn8/bside-olivia-community/releases/tag/v2.0.5) | 当前发布版 | 林离的日常不再在后台反复更新“休息”等没有变化的活动，大幅减少不聊天时的扣费。[更新说明](client/docs/releases/v2.0.5.md) |
-| [2.0.4](https://github.com/Ornn8/bside-olivia-community/releases/tag/v2.0.4) | 上一版 | 修复导入的官方旧信被当作 1970 年的信，林离回忆时说“太久远了记不清”。[更新说明](client/docs/releases/v2.0.4.md) |
+| [2.0.6](https://github.com/Ornn8/bside-olivia-community/releases/tag/v2.0.6) | 当前发布版 | 林离的坏心情不再一直延续，回信不再迁怒或攻击你；修复 Key 带空格时 QQ 和回信报“账户不可用”。[更新说明](client/docs/releases/v2.0.6.md) |
+| [2.0.5](https://github.com/Ornn8/bside-olivia-community/releases/tag/v2.0.5) | 上一版 | 林离的日常不再在后台反复更新“休息”等没有变化的活动，大幅减少不聊天时的扣费。[更新说明](client/docs/releases/v2.0.5.md) |
+| [2.0.4](https://github.com/Ornn8/bside-olivia-community/releases/tag/v2.0.4) | 旧版 | 修复导入的官方旧信被当作 1970 年的信，林离回忆时说“太久远了记不清”。[更新说明](client/docs/releases/v2.0.4.md) |
 | [2.0.3](https://github.com/Ornn8/bside-olivia-community/releases/tag/v2.0.3) | 旧版 | 修复回忆失效导致林离编造往事，记住双方称呼；质量检查先检查后确认，回信成本更低。[更新说明](client/docs/releases/v2.0.3.md) |
 | [2.0.2](https://github.com/Ornn8/bside-olivia-community/releases/tag/v2.0.2) | 旧版 | 修复长回信和长期使用后寄信失败、历史回忆失效、重复原文，余额不足明确提示，缩到托盘后可重新打开。[更新说明](client/docs/releases/v2.0.2.md) |
 | [2.0.1](https://github.com/Ornn8/bside-olivia-community/releases/tag/v2.0.1) | 旧版 | 修复 1.x 升级用户寄信失败、“给我看看”被误判为视频、随信照片光线与场景不符，账单写明每次最低 ¥0.01。[更新说明](client/docs/releases/v2.0.1.md) |

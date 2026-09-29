@@ -74,7 +74,7 @@ def test_bundled_affect_reason_references_only_visible_same_packet_evidence(tmp_
                 target = target[part]
         if isinstance(value, dict) and 'batch_source' in value:
             assert value['batch_source'] in state['sources']
-    assert set(questions['affect_reason']['criteria']) == {'unknown','body','continuity','batch_source_0'}
+    assert set(questions['affect_reason']['criteria']) == {'unknown','body','batch_source_0'}
 
 
 def test_large_batch_sends_one_full_evidence_prefix_and_keeps_rest_pending(tmp_path, monkeypatch):

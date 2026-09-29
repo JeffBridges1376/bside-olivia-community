@@ -105,7 +105,7 @@ def mount_relay_api(app, setup):
                     pending_path.unlink(missing_ok=True)
                     return web.json_response({'registered':True, 'key_prefix':key[:15]}, headers=_headers(origin))
                 elif operation == 'import_key':
-                    key = data['key']
+                    key = data['key'].strip() if isinstance(data['key'], str) else data['key']
                     if not isinstance(key, str) or not key.startswith('olivia-') or len(key) > 128:
                         raise LLMSetupError('LLM_SETUP_FIELDS_INVALID', status=400)
                 if not key:

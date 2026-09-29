@@ -20,12 +20,22 @@ class BillingTurn:
 
 
 CURRENT = ContextVar('jev_billing_turn', default=None)
+# Published CNY 0.01 minimum per charged judgment (1 yuan = 100,000,000 units).
+# This header tells the relay the client verifies it; older clients are billed
+# exact usage because they reject any other amount.
+MINIMUM_CHARGE_UNITS = 1_000_000
+MINIMUM_HEADER = {'X-Olivia-Billing-Minimum': '1'}
 _account_key = None
 
 
 def configure_account(get_key):
     global _account_key
-    _account_key = get_key
+    def stripped():
+        # A key pasted with a trailing space or newline still works on the relay;
+        # it must not make every reply fail here with ACCOUNT_UNAVAILABLE.
+        key = get_key()
+        return key.strip() if isinstance(key, str) else key
+    _account_key = stripped
 
 
 def account_key_missing():
@@ -66,7 +76,7 @@ def billing_headers():
     if turn is None:
         return {}
     return {'X-Olivia-Account-Digest': hashlib.sha256(turn.key.encode()).hexdigest(),
-            'X-Olivia-Turn-Id': turn.turn_id}
+            'X-Olivia-Turn-Id': turn.turn_id, **MINIMUM_HEADER}
 
 
 def cloud_request_headers(body_digest):
@@ -80,7 +90,8 @@ def cloud_request_headers(body_digest):
         raise ValueError('JEV_BILLING_ACCOUNT_UNAVAILABLE')
     return {'Authorization': 'Bearer ' + key,
             'X-Olivia-Account-Digest': hashlib.sha256(key.encode()).hexdigest(),
-            'X-Olivia-Turn-Id': turn.turn_id if turn is not None else 'jev:' + body_digest}
+            'X-Olivia-Turn-Id': turn.turn_id if turn is not None else 'jev:' + body_digest,
+            **MINIMUM_HEADER}
 
 
 def _post_settlement(key, signed):
@@ -89,7 +100,7 @@ def _post_settlement(key, signed):
     from .companion_decision import _NoRedirect
     body = json.dumps(signed, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode()
     request = urllib.request.Request(RELAY_BASE + '/jev/settle', data=body, method='POST',
-        headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
+        headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json', **MINIMUM_HEADER})
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect(),
                                         urllib.request.HTTPSHandler(context=gpu_tls_context()))
     with opener.open(request, timeout=20) as response:
@@ -119,27 +130,34 @@ def settle_receipt_sync(billing, expected_body_digest):
     # not establish trust; its authenticated verification and transaction do.
     try:
         result = _post_settlement(turn.key, billing)
-        amount = receipt['input_tokens'] * 150
-        if (not isinstance(result, dict) or result.get('status') != 'settled'
-                or result.get('turn_id') != turn.turn_id
-                or result.get('operation_id') != receipt['operation_id']
-                or result.get('price_version') != PRICE_VERSION
-                or type(result.get('input_tokens')) is not int or result['input_tokens'] != receipt['input_tokens']
-                or type(result.get('charged_units')) is not int or result['charged_units'] != amount
-                or type(result.get('replayed')) is not bool
-                or type(result.get('debited_units')) is not int
-                or result['debited_units'] != (0 if result['replayed'] else amount)):
-            raise ValueError('JEV_BILLING_RESPONSE_INVALID')
-        return result
     except urllib.error.HTTPError as exc:
         status = exc.code
         exc.close()
         code = ('JEV_BILLING_HTTP_' + str(status) if status in (401, 402, 403, 409, 429, 502, 503, 504)
                 else 'JEV_BILLING_UNAVAILABLE')
         raise ValueError(code) from None
+    except ValueError as exc:
+        if str(exc) == 'JEV_BILLING_RESPONSE_INVALID':
+            raise
+        raise ValueError('JEV_BILLING_UNAVAILABLE') from None
     except Exception:
         # Do not expose provider bodies, tokens or signed receipt contents.
         raise ValueError('JEV_BILLING_UNAVAILABLE') from None
+    amount = receipt['input_tokens'] * 150
+    # Exact usage, or the published minimum when usage is below it. A charge
+    # that is neither is a real mismatch, reported as such (not "unavailable").
+    allowed = {amount} | ({MINIMUM_CHARGE_UNITS} if 0 < amount < MINIMUM_CHARGE_UNITS else set())
+    if (not isinstance(result, dict) or result.get('status') != 'settled'
+            or result.get('turn_id') != turn.turn_id
+            or result.get('operation_id') != receipt['operation_id']
+            or result.get('price_version') != PRICE_VERSION
+            or type(result.get('input_tokens')) is not int or result['input_tokens'] != receipt['input_tokens']
+            or type(result.get('charged_units')) is not int or result['charged_units'] not in allowed
+            or type(result.get('replayed')) is not bool
+            or type(result.get('debited_units')) is not int
+            or result['debited_units'] != (0 if result['replayed'] else result['charged_units'])):
+        raise ValueError('JEV_BILLING_RESPONSE_INVALID')
+    return result
 
 
 async def settle_receipt(billing, expected_body_digest):

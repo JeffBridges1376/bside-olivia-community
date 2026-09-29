@@ -23,10 +23,11 @@ def test_preview_only_sends_current_original_and_one_small_question_batch():
     assert 'explicit_video_output_request' not in result.music_contexts
     assert len(port.calls) == 1
     state, questions, purpose = port.calls[0]
-    assert state == {'text': text}
+    assert state == {'letter': text}
     assert set(questions) == {'image', 'speech', 'song', 'video'}
     assert purpose == 'letter-media-request'
-    assert len(json.dumps([state, questions], ensure_ascii=False).encode()) < 3500
+    # Contrastive yes/no criteria per medium cost ~300 bytes more than bare labels.
+    assert len(json.dumps([state, questions], ensure_ascii=False).encode()) < 4000
 
 
 @pytest.mark.parametrize('answers,mode,video,image', [
@@ -60,7 +61,9 @@ def test_show_me_requests_count_as_images_not_video():
     assert explicitly_requested_route(result) is None
     assert result.reason_code == 'jev_image_request'
     _state, questions, _purpose = port.calls[0]
-    assert '给我看看' in questions['image']['instructions']
-    video = questions['video']['instructions']
-    assert '给我看看' in video and '只算图片' in video
-    assert '明确' in video and '视频' in video
+    image, video = questions['image']['criteria']['yes'], questions['video']['criteria']['yes']
+    assert any(example.startswith('给我看看') for example in image['examples'])
+    assert '图片' in video['not_for'] and '明确' in video['what']
+    # Criteria are contrastive definitions, not keyword lists in the question.
+    assert all(set(q['criteria']) == {'yes', 'no'} and isinstance(q['criteria']['yes'], dict)
+               for q in questions.values())
