@@ -2057,3 +2057,37 @@ def test_health_only_reports_port_conflict_using_the_public_cli_schema(
 
     assert result == {"status": "PORT_CONFLICT"}
     assert not list(Draft202012Validator(schema).iter_errors(result))
+
+
+def test_start_refreshes_an_outdated_stable_launcher(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Patch updates never replace launcher/, so its fixes must be copied in at start."""
+    import installer.proactive_login as proactive_login
+    root, data_root = tmp_path / "install", tmp_path / "install" / "data"
+    (root / "launcher").mkdir(parents=True)
+    stable = root / "launcher" / "version_launcher.py"
+    current = Path(start_local.__file__).resolve().with_name("version_launcher.py").read_bytes()
+    calls = []
+    monkeypatch.setattr(proactive_login, "_refresh_stable_launcher",
+                        lambda target: calls.append(target) or stable.write_bytes(current))
+
+    def events():
+        log = data_root / "logs" / "launcher.jsonl"
+        return [json.loads(line)["event"] for line in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
+
+    stable.write_bytes(b"# launcher from an older release\n")
+    start_local._refresh_stable_launcher(root, data_root)
+    assert calls == [root] and stable.read_bytes() == current
+    assert events() == ["stable_launcher_refreshed"]
+
+    start_local._refresh_stable_launcher(root, data_root)  # already current: no copy
+    assert calls == [root]
+
+    stable.write_bytes(b"# older again\n")
+    monkeypatch.setattr(proactive_login, "_refresh_stable_launcher",
+                        lambda target: (_ for _ in ()).throw(RuntimeError("PROACTIVE_LOGIN_LAUNCHER_REFRESH_FAILED")))
+    start_local._refresh_stable_launcher(root, data_root)
+    assert events()[-1] == "stable_launcher_refresh_failed"
+
+    bare = tmp_path / "no-launcher-dir"
+    start_local._refresh_stable_launcher(bare, bare / "data")  # layouts without launcher/ are left alone
+    assert not (bare / "launcher").exists()

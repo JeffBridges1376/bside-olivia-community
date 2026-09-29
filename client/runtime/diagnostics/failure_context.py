@@ -22,8 +22,36 @@ DETAILS |= {
 }
 
 
+import re
+
+# Internal failure codes are fixed identifiers raised by Olivia itself. Only
+# these shapes are kept, so arbitrary exception text never enters a bundle.
+_CAUSE_CODE = re.compile(r'(?:JEV|LLM|MEM0|MEMORY|PRIVATE_WORLD|DAILY_LIFE|REPLY|IMAGE|WORLD|COMPANION|QUALITY)_[A-Z0-9_]{2,60}')
+
+
+def cause_code(exc):
+    """First internal failure code along the exception chain, if any."""
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        for value in (getattr(exc, 'code', None), *getattr(exc, 'args', ())[:1]):
+            if isinstance(value, str) and _CAUSE_CODE.fullmatch(value):
+                return value
+        exc = exc.__cause__ or exc.__context__
+    return None
+
+
+def letter_failure_context(exc):
+    kind = type(exc).__name__
+    return project_failure_context({'exception_type': kind if kind in KINDS else 'OTHER',
+                                    'cause_code': cause_code(exc)})
+
+
 def project_failure_context(source):
     result = {}
+    cause = source.get('cause_code')
+    if isinstance(cause, str) and _CAUSE_CODE.fullmatch(cause):
+        result['cause_code'] = cause
     raw = source.get('provider_request_id')
     if isinstance(raw, str):
         try:

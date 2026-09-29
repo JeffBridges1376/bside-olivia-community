@@ -971,3 +971,15 @@ def test_timeout_is_explicit_and_does_not_expose_response_body(monkeypatch: pyte
     error = run(exercise())
     assert str(error) == "PROVIDER_TIMEOUT"
     assert "late" not in str(error)
+
+
+def test_relay_request_ids_carry_a_purpose_for_the_statement() -> None:
+    """Calls without a purpose id showed up in the bill as "其他后台处理"."""
+    from llm_gateway import GatewayRequestScope, _scope_label, _wire_request_id
+    assert _wire_request_id('day:20260929:1', 'background-reasoning') == 'day:20260929:1'
+    assert _wire_request_id('letter-reply:abc:1', None) == 'letter-reply:abc:1'
+    assert _wire_request_id('request-1', 'x') == 'request-1'
+    random = '4f2a9c0d1e2b3c4d5e6f708192a3b4c5'
+    assert _wire_request_id(random, _scope_label(GatewayRequestScope.BACKGROUND_REASONING)) == 'background-reasoning-' + random
+    assert _wire_request_id('deadbeef', None) == 'llm-deadbeef'  # hex-only words are not purposes
+    assert _scope_label(GatewayRequestScope.PERSONAL_CHAT_JSON) == 'personal-chat-json'

@@ -94,6 +94,99 @@ def _try_acquire_start_instance(installation: Path) -> _StartInstance | None:
     return _StartInstance(close_file_lock)
 
 
+def _running_client_processes(installation: Path) -> list[int]:
+    """Process ids of Olivia.exe copies launched from this installation's app/."""
+
+    if os.name != "nt":
+        return []
+    import ctypes
+    from ctypes import wintypes
+
+    class ProcessEntry(ctypes.Structure):
+        _fields_ = [
+            ("size", wintypes.DWORD), ("usage", wintypes.DWORD), ("process_id", wintypes.DWORD),
+            ("default_heap_id", ctypes.c_size_t), ("module_id", wintypes.DWORD),
+            ("threads", wintypes.DWORD), ("parent_process_id", wintypes.DWORD),
+            ("base_priority", ctypes.c_long), ("flags", wintypes.DWORD),
+            ("exe_file", wintypes.WCHAR * 260),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    if not snapshot or snapshot == wintypes.HANDLE(-1).value:
+        return []
+    app_root = os.path.normcase(os.path.abspath(installation / "app")) + os.sep
+    found = []
+    try:
+        entry = ProcessEntry()
+        entry.size = ctypes.sizeof(ProcessEntry)
+        more = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while more:
+            if entry.exe_file.lower() == "olivia.exe":
+                handle = kernel32.OpenProcess(0x1000, False, entry.process_id)  # QUERY_LIMITED_INFORMATION
+                if handle:
+                    try:
+                        buffer = ctypes.create_unicode_buffer(32768)
+                        size = wintypes.DWORD(len(buffer))
+                        if kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+                            if os.path.normcase(os.path.abspath(buffer.value)).startswith(app_root):
+                                found.append(int(entry.process_id))
+                    finally:
+                        kernel32.CloseHandle(handle)
+            more = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snapshot)
+    return found
+
+
+def _terminate_processes(process_ids: list[int]) -> None:
+    if os.name != "nt":
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    for process_id in process_ids:
+        handle = kernel32.OpenProcess(0x0001, False, process_id)  # PROCESS_TERMINATE
+        if handle:
+            try:
+                kernel32.TerminateProcess(handle, 0)
+            finally:
+                kernel32.CloseHandle(handle)
+
+
+def _replace_running_start(
+    installation: Path,
+    *,
+    wait_seconds: float = 20.0,
+    poll_seconds: float = 0.25,
+) -> _StartInstance | None:
+    """Stop this installation's running client, then take over its launch lease.
+
+    A client hidden in the tray, or one left behind after a failed exit, made a
+    second start do nothing. Ending that client lets its own launcher stop the
+    backend and release the lease; this start then continues normally. While
+    the first launcher is still starting (no client yet), nothing is stopped.
+    """
+
+    import time
+
+    running = _running_client_processes(installation)
+    if not running:
+        return None
+    _terminate_processes(running)
+    deadline = time.monotonic() + wait_seconds
+    while time.monotonic() < deadline:
+        instance = _try_acquire_start_instance(installation)
+        if instance is not None:
+            return instance
+        time.sleep(poll_seconds)
+    return None
+
+
 def _append_launcher_event(installation: Path, event: str) -> None:
     """Persist a path-free stable-launcher event."""
 
@@ -374,7 +467,13 @@ def _run_main(
             return 2
         if instance is None:
             _append_launcher_event(args.install_root, "launch_already_running")
-            return 0
+            try:
+                instance = _replace_running_start(args.install_root)
+            except OSError:
+                instance = None
+            if instance is None:
+                return 0
+            _append_launcher_event(args.install_root, "launch_replaced_running")
     try:
         if own_windows_tree and args.action == "start":
             try:

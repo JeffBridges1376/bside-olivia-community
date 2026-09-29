@@ -176,17 +176,24 @@ def test_recall_shared_original_references_keep_roles_and_complete_conditions():
     print(f'recall-check one packet bytes before={before} after={after}')
 
 
-def test_jev_does_not_silently_drop_thirteenth_candidate(monkeypatch):
-    port = Port()
+def test_jev_recall_offers_the_top_candidates_instead_of_failing(monkeypatch):
+    """With long histories every recall failed (JEV_HISTORY_CANDIDATE_CAPACITY), so replies never had history."""
+    port = Port({'relevance_h0': 'yes'})
     monkeypatch.setattr('runtime.reply.jev_questions.configured_questions', lambda: port)
-    groups = [[{'citation': str(i), 'speaker': 'user', 'text': f'第{i}条计划'}] for i in range(13)]
+    groups = [[{'citation': f'{i}-{j}', 'speaker': 'user', 'text': f'第{i}条计划第{j}句'} for j in range(3)]
+              for i in range(40)]
     original = [{'role': 'system', 'content': '人设' + _block(groups)}, {'role': 'user', 'content': '计划呢'}]
     captured = []
     monkeypatch.setattr('runtime.diagnostics.recall_trace.finish', lambda *args: captured.append(args[-1]))
     asyncio.run(select_history_messages(original, ForbiddenGateway(), max_input_chars=30000))
-    assert not port.calls
-    assert captured[-1]['status'] == 'unavailable'
-    assert captured[-1]['reason'] == 'JEV_HISTORY_CANDIDATE_CAPACITY'
+    assert len(port.calls) == 1
+    state, questions, _purpose = port.calls[0]
+    offered = [c['id'] for c in state['candidates']]
+    assert 0 < len(offered) <= 12
+    assert len({r for c in state['candidates'] for r in c['record_ids']}) <= 24
+    assert state['candidates'][0]['record_ids'] == ['0-0', '0-1', '0-2']  # ranking order kept
+    assert captured[-1]['status'] != 'unavailable'
+    assert captured[-1].get('reason') != 'JEV_HISTORY_CANDIDATE_CAPACITY'
 
 
 def test_history_twenty_four_sources_use_fixed_relation_slots():

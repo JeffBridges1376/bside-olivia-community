@@ -907,8 +907,9 @@ class LetterAdapter:
         identifier = source.removeprefix('reply:').rsplit(':', 1)[0]
         rows = [*store.letters, *store.personal_chats]
         current = [row for row in rows if row.get('letter_id') == identifier]
-        identities = {item.source_id for item in received_originals(current)}
-        receipts = tuple(sorted((item for item in received_originals(rows)
+        # The letter being resent in place may still read FAILED; it is this turn's input.
+        identities = {item.source_id for item in received_originals(current, include_undelivered=True)}
+        receipts = tuple(sorted((item for item in received_originals(rows, include_undelivered=True)
             if item.source_id in identities and item.occurred_at <= now
             and item.user_message in content), key=lambda item: item.occurred_at))
         return await emotion.evaluate_received(receipts, now=now)
@@ -5308,7 +5309,10 @@ async def _run_reply_job(
         )
     except Exception as exc:
         # The key can be removed after a letter was queued; say so plainly.
+        from runtime.diagnostics.failure_context import cause_code
+        cause = cause_code(exc)
         code = ("OLIVIA_KEY_REQUIRED" if str(exc) == "JEV_BILLING_ACCOUNT_UNAVAILABLE"
+                else "LLM_QUOTA_EXHAUSTED" if cause == "JEV_BALANCE_INSUFFICIENT"
                 else "LLM_UNAVAILABLE")
         letter = next(
             (item for item in store.letters if item["letter_id"] == letter_id),
@@ -5322,7 +5326,8 @@ async def _run_reply_job(
             letter["error_code"] = code
             _mark_media_not_requested(letter)
             _persist_store_state()
-        _safe_log("letter_failed", error_code=code)
+        from runtime.diagnostics.failure_context import letter_failure_context
+        _safe_log("letter_failed", error_code=code, **letter_failure_context(exc))
         return False
 
 

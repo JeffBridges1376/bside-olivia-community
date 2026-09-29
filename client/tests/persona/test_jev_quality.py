@@ -33,7 +33,14 @@ class Decisions:
             if key == 'soft': value = 'none'
             elif key == 'drift': value = 'no'
             elif key == 'intimacy_request': value = 'requested' if self.contact else 'none'
-            elif key.startswith('contact:'): value = 'c' if self.contact else 'n'
+            elif key.startswith('contact:'):
+                # Combined review uses n/l/c; the per-layer path names the tiers in full.
+                value = ('c' if self.contact else 'n') if 'n' in question['criteria'] else \
+                    ('close_contact' if self.contact else 'none')
+            elif key.startswith('kind') and 'claim_kinds' not in state:  # per-layer path: named options
+                value = 'relationship' if 'relationship' in question['criteria'] else next(iter(question['criteria']))
+            elif key.startswith('support') and 'support_sources' not in state:
+                value = 'none' if 'none' in question['criteria'] else next(iter(question['criteria']))
             elif key.startswith('kind'):
                 value = next((k for k, v in state['claim_kinds'].items() if v == 'relationship' and k in question['criteria']), next(iter(question['criteria'])))
             elif key.startswith('support'): value = next(k for k, v in state['support_sources'].items() if v == 'none')
@@ -147,10 +154,26 @@ def test_jev_review_outage_fails_closed_without_text_fallback(monkeypatch):
     assert review.last_failure_diagnostics
 
 
-def test_oversized_candidate_is_not_partially_reviewed(monkeypatch):
-    review = transport(monkeypatch, Decisions())
-    with pytest.raises(RuntimeError, match='quality model unavailable'):
-        review.review_json(request('one。' * 33), model='jev', timeout_seconds=5)
+def test_long_candidate_is_reviewed_whole_with_merged_spans(monkeypatch):
+    """Long letters (>32 sentences) failed every time after the reply was already paid for."""
+    port = Decisions()
+    review = transport(monkeypatch, port)
+    candidate = ''.join(f'第{i}句。' for i in range(80))
+    review.review_json(request(candidate), model='jev', timeout_seconds=5)
+    state, questions = port.calls[0]
+    spans = state['spans']
+    assert 0 < len(spans) <= 32
+    covered = ''.join(candidate[span['start']:span['end']] for span in spans.values())
+    assert covered == candidate  # Nothing is left out: the whole letter is reviewed.
+
+
+def test_review_span_merge_keeps_short_letters_sentence_by_sentence():
+    from runtime.reply.jev_quality import _candidate_spans
+    short = '第一句。第二句！第三句？'
+    assert [short[s['start']:s['end']] for s in _candidate_spans(short).values()] == ['第一句。', '第二句！', '第三句？']
+    long_text = '句。' * 100
+    merged = _candidate_spans(long_text, with_text=True)
+    assert len(merged) == 32 and ''.join(s['text'] for s in merged.values()) == long_text
 
 
 def test_reviewer_model_label_is_jev_not_the_text_generator(monkeypatch):

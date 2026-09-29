@@ -209,14 +209,34 @@ def _confirmation_context(context_id, inputs):
     return {key: source[key] for key in fields if key in source}
 
 
-async def review_layers_json(port, requests, candidate, evidence_bound, adjudication_contexts=None):
+MAX_REVIEW_SPANS = 32
+_SENTENCE = re.compile(r'[^\n。！？!?；;]+[。！？!?；;]*')
+
+
+def _candidate_spans(candidate, *, with_text=False, limit=MAX_REVIEW_SPANS):
+    """Review spans covering the whole candidate, one per sentence up to 32.
+
+    Longer letters merge adjacent sentences into at most 32 contiguous spans,
+    so every word is still reviewed and located; only the location is coarser.
+    """
+    sentences = [(m.start(), m.end()) for m in _SENTENCE.finditer(candidate) if m.group().strip()]
+    if len(sentences) > limit:
+        size, extra = divmod(len(sentences), limit)
+        groups, index = [], 0
+        for group in range(limit):
+            count = size + (1 if group < extra else 0)
+            groups.append((sentences[index][0], sentences[index + count - 1][1]))
+            index += count
+        sentences = groups
+    return {f's{i}': {'start': start, 'end': end, **({'text': candidate[start:end]} if with_text else {})}
+            for i, (start, end) in enumerate(sentences)}
+
+
+async def review_layers_json(port, requests, candidate, evidence_bound, adjudication_contexts=None, *, max_spans=MAX_REVIEW_SPANS):
     """One evaluation for every layer, with shared originals and scoped references."""
     from .reply_model_quality import (_EVIDENCE_BOUND_LAYERS, _HARD_EVIDENCE_CLAIM_KINDS,
         _STYLE_EVIDENCE_CLAIM_KINDS, _HARD_EVIDENCE_SUPPORT_SOURCES, _adjudication_context_id)
-    spans = {f's{i}': {'start': m.start(), 'end': m.end()} for i, m in enumerate(
-        re.finditer(r'[^\n。！？!?；;]+[。！？!?；;]*', candidate)) if m.group().strip()}
-    if len(spans) > 32:
-        raise ValueError('JEV_INPUT_TOO_LARGE')
+    spans = _candidate_spans(candidate, limit=max_spans)
     catalog, lookup, layers, questions, inputs = {}, {}, {}, {}, {}
     confirmation_rules, confirmation_keys = {}, {}
     claim_kinds = {str(i): value for i, value in enumerate(sorted(
@@ -318,11 +338,7 @@ async def review_layers_json(port, requests, candidate, evidence_bound, adjudica
 async def layer_json(port, layer, messages, candidate, evidence_bound):
     from .reply_model_quality import (_EVIDENCE_BOUND_LAYERS, _HARD_EVIDENCE_CLAIM_KINDS,
         _STYLE_EVIDENCE_CLAIM_KINDS, _HARD_EVIDENCE_SUPPORT_SOURCES)
-    spans = {f's{i}': {'start': m.start(), 'end': m.end(), 'text': m.group()}
-             for i, m in enumerate(re.finditer(r'[^\n。！？!?；;]+[。！？!?；;]*', candidate))
-             if m.group().strip()}
-    if len(spans) > 32:
-        raise ValueError('JEV_INPUT_TOO_LARGE')
+    spans = _candidate_spans(candidate, with_text=True)
     state = _purpose_state(layer, messages, spans)
     yes_no = {'no': 'No evidenced violation of this code in this span.', 'yes': 'Concrete violation of this code in this span.'}
     questions = {f'{code}:{sid}': {'instructions': f'Apply only the supplied {code} rule to span {sid}. Use the provided evidence and its coverage limits. Unknown is no, not proof of a violation; allegations are not facts.',
