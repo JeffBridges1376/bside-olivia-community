@@ -15,7 +15,7 @@ NOON = datetime(2026, 9, 6, 4, tzinfo=timezone.utc)  # Sunday, no classes.
 
 
 @pytest.mark.parametrize('kind,minutes', [
-    ('rest', 30), ('practice', 60), ('reading', 60), ('creative', 60),
+    ('rest', 60), ('practice', 60), ('reading', 60), ('creative', 60),
     ('housework', 60), ('walk', 60), ('errand', 60),
 ])
 def test_store_and_runtime_share_activity_expiry(tmp_path, kind, minutes):
@@ -71,7 +71,7 @@ def test_bathing_and_sleep_defer_expired_rest_until_waking_without_backfill(tmp_
         for minutes, phase in [(30, 'bathing'), (60, 'sleep'), (540, 'sleep')]:
             now = start + timedelta(minutes=minutes)
             assert store.snapshot(now)['rhythm']['phase'] == phase
-            assert store.snapshot(now)['stale']
+            assert store.snapshot(now)['stale'] == (minutes >= 60)  # Rest expires after an hour.
             await runtime.refresh(now)
             assert not calls
         awake = start + timedelta(hours=9, minutes=30)

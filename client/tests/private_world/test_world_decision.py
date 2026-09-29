@@ -112,7 +112,7 @@ def test_real_structured_gateway_format_failure_gets_only_one_world_correction(t
     runtime=DailyLifeRuntime(store,lambda:gateway,lambda:'[]')
     asyncio.run(runtime.refresh(NOW))
     assert len(calls)==2
-    assert len(emotion_calls)==1
+    assert emotion_calls==[]  # Appraisal is paid for only when the user writes.
     assert runtime.emotion.error_code is None
     assert runtime.error_code is None
     assert store.snapshot(NOW)['current']['activity']=='上钢琴专业课'

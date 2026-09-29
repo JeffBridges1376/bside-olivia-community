@@ -11,7 +11,7 @@ from tests.private_world.decisions import life_decision
 
 
 @pytest.mark.parametrize('fails', [False, True])
-def test_world_refresh_appraises_once_after_final_state(tmp_path, monkeypatch, fails):
+def test_world_refresh_never_appraises_in_the_background(tmp_path, monkeypatch, fails):
     monkeypatch.delenv('OLIVIA_JEV_URL', raising=False)
     now = datetime(2026, 9, 5, 10, tzinfo=timezone.utc)
 
@@ -26,18 +26,14 @@ def test_world_refresh_appraises_once_after_final_state(tmp_path, monkeypatch, f
     seen = []
 
     async def appraise(timestamp):
-        seen.append(store.snapshot(timestamp)['current'])
+        seen.append(timestamp)
 
+    runtime.emotion.refresh_world = appraise
     runtime._refresh_emotion = appraise
     asyncio.run(runtime.refresh(now))
-    assert len(seen) == 1
-    assert (seen[0] is None) == fails
-    if not fails:
-        assert seen[0]['note'] == '在住处休息。'
-        # A fresh world still gets one chance to recover pending appraisals.
-        asyncio.run(runtime.refresh(now))
-        assert len(seen) == 2
-        assert seen[1] == seen[0]
+    asyncio.run(runtime.refresh(now))
+    assert seen == []
+    assert (store.snapshot(now)['current'] is None) == fails
 
 
 def test_cancelled_refresh_does_not_start_emotion_call(tmp_path):

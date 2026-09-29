@@ -438,7 +438,14 @@ class DailyLifeRuntime:
                             raise ValueError('DAILY_LIFE_RESPONSE_INVALID')
                         current, projects, meals = compile_decision(result, data)
                         episode = None
-                        if meal_port is not None and result['activity']['kind'] != 'meal':
+                        # Same activity again with nothing new from the user:
+                        # publish the decision without the paid episode and
+                        # development steps. Rest keeps its episode, the only
+                        # evidence from which her energy can recover.
+                        repeated = (previous is not None and not exchange_actions and not timing_pending
+                                    and result['activity']['kind'] == previous.get('activity_kind'))
+                        if (meal_port is not None and result['activity']['kind'] != 'meal'
+                                and not (repeated and result['activity']['kind'] != 'rest')):
                             from .life_episode import create as create_episode
                             episode = await create_episode(meal_port, source_id, now, result['activity']['kind'],
                                                            {**data, 'selected_activity': result['activity'],
@@ -451,7 +458,8 @@ class DailyLifeRuntime:
                             projects = [p if p['status']=='cancelled' else {**p, 'status': ('paused' if status in {'failed','paused'} else p['status']
                                 if status == 'completed' else 'ongoing'),
                                 'detail': episode['result']['detail']} for p in projects]
-                        candidates = (await _development_candidates(duties, 'world', _world_development_packet(development_topics, development_basis))
+                        candidates = (None if repeated and duties is not None else
+                                      await _development_candidates(duties, 'world', _world_development_packet(development_topics, development_basis))
                                       if duties is not None else result.get('development'))
                         try:
                             self.store.publish_day(source_id, current, projects, occurred_at=now, meals=meals,
@@ -503,11 +511,8 @@ class DailyLifeRuntime:
                     self._clear_memory_refresh_failure()
                 except Exception:
                     self._set_memory_refresh_failure(source_id, now)
-            finally:
-                # Appraise the final world once, including meal and activity
-                # changes. Early returns still recover pending appraisals.
-                if not asyncio.current_task().cancelling():
-                    await self._refresh_emotion(now)
+            # Her emotional reading of these moments is paid for only when the
+            # user writes: evaluate_received picks up the moments published here.
 
     async def _consider_exchange_world(self, source_id, user_text, reply_text, occurred_at, decided=None):
         from runtime.reply.jev_questions import configured_questions

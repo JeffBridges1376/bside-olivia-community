@@ -115,6 +115,11 @@ def test_three_days_same_project_progress_reaches_next_choice_and_emotion(tmp_pa
             store = DailyLifeStore(path)
             runtime = DailyLifeRuntime(store, lambda: gateway, lambda: '[]')
             await runtime.refresh(NOW + timedelta(days=day))
+            # Her reading of the day's progress is paid for with the user's next message.
+            from runtime.memory.received_user_originals import ReceivedOriginal
+            when = NOW + timedelta(days=day, minutes=1)
+            await runtime.emotion.evaluate_received([ReceivedOriginal(
+                f'received-user:qq:d{day}', '今天练得怎么样？', when, (f'reply:d{day}:1',), 'qq', f'd{day}')], now=when)
             assert runtime.error_code is None and runtime.emotion.error_code is None
     asyncio.run(run())
     assert len(life_inputs) == 3
