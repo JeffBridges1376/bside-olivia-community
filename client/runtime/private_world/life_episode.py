@@ -88,7 +88,15 @@ async def create(port, source_id, now, kind, context, *, meal=None):
         raise ValueError('LIFE_EPISODE_CLASS_NOT_CURRENT')
     if meal and meal.get('recovered'):
         return None  # Recovery records a meal; it cannot retroactively invent its causes.
-    if kind in _ACTIVITY_PATHS:
+    from .day_plan import paths as planned_paths
+    planned = planned_paths(context.get('day_plan'), kind, (context.get('selected_activity') or {}).get('focus', ''))
+    if planned and kind in {'practice', *_ACTIVITY_PATHS}:
+        # Today's authored outcomes for this activity, plus a plain way to stop.
+        triggers = {'own_activity': '按今天自己的安排做这件事', 'continuation': '继续当前自己已经选定的这一小步'}
+        paths = {f'plan_{index}': _path(item['obstacle'], item['response'], item['status'], item['outcome'])
+                 for index, item in enumerate(planned)}
+        paths['pause'] = _path('注意力难以维持', '结束这一轮，给自己留出间隔', 'paused', '这次提前停下，之后再接着做。')
+    elif kind in _ACTIVITY_PATHS:
         motive, candidates = _ACTIVITY_PATHS[kind]
         triggers = {'own_activity': motive, 'continuation': '继续当前自己已经选定的这一小步'}
         paths = {str(index): _path(*candidate) for index, candidate in enumerate(candidates)}

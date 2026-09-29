@@ -428,6 +428,13 @@ class DailyLifeRuntime:
                 data = decision_context(data)
                 if self.emotion is not None:
                     data['emotion'] = self.emotion.view(now)
+                if meal_port is not None:
+                    # Once a day: fresh concrete candidates instead of a fixed catalog.
+                    from .day_plan import ensure as ensure_day_plan
+                    plan = await ensure_day_plan(self.store, self.gateway(), now=now, persona=data.get('persona'),
+                        weather=world.get('weather'), schedule=world.get('schedule'))
+                    if plan is not None:
+                        data['day_plan'] = plan
                 for attempt in range(2):
                     result = None
                     try:
