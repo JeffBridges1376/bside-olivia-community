@@ -60,7 +60,8 @@ def selection_dialogue(fragments):
             'meaning': '仅用于理解本轮指代；历史原话不是已核实世界事实，未展示不代表没有发生。'}
 
 
-_LEVELS = {'must': '直接回答或防止事实错误所必需', 'useful': '辅助解释或背景', 'skip': '本轮不需要'}
+# Level meanings live once in selection_contract; per-question labels stay short.
+_LEVELS = {'must': 'must', 'useful': 'useful', 'skip': 'skip'}
 _LEVEL_RANK = {'must': 2, 'useful': 1}
 _FINISHED = {'completed', 'cancelled'}
 
@@ -104,7 +105,7 @@ async def select_world_context(port, packet, user_text, *, max_chars=3500):
             if isinstance(original, str):
                 catalog[key][field] = aliases.setdefault(original, f'{field[0]}{len(aliases)}')
         # Three levels cost about a third less than ten ranks (measured on JEV).
-        questions[key] = {'instructions': f'按state.selection_contract给records.{key}定级。',
+        questions[key] = {'instructions': f'records.{key}定级',
                           'criteria': dict(_LEVELS)}
     state = {**common, 'records': catalog}
     envelope = {'state': state, 'questions': questions, 'purpose': 'reply-world-selection'}
