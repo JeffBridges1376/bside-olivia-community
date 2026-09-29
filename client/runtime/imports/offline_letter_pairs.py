@@ -199,6 +199,7 @@ def offline_letter_pair_exchanges(
             occurred_at=epoch + timedelta(seconds=index - 1),
             user_message=pair[0],
             assistant_message=pair[1],
+            timestamp_known=False,
         )
         for index, pair in enumerate(pairs, start=1)
     )

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import math
 from pathlib import Path
@@ -91,7 +91,7 @@ class _ConversationMemoryView:
         created_at = _epoch(record.created_at or record.occurred_at)
         occurred_at = (
             record.occurred_at.isoformat()
-            if record.occurred_at is not None
+            if record.occurred_at is not None and not _ordering_stamp(record)
             else None
         )
         provenance = {
@@ -494,6 +494,16 @@ class CompanionMemoryPromptBuilder:
             max_chars=budget,
             exclude_source_ids=exclude_source_ids,
         )
+
+
+# Imported letters without a real date were written with ordering stamps
+# (1970-01-01 plus the letter's position). They mean "unknown", not 1970: a
+# model shown that year answers as if the exchange were decades old.
+_UNKNOWN_TIME_BEFORE = datetime(1971, 1, 1, tzinfo=timezone.utc)
+
+
+def _ordering_stamp(record: ConversationMemoryRecord) -> bool:
+    return record.source_id.startswith("history:") and record.occurred_at < _UNKNOWN_TIME_BEFORE
 
 
 def _historical_source_id(source: str) -> str:
