@@ -86,7 +86,6 @@ def test_missing_invalid_or_unsupported_decision_cannot_be_sent(raw):
     ('```json\n' + envelope(initiative='open', evidence='可以主动找我') + '\n```', 'UNSUPPORTED_PREFERENCE_CHANGE'),
     (envelope(initiative='pause', evidence='伪造原话'), 'UNSUPPORTED_PREFERENCE_CHANGE'),
     (envelope(followup_at='2030-01-01T12:00:00+09:00', evidence='明天找我'), 'TIME_RANGE'),
-    (envelope(followup_at='2026-09-14T07:00:00+08:00', evidence='明天找我'), 'QUIET_HOURS'),
 ])
 def test_invalid_controls_are_dropped_and_the_reply_is_still_sent(raw, reason):
     decision = decode(raw, user='明天找我', now=datetime(2026,9,13,12,tzinfo=LOCAL).timestamp())
@@ -94,6 +93,14 @@ def test_invalid_controls_are_dropped_and_the_reply_is_still_sent(raw, reason):
     assert decision['dropped_controls'] == reason
     assert decision['initiative'] == decision['letter'] == decision['listening'] == 'keep'
     assert decision['followup_at'] is None and decision['pause_until'] is None and not decision['followup_cancel']
+
+
+def test_requested_early_morning_followup_is_kept():
+    now = datetime(2026,9,13,23,tzinfo=LOCAL).timestamp()
+    decision = decode(envelope(followup_at='2026-09-14T07:00:00+08:00', evidence='明早七点叫我起床'),
+                      user='明早七点叫我起床', now=now)
+    assert decision['followup_at'] == datetime(2026,9,14,7,tzinfo=LOCAL).timestamp()
+    assert 'dropped_controls' not in decision
 
 
 def test_proactive_cannot_modify_user_preferences_and_cancel_survives_restart():
@@ -154,3 +161,36 @@ def test_failed_new_user_request_suppresses_initiative_until_next_completed_exch
     assert not policy.ready()
     rows.append(dict(delivery_status='DELIVERED'))
     assert policy.ready()
+
+
+def test_requested_wake_up_call_is_kept_during_quiet_hours():
+    # Her own initiative waits for 08:30; an appointment the user asked for does not.
+    due = datetime(2026, 9, 14, 7, tzinfo=LOCAL).timestamp()
+    rows = [dict(letter_id='request', delivery_status='DELIVERED', followup_at=due,
+                 followup_quote='明早七点叫我起床')]
+    policy = Initiative(rows, clock=lambda: due + 60, interval=lambda: 3600)
+    policy.received(None, None)
+    assert policy.pending_followup() == rows[0] and policy.ready()
+    unscheduled = Initiative([], clock=lambda: due + 60, interval=lambda: 0)
+    unscheduled.received(None, None)
+    assert not unscheduled.ready()
+
+
+def test_due_appointment_waives_world_gates_only():
+    from runtime.reply import proactive_runtime
+    from types import SimpleNamespace
+    snapshot = {'rhythm': {'phase': 'sleep'}, 'world': {}}
+    server = SimpleNamespace(daily_life_runtime=SimpleNamespace(store=SimpleNamespace(snapshot=lambda now: snapshot)),
+                             store=SimpleNamespace(letters=[], personal_chats=[]))
+    now = datetime(2026, 9, 14, 7, tzinfo=LOCAL)
+    original = proactive_runtime.live_profile
+    proactive_runtime.live_profile = lambda server: SimpleNamespace(im_interval_min=0, im_interval_max=0)
+    original_gates = proactive_runtime.contact_gates
+    proactive_runtime.contact_gates = lambda rows, **k: {'paused': False, 'blocked_reasons': ['pending_reply']}
+    try:
+        asleep = proactive_runtime.live_state(server, channel='qq', now=now)['gates']['blocked_reasons']
+        due = proactive_runtime.live_state(server, channel='qq', now=now, appointment_due=True)['gates']['blocked_reasons']
+    finally:
+        proactive_runtime.live_profile, proactive_runtime.contact_gates = original, original_gates
+    assert asleep == ['sleeping', 'pending_reply']
+    assert due == ['pending_reply']

@@ -190,10 +190,17 @@ def _contact_opportunities(state, now, row):
     return offered[:16]
 
 
+def _appointment_due(server, now):
+    from .initiative import Initiative
+    followup = Initiative(server.store.personal_chats, clock=lambda: now.timestamp()).pending_followup()
+    return followup is not None and followup['followup_at'] <= now.timestamp()
+
+
 def _contact_eligible(server, event):
     from runtime.reply.proactive_runtime import live_state
     now = datetime.now(LOCAL)
-    state = live_state(server, channel=event.channel, now=now, exclude_id=event.exchange_id)
+    state = live_state(server, channel=event.channel, now=now, exclude_id=event.exchange_id,
+                       appointment_due=_appointment_due(server, now))
     if state['gates']['paused'] or state['gates']['blocked_reasons']:
         return False
     row = next((r for r in server.store.personal_chats if r.get('letter_id') == event.exchange_id), {})
@@ -308,7 +315,8 @@ async def _generate_billed(server, event, row):
         from runtime.reply import proactive_runtime
         from runtime.reply.companion_runtime import CompanionRuntimeError
         now = context.trusted_time.instant
-        state = proactive_runtime.live_state(server, channel=event.channel, now=now, exclude_id=event.exchange_id)
+        state = proactive_runtime.live_state(server, channel=event.channel, now=now, exclude_id=event.exchange_id,
+                                             appointment_due=bool(row.get('followup_source_id')))
         if not isinstance(world, dict) or world.get('kind') != 'character_life_reference':
             raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE')
         observed = world.get('current') or world.get('last_observation') or {}

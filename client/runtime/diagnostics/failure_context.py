@@ -13,7 +13,8 @@ DETAILS = {"invalid_json", "invalid_response_shape", "missing_tools", "invalid_t
 KINDS.add('ClientConnectorDNSError')
 DETAILS |= {'structured_truncated', 'structured_validation_failed', 'tool_truncated',
             'unexpected_tool', 'invalid_tool_schema', 'invalid_tool_count', 'unsupported_tool_fallback',
-            'unsupported_response_format', 'unsupported_tools', 'unsupported_tool_choice'}
+            'unsupported_response_format', 'unsupported_tools', 'unsupported_tool_choice',
+            'output_truncated', 'empty_output', 'invalid_stream_chunk', 'stream_error'}
 DETAILS |= {
     "route_tool_count", "route_tool_name", "route_fields", "route_values",
     "route_contexts", "route_booleans", "route_disposition", "route_current_work",
@@ -41,10 +42,22 @@ def cause_code(exc):
     return None
 
 
+def failure_detail(exc):
+    """First provider protocol detail along the exception chain, if any."""
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        detail = getattr(exc, 'diagnostic_detail', None)
+        if isinstance(detail, str) and detail in DETAILS:
+            return detail
+        exc = exc.__cause__ or exc.__context__
+    return None
+
+
 def letter_failure_context(exc):
     kind = type(exc).__name__
     return project_failure_context({'exception_type': kind if kind in KINDS else 'OTHER',
-                                    'cause_code': cause_code(exc)})
+                                    'cause_code': cause_code(exc), 'failure_detail': failure_detail(exc)})
 
 
 def project_failure_context(source):

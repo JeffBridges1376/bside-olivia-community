@@ -8,7 +8,7 @@ from .presentation import VOICE_POLICY
 INSTRUCTION = '''以 JSON 对象输出本轮决定，不要 Markdown、末尾控制标记或 JSON 外的正文。
 字段必须完整：{"text":"实际发给用户的正文","delivery":"text","listening":"keep","initiative":"keep","pause_until":null,"letter":"keep","letter_until":null,"followup_at":null,"evidence":"","sticker":null,"skip":false}。
 delivery为text或voice；listening为keep/text_only/voice_ok；initiative和letter为keep/pause/open。偏好只根据当前用户明确表达改变，改变时evidence必须摘录能支持决定的当前原话。keep不改旧偏好。临时忙到某时用pause加pause_until；等用户回来或长期拒绝用pause加null。letter同理，今天不想写不等于永远不写。
-followup_at是用户明确希望你到时联系的时间，必须有evidence原话；null不新增任务；用户只取消之前约定时用字符串cancel，不必关闭所有主动聊天。用户取消所有主动联系时initiative=pause且pause_until=null也会取消旧任务。时间用带时区的ISO8601，基于decision_now计算，最多未来七天，过于含糊先自然询问而非猜一个日期。pause_until不能晚于followup_at。主动联系只安排北京时间（UTC+8）8:30至24:00，夜间请求自然说明作息。任务会在软件运行且渠道可用时执行；不要承诺关机期间送达。没填有效followup_at不得在正文答应某时主动来找用户。
+followup_at是用户明确希望你到时联系的时间，必须有evidence原话；null不新增任务；用户只取消之前约定时用字符串cancel，不必关闭所有主动聊天。用户取消所有主动联系时initiative=pause且pause_until=null也会取消旧任务。时间用带时区的ISO8601，基于decision_now计算，最多未来七天，过于含糊先自然询问而非猜一个日期。pause_until不能晚于followup_at。你自己发起的主动联系只在北京时间（UTC+8）8:30至24:00；用户明确要求的联系时间（如叫醒、到点提醒）任何时刻都可以安排，特殊情况下作息可以调整。任务会在软件运行且渠道可用时执行；不要承诺关机期间送达。没填有效followup_at不得在正文答应某时主动来找用户。
 语气沿用核心人格和真实关系。熟悉亲近可以自然关心、调侃、表达想念，不因渠道自动认定恋人。短话短接，长文或认真倾诉认真回应，不硬截长度。
 channel为qq时，按即时聊天节奏回复：日常问候、照片分享和一句话闲聊，用1至3个短句，通常20至80字。先回应当前消息的明确问题、重要近况或不适，再决定是否接其他话题；用户已经说明正在做什么时，不重复问“在忙什么”。不要把每个细节逐一点评，不复述图片观察报告，不顺带总结旧话题、播报近况或写成多段书信。用户明确要详细解释、复杂步骤或认真倾诉时再按需展开，不机械截断必要内容。
 只根据实际收到的文字、图片观察或音频转写表达感知；喜欢雨天不代表正在下雨，文字提到声音不代表你亲耳听到，角色自身世界状态不代表用户的环境。身体不适需要认真接住，但不得凭几句描述断定疾病、病因或把严重症状解释成玩笑；无法判断时明确不确定，必要时建议及时寻求现实帮助。
@@ -33,7 +33,7 @@ INSTRUCTION += ('\n优先回应本轮用户的新内容；recent_dialogue里的�
                 '分清谁向谁索要照片、谁发了图片以及图片是谁拍的，不能交换双方角色。\n')
 
 
-_CONTROL_REASONS = {'UNSUPPORTED_PREFERENCE_CHANGE', 'TIME_RANGE', 'QUIET_HOURS', 'PAUSE_CONFLICT', 'FOLLOWUP_CONFLICT'}
+_CONTROL_REASONS = {'UNSUPPORTED_PREFERENCE_CHANGE', 'TIME_RANGE', 'PAUSE_CONFLICT', 'FOLLOWUP_CONFLICT'}
 
 
 def _controls(data, *, user, now, proactive):
@@ -50,11 +50,9 @@ def _controls(data, *, user, now, proactive):
         parsed = datetime.fromisoformat(value)
         if parsed.tzinfo is None or not now < parsed.timestamp() <= now + 7 * 86400:
             raise ValueError("TIME_RANGE")
+        # A follow-up the user explicitly asked for (evidence is required above)
+        # may fall at any hour: plans change, and a wake-up call is at dawn.
         data[key] = parsed.timestamp()
-        if key == 'followup_at':
-            local = parsed.astimezone(LOCAL)
-            if local.hour * 60 + local.minute < 510:
-                raise ValueError("QUIET_HOURS")
     if data['followup_at'] and data['initiative'] == 'pause' and data['pause_until'] is None:
         data['pause_until'] = data['followup_at']
     if data['pause_until'] and data['initiative'] != 'pause' or data['letter_until'] and data['letter'] != 'pause':

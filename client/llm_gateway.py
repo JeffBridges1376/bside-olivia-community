@@ -1136,12 +1136,12 @@ class OpenAICompatibleAdapter(Gateway):
         else:
             data = await self._post_json(body, request, max_reasoning=max_reasoning, label=_scope_label(scope))
         if _extract_finish_reason(data) == "length" or data.get('status') in {'incomplete', 'failed'}:
-            raise ProviderProtocolError()
+            raise ProviderProtocolError('output_truncated')
         text = _extract_response_text(data)
         if not text:
             if scope in {GatewayRequestScope.TEXT_LETTER_MAX_REASONING, GatewayRequestScope.JSON_MAX_REASONING, GatewayRequestScope.PERSONAL_CHAT_JSON} and _extract_finish_reason(data) == "stop":
                 raise ProviderEmptyResponse()
-            raise ProviderProtocolError()
+            raise ProviderProtocolError('empty_output')
         if len(text) > self.config.max_output_chars:
             raise InvalidGatewayInput("OUTPUT_TOO_LONG")
         return GatewayResponse(text, request, self.config.provider, self.config.model)
@@ -1380,7 +1380,7 @@ class OpenAICompatibleAdapter(Gateway):
                             except (UnicodeError, json.JSONDecodeError):
                                 if terminal_finish_reason == "stop":
                                     break
-                                raise ProviderProtocolError() from None
+                                raise ProviderProtocolError('invalid_stream_chunk') from None
                             if isinstance(data, Mapping):
                                 if data.get('error'):
                                     error = data['error']
@@ -1388,7 +1388,7 @@ class OpenAICompatibleAdapter(Gateway):
                                         exc = GatewayError('PROVIDER_USAGE_PENDING', retryable=False, status=status)
                                         _record_provider_failure(exc, response)
                                         raise exc
-                                    raise ProviderProtocolError()
+                                    raise ProviderProtocolError('stream_error')
                                 usage = data.get("usage") or (data.get("response", {}).get("usage") if isinstance(data.get("response"), Mapping) else None) or usage
                             if terminal_finish_reason is not None:
                                 continue
@@ -1408,9 +1408,9 @@ class OpenAICompatibleAdapter(Gateway):
                         outcome = "response"
                         if terminal_finish_reason == "length":
                             # Retrying an exhausted output budget repeats billed work.
-                            raise ProviderProtocolError()
+                            raise ProviderProtocolError('output_truncated')
                         if not saw_delta or not any(part.strip() for part in buffered):
-                            raise ProviderProtocolError()
+                            raise ProviderProtocolError('empty_output')
                         for text in buffered:
                             yield GatewayDelta(text, request, index=index)
                             index += 1

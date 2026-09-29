@@ -105,7 +105,9 @@ class Initiative:
             if now < self.due:
                 return False
         local = datetime.fromtimestamp(now, LOCAL)
-        if local.hour < 8 or (local.hour == 8 and local.minute < 30):
+        # Quiet hours limit her own initiative; an appointment the user asked
+        # for (a wake-up call, a reminder) is kept at the agreed time.
+        if not scheduled and (local.hour < 8 or (local.hour == 8 and local.minute < 30)):
             return False
         # Reserve budget for attempts too, including SKIP/failure/uncertain sends.
         # The hard ceiling remains bounded, while shallow relationships spend

@@ -41,8 +41,9 @@ def test_sleep_uses_character_timezone_on_utc_machine(monkeypatch, stamp, awake)
 
 
 @pytest.mark.parametrize('stamp,valid', [
-    ('2026-09-13T16:30:00+00:00', False),  # Character is asleep, UTC host is awake.
+    ('2026-09-13T16:30:00+00:00', True),   # 00:30 Shanghai: a requested appointment may be at night.
     ('2026-09-14T00:30:00+00:00', True),   # Character is awake, UTC host is asleep.
+    ('2026-09-21T00:30:00+00:00', False),  # More than seven days ahead.
 ])
 def test_appointment_validation_uses_same_timezone(monkeypatch, stamp, valid):
     monkeypatch.setattr(decision, 'datetime', UTCHost)
@@ -54,5 +55,5 @@ def test_appointment_validation_uses_same_timezone(monkeypatch, stamp, valid):
     if valid:
         assert result['followup_at'] == datetime.fromisoformat(stamp).timestamp()
     else:
-        # A night-time appointment is dropped; the reply text is still delivered.
-        assert result['followup_at'] is None and result['dropped_controls'] == 'QUIET_HOURS'
+        # An out-of-range appointment is dropped; the reply text is still delivered.
+        assert result['followup_at'] is None and result['dropped_controls'] == 'TIME_RANGE'

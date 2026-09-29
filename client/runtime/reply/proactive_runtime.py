@@ -122,14 +122,17 @@ def contact_gates(rows, *, now, profile, channel, exclude_id=None):
     return {'paused': bool(paused), 'blocked_reasons': reasons}
 
 
-def live_state(server, *, channel, now, exclude_id=None):
+def live_state(server, *, channel, now, exclude_id=None, appointment_due=False):
     try:
         profile = live_profile(server)
         snapshot = server.daily_life_runtime.store.snapshot(now)
         rows = deepcopy([r for r in [*server.store.letters, *server.store.personal_chats]
                          if exclude_id is None or r.get('letter_id') != exclude_id])
         gates = contact_gates(rows, now=now, profile=profile, channel=channel)
-        gates['blocked_reasons'] = list(dict.fromkeys([*world_gates(snapshot), *gates['blocked_reasons']]))
+        # A contact time the user asked for is kept even if she was asleep, in
+        # class or busy: people change plans for it. Contact rules still apply.
+        world = [] if appointment_due else world_gates(snapshot)
+        gates['blocked_reasons'] = list(dict.fromkeys([*world, *gates['blocked_reasons']]))
         return {'profile': profile, 'snapshot': snapshot, 'rows': rows, 'gates': gates}
     except Exception:
         raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE') from None
