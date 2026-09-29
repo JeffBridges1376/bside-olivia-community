@@ -1748,7 +1748,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       target.append(row);
     }
     if(!(account.items||[]).length)target.append(text('p','还没有消费记录。'));
-    target.append(text('p','中转和 GPU 共用同一余额；释放预留不是额外扣款或充值。'+(account.has_more?'当前显示最近 50 笔。':''),'text-text-secondary text-caption-m'));
+    const minimum=account.minimum_charge_yuan?`回信中转与 JEV 判断按用量计费，每次最低 ${money(account.minimum_charge_yuan)}，未产生费用的调用不收费。`:'';
+    target.append(text('p',minimum+'中转和 GPU 共用同一余额；释放预留不是额外扣款或充值。'+(account.has_more?'当前显示最近 50 笔。':''),'text-text-secondary text-caption-m'));
   };
 
   const mountRelayAccount = (panel) => {
