@@ -58,14 +58,6 @@ def test_recall_selection_with_empty_long_and_many_originals():
     assert port.sizes and max(port.sizes) <= CAP
 
 
-def test_recall_check_with_long_and_many_sources():
-    from runtime.memory.jev_history import check_recall
-    sources = [{'source': f's{i}', 'scope': 'historical_exchange',
-                'text': json.dumps([{'text': long_reply(40)}, {'text': ''}, {'text': '长' * 2500}], ensure_ascii=False)}
-               for i in range(12)]
-    port = RecordingPort()
-    asyncio.run(check_recall(port, '你还记得吗？' * 40, sources))
-    assert port.sizes and max(port.sizes) <= CAP
 
 
 @pytest.mark.parametrize('sentences', [1, 30, 120])

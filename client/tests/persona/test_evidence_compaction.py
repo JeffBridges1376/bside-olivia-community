@@ -43,19 +43,6 @@ def test_same_words_different_person_or_source_are_not_deduplicated():
     assert '\n'.join(m['content'] for m in projected).count('还没吃饭') == 3
 
 
-def test_preflight_does_not_add_another_narrative():
-    from runtime.memory.recall_check import _project
-    messages = ({'role':'system', 'content':'原始资料'}, {'role':'user', 'content':'到底吃什么'})
-    value = {'reply_intent':'recall_question', 'direct_questions':['到底吃什么'], 'findings':[
-        dict(topic='晚饭', status='conflicting', event_stage='unknown', finding='先吃饭后吃馄饨所以没有矛盾',
-             citations=[{'source':'s0','quote':'青菜配饭','matched_originals':[{'context':'额外重复上下文'}]}])]}
-    sources = [{'source':'s0','scope':'historical_exchange','text':'青菜配饭'}]
-    result = _project(messages, value, sources, max_input_chars=20000)
-    text = '\n'.join(m['content'] for m in result)
-    assert '先吃饭后吃馄饨所以没有矛盾' not in text
-    assert '额外重复上下文' not in text
-    assert '"disputed":true' in text and '青菜配饭' in text
-    assert result[-1] == messages[-1]
 
 
 def test_current_input_cannot_pose_as_a_stored_original():

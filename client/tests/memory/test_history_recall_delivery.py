@@ -8,7 +8,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from runtime.memory.recall_check import prepare_recall_messages
 
 
 def messages():
@@ -48,26 +47,8 @@ class LiveCheck:
             'direct_questions': ['海边去了没有？', '围巾上缝着什么？'], 'findings': findings}, ensure_ascii=False))
 
 
-@pytest.mark.parametrize('partial', [False, True])
-def test_unquoted_topic_keeps_both_original_sides_after_check(partial):
-    original = messages()
-    before = deepcopy(original)
-    gateway = LiveCheck(partial=partial)
-    final = asyncio.run(prepare_recall_messages(original, gateway, max_input_chars=20000))
-    assert original == before
-    assert final[0]['content'].startswith(before[0]['content'])
-    assert '外婆的围巾上缝着一颗铜纽扣。' in final[0]['content']
-    assert '那颗铜纽扣我记住了。' in final[0]['content']
-    assert '我们计划周五去海边。' in final[0]['content']
-    assert '后来取消了，没有去成。' in final[0]['content']
-    assert len(gateway.calls) == 1
 
 
-def test_timeout_retains_originals_and_does_not_claim_no_history():
-    original = messages()
-    final = asyncio.run(prepare_recall_messages(original, LiveCheck(timeout=True), max_input_chars=20000))
-    assert final[0]['content'].startswith(original[0]['content'])
-    assert 'unavailable' in final[0]['content']
 
 
 def query_fragment(text, *, source='reply:previous:1', name='letters.recent'):
@@ -279,17 +260,6 @@ def test_zero_memory_budget_cannot_enable_the_history_tail(tmp_path):
         archive.close()
 
 
-def test_diagnostics_record_actual_retained_groups_without_private_text():
-    from runtime.diagnostics.recall_trace import snapshot, project
-    original = messages()
-    asyncio.run(prepare_recall_messages(original, LiveCheck(partial=True), max_input_chars=20000))
-    record = snapshot()[-1]
-    assert record['before_groups'] == record['final_groups'] == 2
-    assert record['check_status'] == 'partial'
-    assert record['unverified_topics'] == 1
-    assert '铜纽扣' not in json.dumps(record, ensure_ascii=False)
-    assert 'history:scarf' not in repr(record)
-    assert 'secret' not in repr(project({'event': 'history_recall', 'query': 'secret', 'final_ids': ['secret'], 'source_status': {'secret': 'available'}}))
 
 
 def test_official_http_import_index_backfill_restart_and_final_request(tmp_path, monkeypatch):

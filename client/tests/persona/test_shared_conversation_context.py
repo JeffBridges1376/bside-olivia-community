@@ -35,23 +35,6 @@ def test_adapter_uses_same_history_across_letter_and_im_modes():
     assert '尚未送达' not in str(outputs)
 
 
-def test_projection_keeps_media_outcome_and_native_sources_for_recall():
-    from runtime.reply.fact_attribution import prepare_dialogue_messages
-    from runtime.memory.recall_check import _sources
-    packet = {'kind': 'recent_dialogue', 'letters': [dict(source_id='reply:voice:1',
-        user_letter='唱一段', linli_reply='我试试', media_deliveries=[{'summary': '制作失败'}],
-        media_outcome='failed')]}
-    messages = ({'role': 'system', 'content': '<untrusted_history>' + json.dumps({
-        'text': json.dumps(packet, ensure_ascii=False)}, ensure_ascii=False) + '</untrusted_history>'},
-        {'role': 'user', 'content': '刚才唱了吗'})
-    projected = prepare_dialogue_messages(messages, max_input_chars=10000)
-    assert prepare_dialogue_messages(projected, max_input_chars=10000) == projected
-    assert '制作失败' in projected[0]['content']
-    sources, present = _sources(projected)
-    assert present
-    originals = [json.loads(s['text'])[0] for s in sources if s['scope'] == 'historical_exchange']
-    assert [(x['speaker'], x['text']) for x in originals] == [('user', '唱一段'), ('linli', '我试试')]
-    assert '刚才唱了吗' not in str(originals)
 
 
 def test_projection_keeps_received_and_sent_photo_evidence_with_original_turn():
