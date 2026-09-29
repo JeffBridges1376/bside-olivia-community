@@ -38,6 +38,7 @@ def _exchange_context(data, previous, boundaries):
     result['previous_observation'] = _fields(data.get('previous_observation'),
         ('activity', 'location', 'note', 'status', 'actor', 'evidence_kind', 'occurred_at'))
     result['active_boundaries'] = _boundary_directory(boundaries)
+    result['meals_today'] = [_fields(meal, ('slot', 'status', 'food')) for meal in data.get('meals_today') or []]
     return result
 
 
@@ -155,6 +156,12 @@ async def extract(port, data, instructions, request_id):
     statuses = {'none': '空槽', **{key: key for key in status_catalog}}
     identities = {'none': '空槽', 'new': '独立新事项', **{f'p{i}': f'p{i}' for i in range(len(projects))}}
     questions = {'current_quote': _q('她明确描述自己现在活动的完整原句；与既有观察或时间矛盾、只有打算则none。', quote_options(reply)),
+        # Formerly its own request (exchange-world-update) right after this one.
+        'world_update': _q('判断这次已送达回复后是否需要启动世界更新链路。明确新行动意向、开始/调整当前活动或待办，'
+            '以及当前活动完成、停止、取消、失败或结果变化，都需要重新决策；例如previous_observation或meals_today仍显示正在吃，'
+            '回复明确说“吃完了，碗也洗了”，必须reconsider。纯聊天、解释旧事、已经记录的相同结果不需要；只由用户问“吃完了吗”、'
+            '引用他人的完成说法、假设或“等吃完再洗碗”不能判断已经完成。reconsider只启动核验，不确认完成事实。',
+            {'none': '没有需处理的新变化，无需更新', 'reconsider': '有新的行动意向或开始/完成/停止/取消/失败/结果变化，需要启动核验与更新'}),
         'capacity': _q('完整表达有效独立变更是否超12项、持续边界是否超4项、或有变更无法由候选完整表达？',
                        {'ok': '容量足够且可完整表达', 'unsupported': '超容量或不能完整表达'})}
     for i in range(MAX_EXCHANGE_UPDATES):
@@ -211,7 +218,7 @@ async def extract(port, data, instructions, request_id):
     if answers['capacity'] != 'ok':
         raise ValueError('JEV_EXCHANGE_UNREPRESENTABLE_UPDATE')
     payload = {'updates': [], 'current_quote': None, 'relationship': None, 'routine': None, 'boundaries': [],
-               'addressing': {}}
+               'addressing': {}, 'world_update': answers['world_update']}
     def evidence(field, catalog):
         key = answers[field]
         if key not in catalog:

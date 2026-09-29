@@ -357,7 +357,7 @@ def test_realistic_letter_with_existing_projects_fits_one_packet():
     state, questions, purpose = port.calls[0]
     size = len(json.dumps(dict(state=state, questions=questions, purpose=purpose), ensure_ascii=False, separators=(',', ':')).encode())
     assert size < 32768
-    assert len(questions) == 55  # includes three addressing quotes
+    assert len(questions) == 56  # includes three addressing quotes and the world-update gate
     assert state['sources'] == {key: data[key] for key in ('user_letter', 'linli_reply')}
     assert _EXCHANGE_LIFE_PROMPT not in str(state)
     assert all(value == key for key, value in questions['update_0_quote']['criteria'].items() if key != 'none')

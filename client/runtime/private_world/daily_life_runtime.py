@@ -509,7 +509,7 @@ class DailyLifeRuntime:
                 if not asyncio.current_task().cancelling():
                     await self._refresh_emotion(now)
 
-    async def _consider_exchange_world(self, source_id, user_text, reply_text, occurred_at):
+    async def _consider_exchange_world(self, source_id, user_text, reply_text, occurred_at, decided=None):
         from runtime.reply.jev_questions import configured_questions
         port = configured_questions()
         if port is None:
@@ -517,9 +517,16 @@ class DailyLifeRuntime:
         with self.store._db() as db:
             existing = db.execute('SELECT decision FROM life_exchange_world_gate WHERE source_id=?', (source_id,)).fetchone()
             version = db.execute('SELECT version FROM life_exchange_world_gate_versions WHERE source_id=?', (source_id,)).fetchone()
+        stale = existing is None or (existing[0] == 'none' and (version is None or version[0] < _EXCHANGE_WORLD_GATE_VERSION))
+        if stale and decided in {'none', 'reconsider'}:
+            # The exchange-facts request already answered this gate: no second call.
+            with self.store._db() as db:
+                db.execute('INSERT OR REPLACE INTO life_exchange_world_gate VALUES (?,?,?)', (source_id, decided, reply_text))
+                db.execute('INSERT OR REPLACE INTO life_exchange_world_gate_versions VALUES (?,?)', (source_id, _EXCHANGE_WORLD_GATE_VERSION))
+            existing, stale = (decided,), False
         # Only earlier negative decisions need re-evaluation after this gate's
         # completion/result coverage changed. Approved work remains approved.
-        if existing is None or (existing[0] == 'none' and (version is None or version[0] < _EXCHANGE_WORLD_GATE_VERSION)):
+        if stale:
             assessed_at = max(occurred_at, datetime.now(timezone.utc))
             snapshot = self.store.snapshot(assessed_at)
             world = snapshot['world']
@@ -582,6 +589,8 @@ class DailyLifeRuntime:
                 "development_episodes": self.store.development_episodes(receipt_time),
                 "rhythm": previous["rhythm"],
                 "previous_observation": observation,
+                "meals_today": [meal for meal in previous["world"].get("meals", [])
+                                if meal.get("date") == receipt_time.astimezone(_SHANGHAI).date().isoformat()],
                 "previous_state": self.store.exchange_state(user_text, related_text=reply_text, now=receipt_time),
                 "user_letter": user_text, "linli_reply": reply_text, "origin": origin, "contact_invited": contact_invited,
                 "active_boundaries": [{**item, "boundary_id": alias} for alias, item in zip(boundary_ids, known_boundaries)],
@@ -595,6 +604,10 @@ class DailyLifeRuntime:
                 try:
                     payload = await self._complete(_EXCHANGE_LIFE_PROMPT if duties is not None else _EXCHANGE_PROMPT,
                                                    data, request_id + (":correct" if attempt else ""))
+                    # Side results of the same request, kept outside the strictly
+                    # validated update envelope below.
+                    addressing = payload.pop("addressing", None) if isinstance(payload, dict) else None
+                    world_update = payload.pop("world_update", None) if isinstance(payload, dict) else None
                     if duties is not None and 'development' in payload:
                         raise ValueError('DAILY_LIFE_RESPONSE_INVALID')
                     if ("updates" not in payload and {"projects", "shared"} <= set(payload)
@@ -698,9 +711,10 @@ class DailyLifeRuntime:
                     try:
                         committed = self.store.record_exchange(source_id, user_text, reply_text, payload["updates"], occurred_at=occurred_at,
                                                           current_quote=payload.get("current_quote"), relationship=payload.get("relationship"), received_at=received_at, routine=payload.get("routine"), boundaries=boundary_changes, origin=origin, contact_choice=payload.get("contact_choice"), development=candidates)
-                        if payload.get("addressing"):
-                            self.store.record_addressing(source_id, payload["addressing"], occurred_at=occurred_at)
-                        await self._consider_exchange_world(source_id, user_text, reply_text, occurred_at)
+                        if addressing:
+                            self.store.record_addressing(source_id, addressing, occurred_at=occurred_at)
+                        await self._consider_exchange_world(source_id, user_text, reply_text, occurred_at,
+                                                            decided=world_update)
                         return committed
                     except ValueError as exc:
                         if duties is not None and str(exc).startswith('DAILY_LIFE_DEVELOPMENT_'):

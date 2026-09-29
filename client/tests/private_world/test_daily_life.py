@@ -727,3 +727,32 @@ def test_addressing_profile_keeps_latest_exact_quotes_per_side(tmp_path):
     assert [item["quote"] for item in profile["user_self"]] == ["你的老姜。"]
     assert [item["quote"] for item in profile["linli_calls_user"]] == ["好呀老姜，"]
     assert store.addressing_profile(now=now - timedelta(days=3)) == {}
+
+
+def test_exchange_commit_keeps_addressing_and_world_gate_from_one_request(tmp_path, monkeypatch):
+    """Addressing and the world-update gate ride on exchange-facts; the commit must accept them."""
+    import asyncio
+    from datetime import datetime, timezone
+    from runtime.private_world.daily_life import DailyLifeStore
+    from runtime.private_world.daily_life_runtime import DailyLifeRuntime
+    purposes = []
+
+    class Port:
+        async def ask(self, state, questions, *, purpose):
+            purposes.append(purpose)
+            answers = {k: 'none' if 'none' in q['criteria'] else next(iter(q['criteria'])) for k, q in questions.items()}
+            if purpose == 'exchange-facts':
+                quote = next(k for k, (s, e) in state['quotes'].items() if k.startswith('u')
+                             and state['sources']['user_letter'][s:e] == '小离，')
+                answers.update(address_linli_quote=quote, world_update='none')
+            return answers
+
+    monkeypatch.setattr('runtime.reply.jev_questions.configured_questions', lambda: Port())
+    store = DailyLifeStore(tmp_path / 'life.sqlite3')
+    runtime = DailyLifeRuntime(store, lambda: None, lambda: '')
+    now = datetime(2026, 9, 29, 4, tzinfo=timezone.utc)
+    assert asyncio.run(runtime.consume_exchange('reply:x:1', '小离，今天项目返工了。', '辛苦了。', occurred_at=now))
+    assert 'exchange-world-update' not in purposes and purposes.count('exchange-facts') == 1
+    assert [q['quote'] for q in store.addressing_profile(now=now)['user_calls_linli']] == ['小离，']
+    with store._db() as db:
+        assert db.execute('SELECT decision FROM life_exchange_world_gate WHERE source_id=?', ('reply:x:1',)).fetchone()[0] == 'none'
