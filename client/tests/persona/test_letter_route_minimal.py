@@ -51,3 +51,16 @@ def test_invalid_answers_never_silently_choose_text(answers):
     port.answers = answers
     with pytest.raises(ValueError, match='JEV_RESPONSE_INVALID'):
         asyncio.run(classify(port, 'original'))
+
+
+def test_show_me_requests_count_as_images_not_video():
+    """Preview uses the reply plan's media meaning: "给我看看" asks for a picture."""
+    port = Questions(image='yes')
+    result = asyncio.run(classify(port, '给我看看你们上课的教室是什么样子'))
+    assert explicitly_requested_route(result) is None
+    assert result.reason_code == 'jev_image_request'
+    _state, questions, _purpose = port.calls[0]
+    assert '给我看看' in questions['image']['instructions']
+    video = questions['video']['instructions']
+    assert '给我看看' in video and '只算图片' in video
+    assert '明确' in video and '视频' in video
