@@ -421,6 +421,9 @@ async def _generate_billed(server, event, row):
                 missing_fields=getattr(exc, 'missing_fields', []),
                 extra_field_count=getattr(exc, 'extra_field_count', 0))
             raise
+        if decision.get('dropped_controls'):
+            row['decision_dropped_controls'] = decision['dropped_controls']
+            server._safe_log('personal_chat_controls_dropped', reason=decision['dropped_controls'])
         if contact is not None and decision['skip']:
             raise RuntimeError('JEV_PLAN_UNSUPPORTED')
         if decision['skip']:

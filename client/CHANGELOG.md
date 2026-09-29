@@ -2,6 +2,12 @@
 
 每个版本的完整内容、升级方式和已知问题见 [`docs/releases/`](docs/releases/) 下对应的更新说明；附件以 [GitHub Releases](https://github.com/Ornn8/bside-olivia-community/releases) 为准。
 
+## 2.0.7 - 2026-09-29
+
+修复 QQ 回复因附带的提醒或偏好设置不合规而整条发送失败（`PERSONAL_CHAT_DECISION_INVALID`）。详见 [2.0.7 更新说明](docs/releases/v2.0.7.md)。
+
+- 深夜约定的提醒、缺少你原话依据的偏好变化、超出七天的时间等，现在只忽略这一项设置，回复照常发出，并在诊断中记录原因。
+
 ## 2.0.6 - 2026-09-29
 
 修复林离回信变得冷淡、带攻击性，以及 Key 带空格时回复失败。详见 [2.0.6 更新说明](docs/releases/v2.0.6.md)。

@@ -33,6 +33,36 @@ INSTRUCTION += ('\n优先回应本轮用户的新内容；recent_dialogue里的�
                 '分清谁向谁索要照片、谁发了图片以及图片是谁拍的，不能交换双方角色。\n')
 
 
+_CONTROL_REASONS = {'UNSUPPORTED_PREFERENCE_CHANGE', 'TIME_RANGE', 'QUIET_HOURS', 'PAUSE_CONFLICT', 'FOLLOWUP_CONFLICT'}
+
+
+def _controls(data, *, user, now, proactive):
+    changes = any(data[k] != 'keep' for k in ('listening','initiative','letter')) or data['followup_at'] is not None
+    if changes and (proactive or not data['evidence'].strip() or data['evidence'] not in user):
+        raise ValueError("UNSUPPORTED_PREFERENCE_CHANGE")
+    data['followup_cancel'] = data['followup_at'] == 'cancel'
+    if data['followup_cancel']:
+        data['followup_at'] = None
+    for key in ('pause_until','letter_until','followup_at'):
+        value = data[key]
+        if value is None:
+            continue
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is None or not now < parsed.timestamp() <= now + 7 * 86400:
+            raise ValueError("TIME_RANGE")
+        data[key] = parsed.timestamp()
+        if key == 'followup_at':
+            local = parsed.astimezone(LOCAL)
+            if local.hour * 60 + local.minute < 510:
+                raise ValueError("QUIET_HOURS")
+    if data['followup_at'] and data['initiative'] == 'pause' and data['pause_until'] is None:
+        data['pause_until'] = data['followup_at']
+    if data['pause_until'] and data['initiative'] != 'pause' or data['letter_until'] and data['letter'] != 'pause':
+        raise ValueError("PAUSE_CONFLICT")
+    if data['followup_at'] and data['pause_until'] and data['pause_until'] > data['followup_at']:
+        raise ValueError("FOLLOWUP_CONFLICT")
+
+
 def decode(raw, *, user, now, proactive=False):
     try:
         # Tolerate a whole JSON code block, never extract JSON from mixed prose.
@@ -61,30 +91,15 @@ def decode(raw, *, user, now, proactive=False):
             raise ValueError("PREFERENCES")
         if type(data.get('letter_invitation', False)) is not bool or not isinstance(data['evidence'], str):
             raise ValueError("EVIDENCE_TYPE")
-        changes = any(data[k] != 'keep' for k in ('listening','initiative','letter')) or data['followup_at'] is not None
-        if changes and (proactive or not data['evidence'].strip() or data['evidence'] not in user):
-            raise ValueError("UNSUPPORTED_PREFERENCE_CHANGE")
-        data['followup_cancel'] = data['followup_at'] == 'cancel'
-        if data['followup_cancel']:
-            data['followup_at'] = None
-        for key in ('pause_until','letter_until','followup_at'):
-            value = data[key]
-            if value is None:
-                continue
-            parsed = datetime.fromisoformat(value)
-            if parsed.tzinfo is None or not now < parsed.timestamp() <= now + 7 * 86400:
-                raise ValueError("TIME_RANGE")
-            data[key] = parsed.timestamp()
-            if key == 'followup_at':
-                local = parsed.astimezone(LOCAL)
-                if local.hour * 60 + local.minute < 510:
-                    raise ValueError("QUIET_HOURS")
-        if data['followup_at'] and data['initiative'] == 'pause' and data['pause_until'] is None:
-            data['pause_until'] = data['followup_at']
-        if data['pause_until'] and data['initiative'] != 'pause' or data['letter_until'] and data['letter'] != 'pause':
-            raise ValueError("PAUSE_CONFLICT")
-        if data['followup_at'] and data['pause_until'] and data['pause_until'] > data['followup_at']:
-            raise ValueError("FOLLOWUP_CONFLICT")
+        try:
+            _controls(data, user=user, now=now, proactive=proactive)
+        except (ValueError, TypeError, OverflowError) as exc:
+            # Follow-ups and preference changes are optional side effects of a
+            # reply. An invalid one (night-time follow-up, change without the
+            # user's words, bad time) is dropped; the reply itself is still sent.
+            data.update(listening='keep', initiative='keep', letter='keep', pause_until=None,
+                        letter_until=None, followup_at=None, followup_cancel=False)
+            data['dropped_controls'] = str(exc) if str(exc) in _CONTROL_REASONS else 'VALUE_TYPE_OR_TIME'
         if data['skip'] and (not proactive or data['text'].strip()) or not data['skip'] and not data['text'].strip():
             raise ValueError("EMPTY_OR_SKIPPED_REPLY")
         if '[[' in data['text'] or ']]' in data['text']:
