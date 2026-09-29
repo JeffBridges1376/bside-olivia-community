@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import hashlib
 import json
 import math
 import os
 from pathlib import Path
 import re
+import secrets
 import shutil
 import socket
 import subprocess
@@ -125,6 +127,59 @@ def _load_video_environment(
     return values
 
 
+def _adopt_saved_account_key(config_root: Path) -> None:
+    """Bind a saved Olivia account key when llm.json still names a retired provider.
+
+    1.x users could keep DeepSeek for replies while holding an account key for
+    JEV and cloud generation. 2.0 ignores the retired provider, so without this
+    the reply path had no key at all. A valid relay binding is never replaced.
+    """
+
+    from original_client_relay_api import RELAY_BASE, RELAY_MODEL
+
+    account_key = config_root / "olivia_relay_key.dpapi"
+    config_path = config_root / "llm.json"
+    try:
+        protected = account_key.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        return
+    if not protected:
+        return
+    previous = None
+    try:
+        previous = config_path.read_bytes()
+        payload = json.loads(previous.decode("utf-8"))
+        if ManagedLLMConfig.from_mapping(payload).base_url.rstrip("/") == RELAY_BASE:
+            return
+    except FileNotFoundError:
+        previous = None
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        pass  # Unreadable settings are replaced by the account binding below.
+    protected_bytes = (protected + "\n").encode("utf-8")
+    key_path = config_root / f"deepseek_api_key.{secrets.token_hex(16)}.dpapi"
+    config = replace(
+        ManagedLLMConfig.from_mapping({
+            "schema_version": 3, "provider": "openai_compatible",
+            "base_url": RELAY_BASE, "model": RELAY_MODEL, "max_retries": 2,
+        }),
+        requires_api_key=True,
+    )
+    staging = config_path.with_suffix(".json.staging")
+    try:
+        if previous is not None:
+            (config_root / "llm.retired.json").write_bytes(previous)
+        key_path.write_bytes(protected_bytes)
+        staging.write_text(json.dumps({
+            **config.to_mapping(),
+            "key_file": key_path.name,
+            "key_sha256": hashlib.sha256(protected_bytes).hexdigest(),
+        }, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+        staging.replace(config_path)
+    except OSError:
+        staging.unlink(missing_ok=True)
+        key_path.unlink(missing_ok=True)
+
+
 def _load_llm_environment(
     environment: dict[str, str],
     data_root: Path,
@@ -135,6 +190,7 @@ def _load_llm_environment(
 
     from original_client_relay_api import RELAY_BASE, RELAY_MODEL
 
+    _adopt_saved_account_key(data_root / "config")
     values = environment.copy()
     base_url = RELAY_BASE
     model = RELAY_MODEL
