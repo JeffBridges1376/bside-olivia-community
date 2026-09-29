@@ -249,7 +249,7 @@ def test_persisted_visible_life_is_disclosed_to_real_persona_generation(tmp_path
     bridge.adapter.daily_life = DailyLifeRuntime(store, lambda: provider, lambda: "")
     class SelectionPort:
         async def ask(self, state, questions, **kwargs):
-            return {key: 'rank9' if item['field'] == 'current' else 'rank0'
+            return {key: 'must' if item['field'] == 'current' else 'skip'
                     for key, item in state['records'].items()}
     monkeypatch.setattr('runtime.reply.jev_questions.configured_questions', lambda: SelectionPort())
     result = asyncio.run(pipeline.run(ReplyRequest(content="你今天练琴怎么样？", request_id="life-context"), _context()))
