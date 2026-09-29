@@ -1710,11 +1710,34 @@ def _complete_layer_reviews(
             from .jev_quality import review_layers_json
             # JEV confirmation reuses code-scoped projections, not the legacy
             # full conversation/authority context assembled for text-model review.
-            texts, decisions = await review_layers_json(port, requests, candidate, evidence_bound)
+            # A long letter may not fit one combined request. Review every
+            # layer, with the same span confirmations, in smaller requests and
+            # coarser spans rather than failing a reply the user already paid
+            # for. The whole letter is always reviewed.
+            reviewed = None
+            for max_spans in (32, 16, 8):
+                for groups in ([list(requests)], [[item] for item in requests]):
+                    try:
+                        attempt = []
+                        for group in groups:
+                            texts, decisions = await review_layers_json(
+                                port, group, candidate, evidence_bound, max_spans=max_spans)
+                            attempt.append((group, texts, decisions))
+                    except ValueError as exc:
+                        if str(exc) != 'JEV_INPUT_TOO_LARGE':
+                            raise
+                        continue
+                    reviewed = attempt
+                    break
+                if reviewed is not None:
+                    break
+            if reviewed is None:
+                raise ValueError('JEV_INPUT_TOO_LARGE')
             return tuple(replace(
                 _parse_layer_result(layer, text, candidate=candidate, evidence_bound=evidence_bound),
                 preadjudicated=tuple(_AdjudicationDecision(**item) for item in decisions[layer.name]))
-                for (layer, _), text in zip(requests, texts, strict=True))
+                for group, texts, decisions in reviewed
+                for (layer, _), text in zip(group, texts, strict=True))
         max_parallel = (
             2
             if (gateway_scope is GatewayRequestScope.JSON_MAX_REASONING
