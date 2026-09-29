@@ -497,14 +497,6 @@ def _memory_lifecycle(memory: object) -> object | None:
         return _UnavailableMemoryLifecycle()
 
 
-def _conversation_status(memory: object) -> str:
-    try:
-        status = memory.status().status  # type: ignore[union-attr]
-    except Exception:
-        return "unavailable"
-    return status if status in {"available", "degraded", "unavailable", "disabled"} else "unavailable"
-
-
 def _conversation_user_id(memory: object, explicit: str | None) -> str:
     from runtime.memory.conversation_memory_identity import (
         ConversationMemoryIdentityError,

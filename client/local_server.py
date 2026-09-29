@@ -804,10 +804,6 @@ class LetterAdapter:
             "error_code": None,
         }
 
-    def get_initial_messages(self) -> list[dict[str, str]]:
-        # No legacy letter samples or hidden few-shot material are loaded.
-        return []
-
     def _messages(self, content: str, context: str = "", *, persona_snapshot=None) -> tuple[dict[str, str], ...]:
         if self.config.persona_v2_enabled:
             return self._persona_v2_messages(content, context, persona_snapshot=persona_snapshot)

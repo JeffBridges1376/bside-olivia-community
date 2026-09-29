@@ -28,8 +28,6 @@ def test_phase_seed_is_available_to_world_then_real_progress_replaces_initial_pl
         return {'activity': {'kind': 'practice', 'place_id': 'home', 'focus': '夜曲音色'}, 'meal': None, 'development': [],
                 'project': {'id': project['id'], 'title': project['title'], 'status': 'ongoing',
                             'progress': '开始比较两种触键方式，尚未决定。', 'next_activity': None}}
-
-    runtime._refresh_emotion = no_emotion
     runtime._complete = complete
     asyncio.run(runtime.refresh(NOW))
     assert runtime.error_code is None

@@ -75,10 +75,6 @@ def redact(value: Any) -> Any:
     return value
 
 
-def redacted_json(value: Any) -> str:
-    return json.dumps(redact(value), ensure_ascii=False, sort_keys=True)
-
-
 def validate_relative_path(value: str, *, field: str) -> str:
     """Validate a manifest-owned path before it is joined to a data root."""
 

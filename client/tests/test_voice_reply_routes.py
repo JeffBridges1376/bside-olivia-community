@@ -212,7 +212,6 @@ def test_six_delivery_combinations_select_only_required_stages(tmp_path, monkeyp
         letter.update(music_provider='ace_step_xl_cover', material={'cover_source_id': 'a'*32, 'cover_lyrics': '这句歌词不是承诺。'})
         monkeypatch.setattr(covers, 'render_cover_reply', song)
         monkeypatch.setattr(uploads, 'source_path', lambda *a: scene)
-    monkeypatch.setattr(media, 'concatenate_reply_audio', concat)
     asyncio.run(server._render_media_job('matrix', 'synthetic', 'synthetic', mode))
     assert letter['media_status'] == 'COMPLETED', letter
     music = 'cover' if cover else 'music'

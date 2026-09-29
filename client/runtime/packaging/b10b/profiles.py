@@ -609,6 +609,3 @@ def profile_settings(profile: str, *, manifest: dict[str, Any] | None = None) ->
     return verified_local_profile(manifest)
 
 
-def profile_modules(profile: str) -> list[str]:
-    profile_settings(profile)  # validate before the caller mutates lifecycle state
-    return ["core/http", "asr-local", "visual-driver", "visual-livetalking", "tts-local"]

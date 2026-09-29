@@ -186,7 +186,6 @@ def test_world_writer_selects_grounded_evaluation_without_reaction_to_taste_shor
     runtime=DailyLifeRuntime(store, lambda:None, lambda:PERSONA)
     async def no_emotion(now):
         pass
-    runtime._refresh_emotion=no_emotion
     calls=[]
     async def complete(prompt, data, request_id, **kwargs):
         calls.append(data)

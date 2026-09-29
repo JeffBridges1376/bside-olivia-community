@@ -186,13 +186,6 @@ class DailyLifeRuntime:
                 return None
         return self._emotion
 
-    async def _refresh_emotion(self, now):
-        try:
-            if self.emotion is not None:
-                await self.emotion.refresh_world(now)
-        except Exception:
-            pass  # Appraisal availability must not prevent autonomous life updates.
-
     @staticmethod
     def _refresh_block_end(now: datetime) -> datetime:
         local = now.astimezone(_SHANGHAI)

@@ -231,10 +231,6 @@ def prepare_installer(data_root: Path) -> Path:
     return install_component(data_root)
 
 
-def launch_installer(_component: Path) -> None:
-    return None
-
-
 def public_status(data_root: Path, runtime: dict[str, object]) -> dict[str, object]:
     shell = find_shell(data_root)
     task = runtime.get("napcat_task")

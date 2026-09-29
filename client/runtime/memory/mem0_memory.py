@@ -324,14 +324,6 @@ class Mem0Backend(Protocol):
 
     def delete(self, memory_id: str) -> object: ...
 
-    def delete_all(
-        self,
-        user_id: str | None = None,
-        agent_id: str | None = None,
-        run_id: str | None = None,
-    ) -> object: ...
-
-
 @dataclass(frozen=True)
 class Mem0Config:
     enabled: bool
@@ -674,13 +666,6 @@ class DeferredConversationMemoryAdapter:
                 self._active_calls -= 1
                 self._calls_done.notify_all()
 
-    def _current(self) -> ConversationMemoryPort:
-        with self._lock:
-            if self._delegate is not None:
-                return self._delegate
-            reason_code = self._reason_code
-        return UnavailableConversationMemoryPort(reason_code, config=self.config)
-
     def _initialize(self) -> None:
         while True:
             with self._lock:
@@ -941,14 +926,6 @@ def _has_delete_acknowledgement(value: object) -> bool:
         isinstance(value, Mapping)
         and set(value) == {"message"}
         and value["message"] == "Memory deleted successfully!"
-    )
-
-
-def _has_clear_acknowledgement(value: object) -> bool:
-    return (
-        isinstance(value, Mapping)
-        and set(value) == {"message"}
-        and value["message"] == "Memories deleted successfully!"
     )
 
 

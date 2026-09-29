@@ -38,14 +38,6 @@ def register_provider(provider_id: str, provider: ModuleProvider) -> None:
     _PROVIDERS[normalized] = provider
 
 
-def unregister_provider(provider_id: str) -> None:
-    _PROVIDERS.pop(str(provider_id).strip().lower(), None)
-
-
-def registered_provider_ids() -> tuple[str, ...]:
-    return tuple(sorted(_PROVIDERS))
-
-
 def provider_health(provider_id: str, context: ProviderContext) -> dict[str, Any]:
     provider = _PROVIDERS.get(str(provider_id).strip().lower())
     if provider is None:

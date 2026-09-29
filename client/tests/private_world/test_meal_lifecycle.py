@@ -216,7 +216,6 @@ def test_runtime_advances_due_meal_even_when_main_activity_is_fresh(tmp_path,mon
     runtime=module.DailyLifeRuntime(store,lambda:object(),lambda:'音乐专业大学生')
     async def no_emotion(now): pass
     async def forbidden(*args,**kwargs): pytest.fail('fresh main activity must not regenerate')
-    monkeypatch.setattr(runtime,'_refresh_emotion',no_emotion)
     monkeypatch.setattr(runtime,'_complete',forbidden)
     monkeypatch.setattr(module,'configured_duties',lambda:None)
     monkeypatch.setattr(jev_questions,'configured_questions',lambda:port)

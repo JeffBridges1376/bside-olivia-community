@@ -105,19 +105,6 @@ class ManifestAssetResolver:
         self._roots = normalized_roots
         self._items = items
 
-    @classmethod
-    def from_file(
-        cls,
-        manifest_path: str | Path,
-        roots: Mapping[str, str | Path],
-    ) -> "ManifestAssetResolver":
-        try:
-            with Path(manifest_path).open("r", encoding="utf-8") as handle:
-                manifest = json.load(handle)
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise AssetResolutionError("MANIFEST_UNAVAILABLE") from exc
-        return cls(manifest, roots)
-
     def resolve(self, asset_ref: str, kind: AssetKind) -> ResolvedAsset:
         if not isinstance(asset_ref, str) or ASSET_REF_RE.fullmatch(asset_ref) is None:
             raise AssetResolutionError("INVALID_ASSET_REFERENCE")

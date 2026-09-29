@@ -393,21 +393,3 @@ async def layer_json(port, layer, messages, candidate, evidence_bound):
     return json.dumps(result)
 
 
-def adjudication_json(port, messages):
-    packet = json.loads(messages[1]['content'])
-    decisions = []
-    for context_id, context in packet['contexts'].items():
-        claims = [claim for claim in packet['claims'] if claim['context_id'] == context_id]
-        questions = {claim['evidence_id']: {'instructions': 'Independently adjudicate this exact span and code under the supplied contract. Reject unsupported allegations and supported ordinary facts. User desires never authorize relationship or intimacy.',
-            'criteria': {'CONFIRM': 'Exact claim violates authority or lacks permitted support',
-                         'REJECT': 'False positive or supported by permitted evidence'}} for claim in claims}
-        # Each adjudication sees only its code-authorized support context.
-        state = {'contract': messages[0]['content'], 'candidate_reply': packet['candidate_reply'],
-                 'support_context': context, 'claims': claims}
-        answers = {}
-        for batch in _question_batches(state, questions, 'quality_adjudication'):
-            answers.update(_checked(port.ask_sync(state, batch, purpose='quality_adjudication'), batch))
-        decisions.extend({**{k: claim[k] for k in ('evidence_id', 'code', 'start', 'end')},
-                          'decision': answers[claim['evidence_id']]} for claim in claims)
-    by_id = {item['evidence_id']: item for item in decisions}
-    return json.dumps({'decisions': [by_id[claim['evidence_id']] for claim in packet['claims']]})
