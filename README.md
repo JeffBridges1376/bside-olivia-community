@@ -21,8 +21,9 @@ BSide Olivia Community 是面向 Windows 的非官方陪伴复刻项目。它复
 
 | 版本 | 状态 | 说明 |
 | --- | --- | --- |
-| [1.3.14](https://github.com/Ornn8/bside-olivia-community/releases/tag/v1.3.14) | 当前发布版 | QQ 语音优先调度，照片与语音不再排队等待共用媒体锁，修复长视频因累计等待超时失败。[更新说明](client/docs/releases/v1.3.14.md) |
-| 2.0.0 | 即将发布 | 世界连续性、持续情绪、JEV 云端判断、QQ 与主动联系改进、新开机动画；只保留 Olivia 账户 Key，移除自填大模型和 GPU 服务配置。[更新说明](client/docs/releases/v2.0.0.md) |
+| [2.0.1](https://github.com/Ornn8/bside-olivia-community/releases/tag/v2.0.1) | 当前发布版 | 修复 1.x 升级用户寄信失败、“给我看看”被误判为视频、随信照片光线与场景不符，账单写明每次最低 ¥0.01。[更新说明](client/docs/releases/v2.0.1.md) |
+| [2.0.0](https://github.com/Ornn8/bside-olivia-community/releases/tag/v2.0.0) | 上一版 | 世界连续性、持续情绪、JEV 云端判断、QQ 与主动联系改进、新开机动画；只保留 Olivia 账户 Key，移除自填大模型和 GPU 服务配置。[更新说明](client/docs/releases/v2.0.0.md) |
+| [1.3.14](https://github.com/Ornn8/bside-olivia-community/releases/tag/v1.3.14) | 旧版 | QQ 语音优先调度，照片与语音不再排队等待共用媒体锁，修复长视频因累计等待超时失败。[更新说明](client/docs/releases/v1.3.14.md) |
 
 各版附件、升级方式和已知问题以对应更新说明为准。
 
@@ -48,7 +49,7 @@ BSide Olivia Community 是面向 Windows 的非官方陪伴复刻项目。它复
 
 Key 由当前 Windows 用户通过 DPAPI 加密保存，解密值只在本机后端使用，不写入日志或页面。
 
-从 2.0.0 起不再支持 DeepSeek、OpenCode Go、阿里云百炼等自填大模型接口，也不再支持自填 GPU 生成服务地址。升级后旧的自填配置会被忽略，请改用 Olivia 账户 Key。长期记忆组件仍在本机安装和配置。
+从 2.0.0 起不再支持 DeepSeek、OpenCode Go、阿里云百炼等自填大模型接口，也不再支持自填 GPU 生成服务地址。升级后旧的自填配置会被忽略，请改用 Olivia 账户 Key；本机已保存 Olivia 账户 Key 的用户，从 2.0.1 起启动时会自动用它连接回信服务。长期记忆组件仍在本机安装和配置。
 
 ## 可以做什么
 
