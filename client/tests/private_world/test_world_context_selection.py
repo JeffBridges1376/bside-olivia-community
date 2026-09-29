@@ -1,6 +1,6 @@
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -180,3 +180,22 @@ def test_directory_uses_short_same_source_aliases_and_host_restores_identifiers(
             return {'r0': 'rank8', 'r1': 'rank9'}
     result = json.loads(asyncio.run(select_world_context(Port(), packet, '还去练习吗？')))
     assert result['threads'] == list(reversed(originals))
+
+
+def test_reply_candidates_offer_live_threads_and_only_recently_ended_ones(tmp_path):
+    """Every thread ever made was offered on each reply, so cost grew until replies failed."""
+    now = datetime(2026, 9, 29, 4, tzinfo=timezone.utc)
+    store = DailyLifeStore(tmp_path / 'life.db')
+    current = {'location': '家里', 'activity': '练琴', 'note': '继续练习。'}
+    for source, days, projects in (
+        ('day:a', 40, [{'id': 'old-ongoing', 'title': '长期练习', 'detail': '一直在练。', 'status': 'ongoing'}]),
+        ('day:b', 30, [{'id': 'old-cancelled', 'title': '取消的计划', 'detail': '取消了。', 'status': 'cancelled'}]),
+        ('day:c', 10, [{'id': 'old-done', 'title': '早就完成的曲子', 'detail': '完成了。', 'status': 'completed'}]),
+        ('day:d', 2, [{'id': 'recent-done', 'title': '刚完成的调音', 'detail': '调好了。', 'status': 'completed'}]),
+        ('day:e', 1, [{'id': 'waiting', 'title': '等你回复的约定', 'detail': '等你说。', 'status': 'awaiting_user'}]),
+    ):
+        store.publish_day(source, current, projects, occurred_at=now - timedelta(days=days))
+    threads = {r['value']['id'] for r in store.reply_candidates(now=now)['records'] if r['field'] == 'threads'}
+    assert threads == {'old-ongoing', 'recent-done', 'waiting'}
+    # Ended threads stay in the journal; only the reply candidates leave them out.
+    assert {'old-done', 'old-cancelled'} <= {p['id'] for p in store.snapshot(now)['projects']}

@@ -32,6 +32,9 @@ _VISIBLE = "(kind IN ('daily','media','image') OR json_array_length(payload,'$.u
 # Recent observations remain bounded for reply context; publication timing is
 # derived from the last published moment instead of a fixed six-hour deadline.
 RECENT_OBSERVATION_WINDOW = timedelta(hours=6)
+# Ended threads stay reply candidates this long; older ones remain in the
+# journal and in memory recall, but no longer grow every reply's world context.
+ENDED_THREAD_WINDOW = timedelta(days=7)
 # Observation validity, not an inferred duration or proof of completion.
 _SHORT_ACTIVITY_MINUTES = {"meal": 60, "walk": 90, "errand": 90, "housework": 90}
 
@@ -208,6 +211,30 @@ def validate_exchange_updates(source_id, user_text, reply_text, updates, *, stam
     if len({p["id"] for p in checked}) != len(checked):
         raise ValueError("DAILY_LIFE_UPDATES_INVALID")
     return checked
+
+
+def _thread_ended_at(project: dict) -> datetime | None:
+    """When a thread stopped being live: finished, cancelled or a lapsed short-term item."""
+    if project.get("status") in {"completed", "cancelled"}:
+        stamp = project.get("updated_at")
+    elif project.get("deadline_expired") and project.get("time_scope") == "transient":
+        stamp = project.get("deadline_at") or project.get("valid_until") or project.get("updated_at")
+    else:
+        return None
+    try:
+        ended = datetime.fromisoformat(stamp)
+    except (TypeError, ValueError):
+        return datetime.min.replace(tzinfo=timezone.utc)  # Ended at an unknown time: treat as old.
+    return ended if ended.tzinfo else ended.replace(tzinfo=timezone.utc)
+
+
+def _live_threads(projects: list[dict], now: datetime) -> list[dict]:
+    kept = []
+    for project in projects:
+        ended = _thread_ended_at(project)
+        if ended is None or now - ended <= ENDED_THREAD_WINDOW:
+            kept.append(project)
+    return kept
 
 
 def _project_evidence(project: dict) -> dict:
@@ -637,7 +664,7 @@ class DailyLifeStore:
             snapshot = self._snapshot(db, now)
             from .character_development import view as development_view
             development = development_view(db, now)
-            projects = [_project_evidence(p) for p in self._projects_at(db, now)]
+            projects = [_project_evidence(p) for p in _live_threads(self._projects_at(db, now), now)]
             observations = self._read_observations(db, now)
             last_reply = db.execute('SELECT MAX(replied_at) FROM life_rest_exchanges WHERE replied_at<=?', (_time(now),)).fetchone()[0]
             deliveries = [json.loads(r[0])['delivery'] for r in db.execute(
