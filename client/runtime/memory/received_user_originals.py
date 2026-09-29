@@ -44,13 +44,17 @@ def undelivered_letter_sources(rows):
         and row['letter_id'] and _undelivered_letter(row)))
 
 
-def received_originals(rows):
-    """Caller supplies durable rows. Never read reply_text or synthetic media rows."""
+def received_originals(rows, *, include_undelivered=False):
+    """Caller supplies durable rows. Never read reply_text or synthetic media rows.
+
+    Failed letters are left out of the memory index; a caller evaluating the
+    letter currently being (re)sent passes include_undelivered=True.
+    """
     grouped = {}
     for row in rows:
         if (not isinstance(row, Mapping) or row.get('origin') == 'proactive' or row.get('read_only')
                 or not isinstance(row.get('letter_id'), str) or not row['letter_id']
-                or _undelivered_letter(row)):
+                or not include_undelivered and _undelivered_letter(row)):
             continue
         channel = row.get('channel') or 'letter'
         if channel not in {'qq', 'wechat', 'letter'}:

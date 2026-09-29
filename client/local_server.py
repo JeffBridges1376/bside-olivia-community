@@ -907,8 +907,9 @@ class LetterAdapter:
         identifier = source.removeprefix('reply:').rsplit(':', 1)[0]
         rows = [*store.letters, *store.personal_chats]
         current = [row for row in rows if row.get('letter_id') == identifier]
-        identities = {item.source_id for item in received_originals(current)}
-        receipts = tuple(sorted((item for item in received_originals(rows)
+        # The letter being resent in place may still read FAILED; it is this turn's input.
+        identities = {item.source_id for item in received_originals(current, include_undelivered=True)}
+        receipts = tuple(sorted((item for item in received_originals(rows, include_undelivered=True)
             if item.source_id in identities and item.occurred_at <= now
             and item.user_message in content), key=lambda item: item.occurred_at))
         return await emotion.evaluate_received(receipts, now=now)
