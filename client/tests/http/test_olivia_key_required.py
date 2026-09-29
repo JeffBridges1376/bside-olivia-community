@@ -67,3 +67,29 @@ def test_reply_writer_check_reads_the_key_of_a_configured_gateway(monkeypatch):
     for gateway, missing in ((keyed, False), (keyless, True), (optional, False)):
         monkeypatch.setattr(local_server.letters_adapter, '_runtime', (None, gateway))
         assert local_server._reply_writer_unavailable() is missing
+
+
+def test_failed_letter_diagnostics_name_the_internal_cause_without_user_text(monkeypatch):
+    """A 2.0.1 bundle only said LLM_UNAVAILABLE, hiding which step failed."""
+    monkeypatch.setattr(local_server, '_persist_store_state', lambda: None)
+    causes = {
+        'too-large': ValueError('JEV_INPUT_TOO_LARGE'),
+        'wrapped': RuntimeError('outer'),
+        'private': ValueError('我吃完了，味道很好'),
+    }
+    causes['wrapped'].__cause__ = ValueError('JEV_WORLD_SELECTION_CAPACITY')
+    records = {}
+    for letter_id, error in causes.items():
+        monkeypatch.setattr(local_server.store, 'letters', [{'letter_id': letter_id, 'content': 'synthetic', 'letter_status': 'PENDING'}])
+
+        async def generate(*_args, _error=error, **_kwargs):
+            raise _error
+
+        monkeypatch.setattr(local_server, 'generate_reply', generate)
+        asyncio.run(local_server._run_reply_job(letter_id, 'synthetic', idempotency_key=None))
+        records[letter_id] = [r for r in local_server.runtime_diagnostic_event_snapshot() if r['event'] == 'letter_failed'][-1]
+    assert records['too-large']['cause_code'] == 'JEV_INPUT_TOO_LARGE'
+    assert records['too-large']['exception_type'] == 'ValueError'
+    assert records['wrapped']['cause_code'] == 'JEV_WORLD_SELECTION_CAPACITY'
+    assert 'cause_code' not in records['private']
+    assert '味道' not in str(records)

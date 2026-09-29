@@ -5322,7 +5322,8 @@ async def _run_reply_job(
             letter["error_code"] = code
             _mark_media_not_requested(letter)
             _persist_store_state()
-        _safe_log("letter_failed", error_code=code)
+        from runtime.diagnostics.failure_context import letter_failure_context
+        _safe_log("letter_failed", error_code=code, **letter_failure_context(exc))
         return False
 
 
