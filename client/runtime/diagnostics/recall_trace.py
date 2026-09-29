@@ -23,7 +23,7 @@ _COUNTS = frozenset({'archive_count', 'indexed_letters', 'archive_total', 'archi
 _STATES = frozenset({'available', 'unavailable', 'degraded', 'disabled', 'paused', 'incomplete'})
 _RESULTS = frozenset({'checked', 'partial', 'unavailable', 'skipped'})
 _MODES = frozenset({'direct', 'contextual', 'ambiguous', 'history_tail'})
-# Fixed JEV failure codes (e.g. JEV_HISTORY_QUOTE_CAPACITY) name the failing limit.
+# Fixed JEV failure codes (e.g. JEV_RECALL_SOURCE_CAPACITY) name the failing limit.
 _JEV_REASON = re.compile(r'JEV_[A-Z0-9_]{2,60}')
 _REASONS = frozenset({'capacity', 'timeout', 'validation', 'provider', 'source_parse',
                      'input_capacity', 'no_history', 'not_enabled'})
