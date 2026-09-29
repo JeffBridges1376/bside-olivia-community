@@ -239,6 +239,7 @@ async def select_history_messages(messages, gateway, *, max_input_chars, request
             if jev_port is not None:
                 from .jev_history import select_history
                 value = await select_history(jev_port, packet, refs)
+                gap = gap or bool(value.pop('overflow', False))
             else:
                 response = await asyncio.wait_for(gateway.complete_structured_scoped(
                     ({'role': 'system', 'content': instruction}, {'role': 'user', 'content': _encode(packet)}),

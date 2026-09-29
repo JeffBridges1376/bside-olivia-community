@@ -108,8 +108,8 @@ def test_dependency_correction_between_speakers_is_rejected():
     refs = [{'citation': 'a', 'speaker': 'linli', 'text': '我收到了。', 'evidence_scope': 'recorded_utterance'},
             {'citation': 'b', 'speaker': 'user', 'text': '不是的，还没有。', 'evidence_scope': 'current_input'}]
     port = Port({'dep_0_kind': 'correction', 'dep_0_earlier': '0', 'dep_0_later': '1'})
-    with pytest.raises(ValueError, match='JEV_HISTORY_SPEAKER_CONFLICT'):
-        asyncio.run(select_history(port, {'candidates': []}, refs))
+    rejected = asyncio.run(select_history(port, {'candidates': []}, refs))
+    assert rejected['dependencies'] == [] and rejected['overflow'] is True  # dropped, recall still runs
     port = Port({'dep_0_kind': 'challenge', 'dep_0_earlier': '0', 'dep_0_later': '1'})
     result = asyncio.run(select_history(port, {'candidates': []}, refs))
     assert result['dependencies'][0]['kind'] == 'challenge'
@@ -219,21 +219,21 @@ def test_history_twenty_four_sources_use_fixed_relation_slots():
     assert not any(key.startswith('pair_') for key in port.calls[0][1])
 
 
-@pytest.mark.parametrize('answers,error', [
-    ({'dependency_overflow': 'yes'}, 'JEV_HISTORY_DEPENDENCY_CAPACITY'),
-    ({'dep_0_kind': 'correction', 'dep_0_earlier': '0', 'dep_0_later': '1', 'dep_0_later_quote': '1'},
-     'JEV_HISTORY_REFERENCE_INVALID'),
-    ({'dep_0_kind': 'correction', 'dep_0_earlier': '0', 'dep_0_later': '1',
-      'dep_1_kind': 'correction', 'dep_1_earlier': '0', 'dep_1_later': '1'},
-     'JEV_HISTORY_DUPLICATE_DEPENDENCY'),
+@pytest.mark.parametrize('answers', [
+    {'dependency_overflow': 'yes'},
+    {'dep_0_kind': 'correction', 'dep_0_earlier': '0', 'dep_0_later': '1', 'dep_0_later_quote': '1'},
+    {'dep_0_kind': 'correction', 'dep_0_earlier': '0', 'dep_0_later': '1',
+     'dep_1_kind': 'correction', 'dep_1_earlier': '0', 'dep_1_later': '1'},
 ])
-def test_history_slot_invalid_results_do_not_retry(answers, error):
+def test_history_slot_problems_drop_the_relation_not_the_recall(answers):
+    """An invalid or overflowing relation used to fail the whole recall."""
     from runtime.memory.jev_history import select_history
     refs = [{'citation': 'a', 'speaker': 'user', 'text': '明天去。后天再去。', 'evidence_scope': 'recorded_utterance'},
             {'citation': 'b', 'speaker': 'user', 'text': '说错了，不去。', 'evidence_scope': 'current_input'}]
     port = Port(answers)
-    with pytest.raises(ValueError, match=error):
-        asyncio.run(select_history(port, {'candidates': []}, refs))
+    result = asyncio.run(select_history(port, {'candidates': []}, refs))
+    assert result.get('overflow') is True  # the writer gets the "left out" note
+    assert len({(d['earlier'], d['later']) for d in result['dependencies']}) == len(result['dependencies'])
     assert len(port.calls) == 1
 
 

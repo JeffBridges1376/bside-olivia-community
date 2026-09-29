@@ -100,34 +100,50 @@ async def select_history(port, packet, refs):
                     f'slot{slot}的{side}原话证据句索引？遵守state.dependency_contract。', indexes)
     answers = await _ask(port, state, questions, 'history-selection')
     selected = [c['id'] for c in packet['candidates'] if answers[f"relevance_{c['id']}"] == 'yes']
-    if len(selected) > 6:
-        raise ValueError('JEV_HISTORY_SELECTED_CAPACITY')
-    if answers.get('dependency_overflow') == 'yes':
-        raise ValueError('JEV_HISTORY_DEPENDENCY_CAPACITY')
+    # Keep the best-ranked six and the first four relations rather than dropping
+    # the whole recall; an overflow is reported so the writer is told some later
+    # clarifications were left out.
+    selected = selected[:6]
+    overflow = answers.get('dependency_overflow') == 'yes'
     dependencies = []
     for slot in range(4):
         prefix = f'dep_{slot}_'
         kind = answers.get(prefix + 'kind', 'none')
         if kind == 'none':
             continue
+        # An invalid slot (bad quote index, speaker mismatch, duplicate) drops only
+        # that relation; the recall itself still runs and the writer is told some
+        # clarifications were left out.
         item = {'kind': kind}
+        valid = True
         for side in ('earlier', 'later'):
             record_id = answers[prefix + side]
             quote_index = int(answers[prefix + side + '_quote'])
-            options = quote_catalog[record_id]
+            options = quote_catalog.get(record_id, [])
             if not 0 <= quote_index < len(options):
-                raise ValueError('JEV_HISTORY_REFERENCE_INVALID')
+                valid = False
+                break
             item[side] = state['record_ids'][record_id]
             item[side + '_quote'] = options[quote_index]
-        if (kind == 'correction' and catalog[item['earlier']]['speaker'] != catalog[item['later']]['speaker']
-                or kind == 'challenge' and catalog[item['earlier']]['speaker'] == catalog[item['later']]['speaker']):
-            raise ValueError('JEV_HISTORY_SPEAKER_CONFLICT')
-        if any((d['earlier'], d['later']) == (item['earlier'], item['later']) for d in dependencies):
-            raise ValueError('JEV_HISTORY_DUPLICATE_DEPENDENCY')
+        if valid and (kind == 'correction' and catalog[item['earlier']]['speaker'] != catalog[item['later']]['speaker']
+                      or kind == 'challenge' and catalog[item['earlier']]['speaker'] == catalog[item['later']]['speaker']
+                      or any((d['earlier'], d['later']) == (item['earlier'], item['later']) for d in dependencies)):
+            valid = False
+        if not valid:
+            overflow = True
+            continue
         dependencies.append(item)
     from .history_dependencies import validate_dependencies
-    validate_dependencies(dependencies, records)
-    return {'selected_ids': selected, 'dependencies': dependencies}
+    kept = []
+    for item in dependencies:
+        try:
+            validate_dependencies([*kept, item], records)
+        except ValueError:
+            overflow = True  # Drop only the relation that fails validation.
+            continue
+        kept.append(item)
+    dependencies = kept
+    return {'selected_ids': selected, 'dependencies': dependencies, **({'overflow': True} if overflow else {})}
 
 
 

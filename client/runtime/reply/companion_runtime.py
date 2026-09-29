@@ -103,14 +103,26 @@ async def prepare_decision(port, messages, user_text, *, source_id, input_revisi
     reuse = isinstance(cached, dict) and cached.get('input_revision') == input_revision
     if reuse:
         as_of = cached.get('as_of', as_of)
-    try:
-        frozen = FrozenCompanionTurn.create(messages=turns, current_source_id=source_id,
-            capabilities=dict(kinds=list(kinds), synchronize=False, playback_events=False,
-                compose_audio=False, compose_video=False, split_spoken_content=False),
-            environment=dict(can_read=None, can_view=None, can_listen=None), forbidden_kinds=[],
-            as_of=as_of, input_revision=input_revision)
-    except ValueError:
-        raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE') from None
+    from .companion_decision import CompanionDecisionError
+    protected = set(required_sources)
+    while True:
+        try:
+            frozen = FrozenCompanionTurn.create(messages=turns, current_source_id=source_id,
+                capabilities=dict(kinds=list(kinds), synchronize=False, playback_events=False,
+                    compose_audio=False, compose_video=False, split_spoken_content=False),
+                environment=dict(can_read=None, can_view=None, can_listen=None), forbidden_kinds=[],
+                as_of=as_of, input_revision=input_revision)
+            break
+        except CompanionDecisionError as exc:
+            # Long QQ bursts can exceed one request's size or turn count. Leave out
+            # the oldest turns, never the current message, its three predecessors
+            # or required originals; a genuinely invalid input still fails below.
+            droppable = [i for i, turn in enumerate(turns[:-4]) if turn['source_id'] not in protected]
+            if exc.code not in {'JEV_INPUT_TOO_LARGE', 'JEV_INPUT_INVALID'} or not droppable:
+                raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE') from None
+            del turns[droppable[0]]
+        except ValueError:
+            raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE') from None
     if reuse:
         try:
             return FrozenCompanionDecision.from_record(frozen, cached, profile=getattr(port, 'profile', 'full'))
