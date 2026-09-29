@@ -255,6 +255,8 @@ def test_offline_pairs_project_to_stable_ordered_historical_exchanges(tmp_path):
         f"offline-letter-pairs:{digest}:000002",
     ]
     assert exchanges[0].occurred_at < exchanges[1].occurred_at
+    # The stamps only keep file order; the letters have no known date.
+    assert [item.timestamp_known for item in exchanges] == [False, False]
     assert exchanges[0].user_message == "synthetic old letter one"
     assert exchanges[0].assistant_message == "synthetic old reply one"
 
