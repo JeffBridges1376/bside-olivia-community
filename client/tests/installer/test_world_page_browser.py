@@ -41,7 +41,7 @@ window.renderWorld = '''+renderer+';')
         def render():
             page.evaluate("async()=>{await window.renderWorld(document.querySelector('#world'),{state:'available'})}")
         render()
-        assert '当前情绪：释然' in page.locator('#world').inner_text()
+        assert '心情：松了口气' in page.locator('#world').inner_text()
         assert '挂心的事：明天的课堂展示' in page.locator('#world').inner_text()
         concern = '上钢琴专业课时，有一部分内容还没理解；具体疑问尚未记录。'
         page.evaluate('(summary)=>window.payload.emotion.concerns=[{summary}]', concern)
@@ -164,43 +164,55 @@ window.renderWorld = '''+renderer+';')
         payload['emotion']['reactions']=[]
         page.evaluate('(value)=>window.payload=value',payload)
         render()
-        assert '当前情绪：暂无有效记录' in page.locator('#world').inner_text()
-        assert '上次分享' in page.locator('.olivia-world-meta').inner_text()
+        # No reactions and no current mood read as calm, without system wording.
+        assert '心情：平静' in page.locator('#world').inner_text()
         assert '宿舍' not in page.locator('.olivia-world-meta').inner_text()
-        assert page.locator('.olivia-world-overview h3').inner_text()=='按作息休息'
+        assert page.locator('.olivia-world-overview h3').inner_text().endswith('之后还没有新动态')
+        assert '作息仅供参考' not in page.locator('#world').inner_text()
         payload['emotion']['status']='unavailable'
         page.evaluate('(value)=>window.payload=value',payload)
         render()
-        assert '当前情绪：暂时无法读取' in page.locator('#world').inner_text()
+        assert '心情：暂时读不到' in page.locator('#world').inner_text()
         assert '挂心的事：明天的课堂展示' not in page.locator('#world').inner_text()
         payload['emotion'].update(status='available', reactions=[original], current_affect=dict(
             status='available', label='calm', as_of='2026-09-28T08:45:00Z',
             reason='练习后的休息与刚才被理解的对话，让心情渐渐平稳。',
-            basis={'source_ids': ['private-source-not-for-display']}))
+            basis={'kind': 'body', 'source_ids': ['private-source-not-for-display']}))
         page.evaluate('(value)=>window.payload=value',payload)
         render()
-        assert '当前情绪：平静' in page.locator('#world').inner_text()
-        assert '当前情绪：释然' not in page.locator('#world').inner_text()
-        assert '练习后的休息与刚才被理解的对话' in page.locator('#world').inner_text()
-        assert '判断于 2026/9/28 16:45' in page.locator('#world').inner_text()
-        assert 'private-source-not-for-display' not in page.locator('#world').inner_text()
+        body = page.locator('#world').inner_text()
+        assert '心情：平静' in body and '心情：松了口气' not in body
+        # The reason is the category JEV chose, never the stored evidence text.
+        assert '因为身体和作息的状态' in body
+        assert '练习后的休息与刚才被理解的对话' not in body
+        assert '判断于' not in body and 'private-source-not-for-display' not in body
         payload['emotion']['current_affect']['status'] = 'stale'
         page.evaluate('(value)=>window.payload=value',payload)
         render()
-        assert '上次为平静；当前待更新' in page.locator('#world').inner_text()
-        for state, label in [('missing','待评估'), ('unavailable','暂时无法读取')]:
+        assert '心情：平静' in page.locator('#world').inner_text()
+        assert '待更新' not in page.locator('.olivia-world-mood').inner_text()
+        for state, label in [('missing','平静'), ('unavailable','暂时读不到')]:
             payload['emotion']['current_affect'].update(status=state,label=None)
             page.evaluate('(value)=>window.payload=value',payload)
             render()
-            assert '当前情绪：'+label in page.locator('#world').inner_text()
-            assert '当前情绪：平静' not in page.locator('#world').inner_text()
-            assert '当前情绪：释然' not in page.locator('#world').inner_text()
+            assert '心情：'+label in page.locator('#world').inner_text()
+            assert '心情：松了口气' not in page.locator('#world').inner_text()
+        payload['rhythm'] = dict(payload['rhythm'], phase='sleep', planned_rest_window=dict(
+            start='2026-09-28T16:00:00+00:00', end='2026-09-29T00:30:00+00:00'))
+        page.evaluate('(value)=>window.payload=value',payload)
+        render()
+        assert page.locator('.olivia-world-overview h3').inner_text()=='已经睡下了'
+        assert '她计划 00:00–08:30 休息' in page.locator('.olivia-world-meta').inner_text()
+        payload['rhythm']['phase'] = 'interrupted_rest'
+        page.evaluate('(value)=>window.payload=value',payload)
+        render()
+        assert page.locator('.olivia-world-overview h3').inner_text()=='还醒着，在和你聊天'
+        payload['rhythm'] = {key: value for key, value in payload['rhythm'].items() if key not in {'phase', 'planned_rest_window'}}
         payload['emotion']['current_affect'].update(status='available',label='calm')
         page.evaluate('(value)=>window.payload=value',payload)
         page.locator('#world').evaluate("el=>el.removeAttribute('data-world-main')")
         render()
-        assert '当前情绪：平静' in page.locator('#world').inner_text()
-        assert '判断于 2026/9/28 16:45' in page.locator('#world').inner_text()
+        assert '心情：平静' in page.locator('#world').inner_text()
         page.locator('#world').evaluate("el=>el.setAttribute('data-world-main','')")
         render()
         page.get_by_role('tab',name='今天',exact=True).click()
