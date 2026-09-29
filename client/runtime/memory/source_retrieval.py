@@ -296,6 +296,25 @@ class SourceRetrieval:
                     chunk = text[start:start + 360]
                     db.execute("INSERT INTO chunks VALUES (?,?,?,?,?,?,?)", (user, source, actor, stamp, start, chunk, " ".join(terms(chunk))))
 
+    def retract_received(self, user, sources):
+        """Drop receipts that were never delivered (failed letters), without a user "forget".
+
+        Only unaliased received-user originals are removed, so a delivered
+        exchange that shares the receipt keeps its evidence.
+        """
+        removed = 0
+        with closing(self.connect()) as db, db:
+            db.execute('BEGIN IMMEDIATE')
+            for source in dict.fromkeys(sources):
+                if not isinstance(source, str) or not source.startswith('received-user:'):
+                    continue
+                if db.execute('SELECT 1 FROM source_aliases WHERE user=? AND receipt_source=?', (user, source)).fetchone():
+                    continue
+                removed += db.execute('DELETE FROM originals WHERE user=? AND source=? AND actor=?',
+                                      (user, source, 'user')).rowcount
+                db.execute('DELETE FROM chunks WHERE user=? AND source=?', (user, source))
+        return removed
+
     def forget(self, user, source=None):
         with closing(self.connect()) as db, db:
             sources = [source] if source is not None else [r[0] for r in db.execute("SELECT DISTINCT source FROM originals WHERE user=?", (user,))]

@@ -74,3 +74,39 @@ def test_paused_and_disabled_memory_prevent_receipt_writes():
                                memory_lifecycle=SimpleNamespace(is_paused=lambda: True)) == ()
     memory.enabled = False
     assert index_received_rows(memory, [chat()], user_id='owner') == ()
+
+
+def test_failed_letters_are_not_received_originals_and_are_retracted(tmp_path):
+    """Five resends of one failed letter filled "最近接入的原文" with the same sentence."""
+    from runtime.memory.received_user_originals import index_received_rows, received_originals
+    from runtime.memory.source_retrieval import SourceRetrieval
+    text = '我吃完了，味道很好。'
+    def letter(identifier, minute, status):
+        return {'letter_id': identifier, 'content': text, 'letter_status': status, 'reply_text': '' if status == 'FAILED' else '回信',
+                'life_received_at': f'2026-09-29T04:{minute:02d}:00+00:00'}
+    index = SourceRetrieval(tmp_path / 'original-text-index.sqlite3')
+
+    class Memory:
+        enabled = True
+        def index_received_user(self, *, user_id, source_id, user_message, occurred_at, exchange_sources=()):
+            return index.put_received(user_id, source_id, user_message, occurred_at)
+        def retract_received_user(self, *, user_id, source_ids):
+            return index.retract_received(user_id, source_ids)
+
+    memory = Memory()
+    attempts = [letter(f'try-{i}', 20 + i, 'PROCESSING') for i in range(5)]
+    index_received_rows(memory, attempts, user_id='owner')  # Indexed on arrival, before any outcome.
+    assert index.browse('owner', '', 20)['indexed_letters'] == 5
+
+    settled = [{**row, 'letter_status': 'FAILED', 'reply_text': ''} for row in attempts[:4]]
+    settled.append({**attempts[4], 'letter_status': 'COMPLETED', 'reply_text': '回信'})
+    assert [r.user_message for r in received_originals(settled)] == [text]
+    index_received_rows(memory, settled, user_id='owner')
+    remaining = index.browse('owner', '', 20)
+    assert remaining['indexed_letters'] == 1 and [o['text'] for o in remaining['originals']] == [text]
+    assert index.forgotten_sources('owner') == frozenset()  # Retraction is not a user "forget".
+
+    # A failed letter that is later answered in place is indexed again.
+    retried = [{**settled[0], 'letter_status': 'COMPLETED', 'reply_text': '回信'}, *settled[1:]]
+    index_received_rows(memory, retried, user_id='owner')
+    assert index.browse('owner', '', 20)['indexed_letters'] == 2

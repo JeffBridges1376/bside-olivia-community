@@ -31,12 +31,26 @@ def _received_at(row):
         return None
 
 
+def _undelivered_letter(row):
+    """A failed letter was never read by Linli ("林离也还没有读到"); a resend is a new letter."""
+    return (row.get('channel') or 'letter') == 'letter' and row.get('letter_status') == 'FAILED'
+
+
+def undelivered_letter_sources(rows):
+    """Receipt identities of failed letters, so an earlier arrival index can be retracted."""
+    return tuple(dict.fromkeys(
+        'received-user:letter:' + hashlib.sha256(row['letter_id'].encode()).hexdigest()
+        for row in rows if isinstance(row, Mapping) and isinstance(row.get('letter_id'), str)
+        and row['letter_id'] and _undelivered_letter(row)))
+
+
 def received_originals(rows):
     """Caller supplies durable rows. Never read reply_text or synthetic media rows."""
     grouped = {}
     for row in rows:
         if (not isinstance(row, Mapping) or row.get('origin') == 'proactive' or row.get('read_only')
-                or not isinstance(row.get('letter_id'), str) or not row['letter_id']):
+                or not isinstance(row.get('letter_id'), str) or not row['letter_id']
+                or _undelivered_letter(row)):
             continue
         channel = row.get('channel') or 'letter'
         if channel not in {'qq', 'wechat', 'letter'}:
@@ -91,4 +105,13 @@ def index_received_rows(adapter, rows, *, user_id, memory_lifecycle=None):
                   if memory_lifecycle is not None else operation())
         if result:
             indexed.append(record)
+    retract = getattr(adapter, 'retract_received_user', None)
+    failed = undelivered_letter_sources(rows)
+    if failed and callable(retract):
+        def retraction():
+            return retract(user_id=user_id, source_ids=failed)
+        if memory_lifecycle is not None:
+            memory_lifecycle.run_write(retraction, occurred_at=datetime.now(timezone.utc))
+        else:
+            retraction()
     return tuple(indexed)
