@@ -26,7 +26,7 @@ import re
 
 # Internal failure codes are fixed identifiers raised by Olivia itself. Only
 # these shapes are kept, so arbitrary exception text never enters a bundle.
-_CAUSE_CODE = re.compile(r'(?:JEV|LLM|MEM0|MEMORY|PRIVATE_WORLD|DAILY_LIFE|REPLY|IMAGE|WORLD|COMPANION|QUALITY)_[A-Z0-9_]{2,60}')
+_CAUSE_CODE = re.compile(r'(?:JEV|LLM|MEM0|MEMORY|PRIVATE_WORLD|DAILY_LIFE|REPLY|IMAGE|WORLD|COMPANION|QUALITY|RECALL|REVIEW|PERSONA)_[A-Z0-9_]{2,60}')
 
 
 def cause_code(exc):

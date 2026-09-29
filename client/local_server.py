@@ -6081,12 +6081,14 @@ async def _generate_reply_billed(letter_id, content, *, idempotency_key=None):
         _persist_store_state()
         _safe_log("letter_failed", error_code="LLM_TIMEOUT")
         return False
-    except (ValueError, RuntimeError):
+    except (ValueError, RuntimeError) as exc:
+        from runtime.diagnostics.failure_context import cause_code, letter_failure_context
+        cause = cause_code(exc)
         letter["letter_status"] = "FAILED"
-        letter["error_code"] = "LLM_UNAVAILABLE"
+        letter["error_code"] = "LLM_QUOTA_EXHAUSTED" if cause == "JEV_BALANCE_INSUFFICIENT" else "LLM_UNAVAILABLE"
         _mark_media_not_requested(letter)
         _persist_store_state()
-        _safe_log("letter_failed", error_code="LLM_UNAVAILABLE")
+        _safe_log("letter_failed", error_code=letter["error_code"], **letter_failure_context(exc))
         return False
 
     if result.quality_status is not None:
@@ -6098,7 +6100,9 @@ async def _generate_reply_billed(letter_id, content, *, idempotency_key=None):
         letter["error_code"] = public_code
         _mark_media_not_requested(letter)
         _persist_store_state()
-        _safe_log("letter_failed", error_code=public_code)
+        from runtime.diagnostics.failure_context import project_failure_context
+        _safe_log("letter_failed", error_code=public_code,
+                  **project_failure_context({'cause_code': getattr(result, 'error_code', None)}))
         return False
     if getattr(result, 'companion_decision', None) is not None:
         letter['companion_decision'] = result.companion_decision
