@@ -93,3 +93,24 @@ def test_failed_letter_diagnostics_name_the_internal_cause_without_user_text(mon
     assert records['wrapped']['cause_code'] == 'JEV_WORLD_SELECTION_CAPACITY'
     assert 'cause_code' not in records['private']
     assert '味道' not in str(records)
+
+
+def test_letter_failed_for_low_balance_says_so(monkeypatch):
+    """A JEV 402 (insufficient_balance) showed as "寄信通道好像有点忙" (LLM_UNAVAILABLE)."""
+    import io
+    from urllib.error import HTTPError
+    from runtime.reply.companion_decision import _http_error_code
+    error = HTTPError('https://relay/v1/companion/decide', 402, 'Payment Required', {},
+                      io.BytesIO(b'{"error": "insufficient_balance"}'))
+    assert _http_error_code(error) == 'JEV_BALANCE_INSUFFICIENT'
+
+    letter = {'letter_id': 'low-balance', 'content': 'synthetic', 'letter_status': 'PENDING'}
+    monkeypatch.setattr(local_server.store, 'letters', [letter])
+    monkeypatch.setattr(local_server, '_persist_store_state', lambda: None)
+
+    async def generate(*_args, **_kwargs):
+        raise ValueError('JEV_BALANCE_INSUFFICIENT')
+
+    monkeypatch.setattr(local_server, 'generate_reply', generate)
+    asyncio.run(local_server._run_reply_job('low-balance', 'synthetic', idempotency_key=None))
+    assert letter['error_code'] == 'LLM_QUOTA_EXHAUSTED'

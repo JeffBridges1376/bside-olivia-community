@@ -5308,7 +5308,10 @@ async def _run_reply_job(
         )
     except Exception as exc:
         # The key can be removed after a letter was queued; say so plainly.
+        from runtime.diagnostics.failure_context import cause_code
+        cause = cause_code(exc)
         code = ("OLIVIA_KEY_REQUIRED" if str(exc) == "JEV_BILLING_ACCOUNT_UNAVAILABLE"
+                else "LLM_QUOTA_EXHAUSTED" if cause == "JEV_BALANCE_INSUFFICIENT"
                 else "LLM_UNAVAILABLE")
         letter = next(
             (item for item in store.letters if item["letter_id"] == letter_id),
