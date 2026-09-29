@@ -40,6 +40,17 @@ def test_selection_removed_before_text_consumers_and_locked_choice_falls_back():
     assert split_selection('信的正文。[STICKER:linli-07]',allowed)==('信的正文。','linli-01')
 
 
+def test_misnamed_or_leading_marker_is_metadata_not_prose():
+    allowed=allowed_stickers(PrivateBehaviorView())
+    # Real case: the reply opened with [[image:linli-40]] and it reached the letter.
+    assert split_selection('[[image:linli-07]]\n收到，今晚早点睡。',allowed)==('收到，今晚早点睡。','linli-07')
+    assert split_selection('[[image:linli-40]]\n收到。\n\n快去睡觉。',allowed)==('收到。\n\n快去睡觉。','linli-01')
+    # A marker at the start must never cut the whole letter.
+    assert split_selection('[[sticker:linli-07]]\n第一段。\n第二段。',allowed)==('第一段。\n第二段。','linli-07')
+    assert split_selection('正文。\n[[插画：linli-07]]',allowed)==('正文。','linli-07')
+    assert split_selection('正文里提到 [链接] 和 [[名字]] 不是标记。',allowed)==('正文里提到 [链接] 和 [[名字]] 不是标记。','linli-01')
+
+
 def test_candidates_only_contain_unlocked_choices():
     note=selection_instruction(allowed_stickers(PrivateBehaviorView()))
     assert 'linli-07=' in note and 'linli-27=' not in note

@@ -194,3 +194,10 @@ def test_due_appointment_waives_world_gates_only():
         proactive_runtime.live_profile, proactive_runtime.contact_gates = original, original_gates
     assert asleep == ['sleeping', 'pending_reply']
     assert due == ['pending_reply']
+
+
+def test_misplaced_illustration_marker_is_stripped_not_fatal():
+    decision = decode(envelope(text='[[image:linli-40]]' + chr(10) + '快去睡觉。'), user='晚安', now=1)
+    assert decision['text'] == '快去睡觉。'
+    with pytest.raises(ValueError, match='DECISION_INVALID'):
+        decode(envelope(text='好呀[[chat:text|keep]]'), user='晚安', now=1)

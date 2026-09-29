@@ -100,6 +100,9 @@ def decode(raw, *, user, now, proactive=False):
             data['dropped_controls'] = str(exc) if str(exc) in _CONTROL_REASONS else 'VALUE_TYPE_OR_TIME'
         if data['skip'] and (not proactive or data['text'].strip()) or not data['skip'] and not data['text'].strip():
             raise ValueError("EMPTY_OR_SKIPPED_REPLY")
+        # A misplaced illustration marker is metadata, not a reason to drop the reply.
+        from runtime.letter_stickers.selection import _MARKER
+        data['text'] = _MARKER.sub('', data['text']).strip()
         if '[[' in data['text'] or ']]' in data['text']:
             raise ValueError("CONTROL_MARKER")
         return data
