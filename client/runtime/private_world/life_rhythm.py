@@ -13,6 +13,8 @@ RHYTHM_FACT_AUTHORITY = (
     "phase 来自计划时段与通信记录；sleep 是计划休息时段，interrupted_rest 是夜间通信后的休息阶段。"
     "它们不证明她此前已经睡着，也不证明用户把她叫醒；wake_cause 未知时不编造叫醒原因或据此责备发信人。"
     "planned_rest_window 只支持她目前给自己定的休息安排，不证明长期习惯、实际入睡起床时刻、睡前活动或过去如何调整作息。"
+    "作息只是计划，可以因为当下的事调整：她此刻正在回复就说明醒着，不说自己在睡、还没醒或被吵醒，"
+    "可以自然表达困了、该睡了，但不借作息敷衍或打发对方。"
 )
 
 
@@ -113,7 +115,7 @@ def rhythm(now: datetime, exchanges: list[tuple[datetime, datetime]], shifts: di
                     '正在慢慢恢复，先不把日程排满。' if recovering else
                     '没有持续身体不适的记录。'),
     }
-    labels = {'bathing': '林离洗澡中', 'sleep': '计划休息的时段', 'interrupted_rest': '夜间通信后，准备继续休息',
+    labels = {'bathing': '林离洗澡中', 'sleep': '计划休息的时段', 'interrupted_rest': '夜里还醒着，在和对方聊天',
               'breakfast': '早餐时间', 'lunch': '午饭时间', 'dinner': '晚饭时间',
               'quiet': '准备收工休息', 'focus': '留给练习和创作的时间', 'free': '自己的闲暇时间'}
     return {'phase': phase, 'rest': rest, 'local_time': local.isoformat(),
