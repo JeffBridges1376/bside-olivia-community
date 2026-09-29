@@ -283,3 +283,16 @@ def test_failed_recall_tells_the_writer_not_to_reconstruct_the_past(monkeypatch)
     projected = project({'event': 'history_recall', 'check_status': 'unavailable', 'reason': 'JEV_HISTORY_QUOTE_CAPACITY'})
     assert projected['reason'] == 'JEV_HISTORY_QUOTE_CAPACITY'  # exported, not dropped
     assert 'reason' not in project({'event': 'history_recall', 'reason': '用户原话'})
+
+
+def test_recall_trace_records_intent_and_whether_evidence_reached_the_reply():
+    """Needed to measure how often a question about the past gets checked originals."""
+    from runtime.diagnostics import recall_trace
+    recall_trace._PENDING.set({'event': 'history_recall', 'trace_id': 'a' * 32})
+    recall_trace.finish([], [], {'status': 'checked', 'reply_intent': 'recall_question',
+                                 'findings': [{'validation_status': 'verified'}]})
+    record = recall_trace.snapshot()[-1]
+    assert record['reply_intent'] == 'recall_question' and record['evidence_used'] is True
+    recall_trace.finish([], [], {'status': 'unavailable', 'reply_intent': 'made-up', 'findings': []})
+    record = recall_trace.snapshot()[-1]
+    assert record['evidence_used'] is False and 'reply_intent' not in record
