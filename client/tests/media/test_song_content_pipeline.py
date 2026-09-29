@@ -118,7 +118,9 @@ def test_plan_song_content_switches_production_to_semantic_plan_and_fixed_captio
 
     messages, request_id = gateway.calls[0]
     assert request_id is None
-    assert [message["role"] for message in messages] == ["system", "system", "user"]
+    # With no checkable originals, the recall note also keeps lyrics from inventing the past.
+    assert [message["role"] for message in messages] == ["system", "system", "system", "user"]
+    assert "不得编造" in messages[1]["content"]
     system = '\n'.join(m['content'] for m in messages if m['role'] == 'system')
     assert "exactly two keys: verse and chorus" in system
     assert "Allowed emotion_arc" not in system

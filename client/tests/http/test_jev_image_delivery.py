@@ -146,3 +146,19 @@ def test_primary_image_uses_existing_planner_and_receipt(tmp_path, monkeypatch):
         await image_reply.prepare(server,row,'发张照片',row['reply_text'],channel='qq')
         assert len(calls['submits'])==1
     asyncio.run(scenario())
+
+
+def test_decision_input_leaves_out_oldest_turns_instead_of_failing(monkeypatch):
+    """A long QQ burst exceeded the decide request cap and failed the reply before writing."""
+    from runtime.reply import companion_runtime
+    turns = [dict(source=f'reply:old{i}:1', event_id=f'reply:old{i}:1:user', role='user', text=f'第{i}条消息' + '很长的内容' * 400)
+             for i in range(12)]
+    monkeypatch.setattr(companion_runtime, '_decision_context', lambda messages, required=(): [dict(r) for r in turns])
+    port = Port()
+    asyncio.run(prepare_decision(port, [], '现在呢', source_id='current', input_revision=0,
+                                 as_of=datetime.now(timezone.utc), kinds=['text']))
+    wire = port.turns[0].input['messages']
+    assert wire[-1]['text'] == '现在呢'
+    assert len(json.dumps({'input': port.turns[0].input}, ensure_ascii=False).encode()) <= 32768
+    kept = [m['text'][:5] for m in wire[:-1]]
+    assert kept and kept[-1].startswith('第11条')  # newest turns stay, oldest go first

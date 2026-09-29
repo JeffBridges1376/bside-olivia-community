@@ -292,6 +292,9 @@ class DailyLifeStore:
                     day TEXT PRIMARY KEY, shift_minutes INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS life_user_routine (
                     source_id TEXT PRIMARY KEY, occurred_at TEXT NOT NULL, payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS life_addressing (
+                    source_id TEXT NOT NULL, kind TEXT NOT NULL, quote TEXT NOT NULL,
+                    occurred_at TEXT NOT NULL, PRIMARY KEY(source_id, kind));
                 CREATE TABLE IF NOT EXISTS life_weather (
                     fetched_at TEXT PRIMARY KEY, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS character_development_topics (
@@ -498,6 +501,35 @@ class DailyLifeStore:
         old = db.execute("SELECT payload FROM life_current WHERE id=1").fetchone()
         if not old or json.loads(old[0])["occurred_at"] <= current["occurred_at"]:
             db.execute("INSERT OR REPLACE INTO life_current VALUES (1,?)", (_json(current),))
+
+    ADDRESSING_KINDS = ('user_calls_linli', 'user_self', 'linli_calls_user')
+
+    def record_addressing(self, source_id: str, addressing: dict, *, occurred_at: datetime) -> None:
+        """Keep exact addressing quotes from one delivered exchange (idempotent per exchange)."""
+        _identifier(source_id)
+        rows = [(source_id, kind, quote, _time(occurred_at)) for kind, quote in (addressing or {}).items()
+                if kind in self.ADDRESSING_KINDS and isinstance(quote, str) and 0 < len(quote) <= 80]
+        if not rows:
+            return
+        with self._db() as db:
+            db.executemany('INSERT OR IGNORE INTO life_addressing VALUES (?,?,?,?)', rows)
+
+    def addressing_profile(self, *, now: datetime, per_kind: int = 2) -> dict:
+        """Most recent distinct quotes per kind; a later explicit change naturally wins."""
+        profile = {}
+        with self._db() as db:
+            for kind in self.ADDRESSING_KINDS:
+                seen = []
+                for quote, stamp in db.execute(
+                        'SELECT quote, occurred_at FROM life_addressing WHERE kind=? AND occurred_at<=? '
+                        'ORDER BY occurred_at DESC, source_id DESC', (kind, _time(now))):
+                    if quote not in (item['quote'] for item in seen):
+                        seen.append({'quote': quote, 'occurred_at': stamp})
+                    if len(seen) == per_kind:
+                        break
+                if seen:
+                    profile[kind] = seen
+        return profile
 
     def record_exchange(self, source_id: str, user_text: str, reply_text: str, updates: list, *, occurred_at: datetime, current_quote: str | None = None, relationship: dict | None = None, received_at: datetime | None = None, routine: dict | None = None, boundaries: list | None = None, origin: str = "user", contact_choice: dict | None = None, development: list | None = None) -> bool:
         """Consume only final letter text; exact quotations bind each update to its actor."""

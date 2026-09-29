@@ -16,12 +16,28 @@ async def _ask(port, state, questions, purpose):
     return await port.ask(state, questions, purpose=purpose)
 
 
-def _sentences(text, limit, error):
+def _sentences(text, limit, error, *, chunk=False):
     parts = [m.group().strip() for m in re.finditer(r'[^。！？!?\n]+[。！？!?]?|[。！？!?]', text)]
     parts = [p for p in parts if p]
+    if chunk:
+        # An over-long run is still verbatim text: quote it in consecutive pieces.
+        return [p[i:i + limit] for p in parts for i in range(0, len(p), limit)]
     if any(len(p) > limit for p in parts):
         raise ValueError(error)
     return parts
+
+
+def _merge_sentences(sentences, limit):
+    """At most `limit` consecutive groups covering every sentence."""
+    if len(sentences) <= limit:
+        return sentences
+    size, extra = divmod(len(sentences), limit)
+    merged, index = [], 0
+    for group in range(limit):
+        count = size + (1 if group < extra else 0)
+        merged.append(sentences[index:index + count])
+        index += count
+    return merged
 
 
 async def select_history(port, packet, refs):
@@ -44,12 +60,16 @@ async def select_history(port, packet, refs):
         f"候选 {c['id']} 是否与当前消息直接相关或为澄清指代、承诺所必需？计划、未核实报告也可能相关，相关不等于真实。",
         {'none': '与当前话题无关', 'yes': '需要带入本轮'}) for c in packet['candidates']}
     # Fixed four slots, matching the existing contract; no all-pairs questions.
-    quote_catalog = {}
-    for i, record in enumerate(records):
-        options = _sentences(record['text'], 500, 'JEV_HISTORY_QUOTE_CAPACITY')
+    # A record with nothing to quote (a sticker-only message) or too many
+    # sentences cannot anchor a dependency, but must not fail the recall.
+    quote_catalog, quotable = {}, []
+    for record in records:
+        options = _sentences(record['text'], 500, 'JEV_HISTORY_QUOTE_CAPACITY', chunk=True)
         if not options or len(options) > 255:
-            raise ValueError('JEV_HISTORY_QUOTE_CAPACITY')
-        quote_catalog[str(i)] = options
+            continue
+        quote_catalog[str(len(quotable))] = options
+        quotable.append(record)
+    records = quotable
     state['record_ids'] = {str(i): row['citation'] for i, row in enumerate(records)}
     state['sentence_offsets'] = {
         i: [{'start': records[int(i)]['text'].find(q),
@@ -80,51 +100,95 @@ async def select_history(port, packet, refs):
                     f'slot{slot}的{side}原话证据句索引？遵守state.dependency_contract。', indexes)
     answers = await _ask(port, state, questions, 'history-selection')
     selected = [c['id'] for c in packet['candidates'] if answers[f"relevance_{c['id']}"] == 'yes']
-    if len(selected) > 6:
-        raise ValueError('JEV_HISTORY_SELECTED_CAPACITY')
-    if answers.get('dependency_overflow') == 'yes':
-        raise ValueError('JEV_HISTORY_DEPENDENCY_CAPACITY')
+    # Keep the best-ranked six and the first four relations rather than dropping
+    # the whole recall; an overflow is reported so the writer is told some later
+    # clarifications were left out.
+    selected = selected[:6]
+    overflow = answers.get('dependency_overflow') == 'yes'
     dependencies = []
     for slot in range(4):
         prefix = f'dep_{slot}_'
         kind = answers.get(prefix + 'kind', 'none')
         if kind == 'none':
             continue
+        # An invalid slot (bad quote index, speaker mismatch, duplicate) drops only
+        # that relation; the recall itself still runs and the writer is told some
+        # clarifications were left out.
         item = {'kind': kind}
+        valid = True
         for side in ('earlier', 'later'):
             record_id = answers[prefix + side]
             quote_index = int(answers[prefix + side + '_quote'])
-            options = quote_catalog[record_id]
+            options = quote_catalog.get(record_id, [])
             if not 0 <= quote_index < len(options):
-                raise ValueError('JEV_HISTORY_REFERENCE_INVALID')
+                valid = False
+                break
             item[side] = state['record_ids'][record_id]
             item[side + '_quote'] = options[quote_index]
-        if (kind == 'correction' and catalog[item['earlier']]['speaker'] != catalog[item['later']]['speaker']
-                or kind == 'challenge' and catalog[item['earlier']]['speaker'] == catalog[item['later']]['speaker']):
-            raise ValueError('JEV_HISTORY_SPEAKER_CONFLICT')
-        if any((d['earlier'], d['later']) == (item['earlier'], item['later']) for d in dependencies):
-            raise ValueError('JEV_HISTORY_DUPLICATE_DEPENDENCY')
+        if valid and (kind == 'correction' and catalog[item['earlier']]['speaker'] != catalog[item['later']]['speaker']
+                      or kind == 'challenge' and catalog[item['earlier']]['speaker'] == catalog[item['later']]['speaker']
+                      or any((d['earlier'], d['later']) == (item['earlier'], item['later']) for d in dependencies)):
+            valid = False
+        if not valid:
+            overflow = True
+            continue
         dependencies.append(item)
     from .history_dependencies import validate_dependencies
-    validate_dependencies(dependencies, records)
-    return {'selected_ids': selected, 'dependencies': dependencies}
+    kept = []
+    for item in dependencies:
+        try:
+            validate_dependencies([*kept, item], records)
+        except ValueError:
+            overflow = True  # Drop only the relation that fails validation.
+            continue
+        kept.append(item)
+    dependencies = kept
+    return {'selected_ids': selected, 'dependencies': dependencies, **({'overflow': True} if overflow else {})}
 
 
 
 async def check_recall(port, current, sources):
+    # Sources arrive best-ranked first. Offer whole sources until the quote
+    # budget is full, then smaller budgets if the request does not fit; the
+    # recall runs with less rather than failing and leaving the reply blind.
+    last = None
+    for budget in (64, 32, 16):
+        try:
+            return await _check_recall(port, current, sources, budget)
+        except ValueError as exc:
+            if str(exc) != 'JEV_INPUT_TOO_LARGE':
+                raise
+            last = exc
+    raise last
+
+
+async def _check_recall(port, current, sources, budget):
     from .recall_check import _quote_texts, _source_data, _validate
-    originals = []
+    originals, offered = [], []
     for source in sources:
         if source['source'] == 'current':
             continue
+        rows = []
         for text in _quote_texts(source['text']):
-            for quote in _sentences(text, 1600, 'JEV_RECALL_QUOTE_CAPACITY'):
+            for quote in _sentences(text, 1600, 'JEV_RECALL_QUOTE_CAPACITY', chunk=True):
                 row = {'source': source['source'], 'quote': quote}
-                if row not in originals:
-                    originals.append(row)
-    sentences = _sentences(current, 1000, 'JEV_RECALL_QUESTION_CAPACITY')
-    if len(originals) > 64 or len(sentences) > 24:
-        raise ValueError('JEV_RECALL_SOURCE_CAPACITY')
+                if row not in originals and row not in rows:
+                    rows.append(row)
+        if not rows:
+            continue
+        if len(originals) + len(rows) > budget:
+            continue  # A smaller, lower-ranked source may still fit.
+        originals.extend(rows)
+        offered.append(source)
+    # Long current messages merge adjacent sentences into at most 24 verbatim ranges.
+    ranges, position = [], 0
+    for sentence in _sentences(current, 1000, 'JEV_RECALL_QUESTION_CAPACITY', chunk=True):
+        start = current.index(sentence, position)
+        ranges.append((start, start + len(sentence)))
+        position = start + len(sentence)
+    sentences = [current[group[0][0]:group[-1][1]] if isinstance(group, list) else current[group[0]:group[1]]
+                 for group in _merge_sentences(ranges, 24)]
+    sources = [*offered, *(s for s in sources if s['source'] == 'current')]
     source_catalog = {s['source']: {**s, 'text': _source_data(s['text'])} for s in sources}
     def locations(value, quote, path=()):
         if isinstance(value, str):
@@ -162,8 +226,8 @@ async def check_recall(port, current, sources):
             findings.append({'topic': '本轮相关原话', 'status': 'conflicting' if answer == 'conflicting' else 'uncertain',
                 'event_stage': 'unknown', 'finding': '仅保留逐字原话；不将说法提升为事实，不补写事件解释。',
                 'citations': [dict(original)]})
-    if len(findings) > 12 or len(direct) > 6:
-        raise ValueError('JEV_RECALL_SELECTED_CAPACITY')
+    # Keep the strongest-ranked evidence rather than dropping every finding.
+    findings, direct = findings[:12], direct[:6]
     value = {'reply_intent': answers['intent'], 'direct_questions': direct, 'findings': findings}
     if not findings:
         return {**value, 'status': 'skipped', 'reason': 'no_relevant_sources'}

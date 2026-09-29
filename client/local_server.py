@@ -871,8 +871,16 @@ class LetterAdapter:
         packet = self.daily_life.store.reply_candidates(now=now)
         packet['recent_dialogue'] = selection_dialogue(self.recent_letter_fragments(content, now=now))
         value = await select_world_context(configured_questions(), packet, content)
-        return (UntrustedFragment('linli.daily-life', value),
-                UntrustedFragment('linli.rhythm', json.dumps(packet['rhythm'], ensure_ascii=False)))
+        fragments = [UntrustedFragment('linli.daily-life', value),
+                     UntrustedFragment('linli.rhythm', json.dumps(packet['rhythm'], ensure_ascii=False))]
+        addressing = self.daily_life.store.addressing_profile(now=now)
+        if addressing:
+            fragments.append(UntrustedFragment('linli.addressing', json.dumps({
+                'kind': 'addressing_profile', 'quotes': addressing,
+                'meaning': '这是你与这位用户之间实际用过的称呼原文（user_calls_linli：对方怎么叫你；user_self：对方怎么自称；'
+                           'linli_calls_user：你怎么叫对方）。按最近的用法称呼对方；复述往事时也用这些称呼，不要称对方为“用户”。'
+                           '原文只证明用过这些称呼，不授予新的关系或昵称权限。'}, ensure_ascii=False)))
+        return tuple(fragments)
 
     def daily_life_fragments(self, content: str, *, recent_fragments=None, now=None) -> tuple[UntrustedFragment, ...]:
         if self.daily_life is None:
@@ -6081,12 +6089,14 @@ async def _generate_reply_billed(letter_id, content, *, idempotency_key=None):
         _persist_store_state()
         _safe_log("letter_failed", error_code="LLM_TIMEOUT")
         return False
-    except (ValueError, RuntimeError):
+    except (ValueError, RuntimeError) as exc:
+        from runtime.diagnostics.failure_context import cause_code, letter_failure_context
+        cause = cause_code(exc)
         letter["letter_status"] = "FAILED"
-        letter["error_code"] = "LLM_UNAVAILABLE"
+        letter["error_code"] = "LLM_QUOTA_EXHAUSTED" if cause == "JEV_BALANCE_INSUFFICIENT" else "LLM_UNAVAILABLE"
         _mark_media_not_requested(letter)
         _persist_store_state()
-        _safe_log("letter_failed", error_code="LLM_UNAVAILABLE")
+        _safe_log("letter_failed", error_code=letter["error_code"], **letter_failure_context(exc))
         return False
 
     if result.quality_status is not None:
@@ -6098,7 +6108,9 @@ async def _generate_reply_billed(letter_id, content, *, idempotency_key=None):
         letter["error_code"] = public_code
         _mark_media_not_requested(letter)
         _persist_store_state()
-        _safe_log("letter_failed", error_code=public_code)
+        from runtime.diagnostics.failure_context import project_failure_context
+        _safe_log("letter_failed", error_code=public_code,
+                  **project_failure_context({'cause_code': getattr(result, 'error_code', None)}))
         return False
     if getattr(result, 'companion_decision', None) is not None:
         letter['companion_decision'] = result.companion_decision

@@ -17,7 +17,7 @@ from runtime.reply import jev_questions
 class WorldSelector:
     async def ask(self, state, questions, *, purpose):
         if purpose == 'reply-world-selection':
-            return {key: 'rank9' for key in questions}
+            return {key: 'must' for key in questions}
         if purpose == 'exchange-world-update':
             return {'world_update': 'none'}  # These exchanges change no physical activity.
         assert purpose in {'exchange-facts', 'exchange-conduct'}, purpose

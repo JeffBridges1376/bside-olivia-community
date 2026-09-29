@@ -38,6 +38,7 @@ def _exchange_context(data, previous, boundaries):
     result['previous_observation'] = _fields(data.get('previous_observation'),
         ('activity', 'location', 'note', 'status', 'actor', 'evidence_kind', 'occurred_at'))
     result['active_boundaries'] = _boundary_directory(boundaries)
+    result['meals_today'] = [_fields(meal, ('slot', 'status', 'food')) for meal in data.get('meals_today') or []]
     return result
 
 
@@ -155,6 +156,12 @@ async def extract(port, data, instructions, request_id):
     statuses = {'none': '空槽', **{key: key for key in status_catalog}}
     identities = {'none': '空槽', 'new': '独立新事项', **{f'p{i}': f'p{i}' for i in range(len(projects))}}
     questions = {'current_quote': _q('她明确描述自己现在活动的完整原句；与既有观察或时间矛盾、只有打算则none。', quote_options(reply)),
+        # Formerly its own request (exchange-world-update) right after this one.
+        'world_update': _q('判断这次已送达回复后是否需要启动世界更新链路。明确新行动意向、开始/调整当前活动或待办，'
+            '以及当前活动完成、停止、取消、失败或结果变化，都需要重新决策；例如previous_observation或meals_today仍显示正在吃，'
+            '回复明确说“吃完了，碗也洗了”，必须reconsider。纯聊天、解释旧事、已经记录的相同结果不需要；只由用户问“吃完了吗”、'
+            '引用他人的完成说法、假设或“等吃完再洗碗”不能判断已经完成。reconsider只启动核验，不确认完成事实。',
+            {'none': '没有需处理的新变化，无需更新', 'reconsider': '有新的行动意向或开始/完成/停止/取消/失败/结果变化，需要启动核验与更新'}),
         'capacity': _q('完整表达有效独立变更是否超12项、持续边界是否超4项、或有变更无法由候选完整表达？',
                        {'ok': '容量足够且可完整表达', 'unsupported': '超容量或不能完整表达'})}
     for i in range(MAX_EXCHANGE_UPDATES):
@@ -188,6 +195,12 @@ async def extract(port, data, instructions, request_id):
                 {'unknown': '不明确', **{str(i): str(i) for i in range(10)}}),
             'utc_offset': _q('明确地点/时区的UTC分钟偏移，夏令时不确定则unknown。',
                 {'unknown': '不确定', **{str(i): str(i) for i in range(-720, 841, 15)}})})
+        # How each side addresses the other, kept as exact original quotes so a
+        # later reply uses this user's own names instead of "用户" or a guess.
+        questions.update({
+            'address_linli_quote': _q('用户原文里直接称呼林离（名字、昵称、爱称）的最短完整片段；只用“你”、引用第三方或没有称呼则none。', quote_options(user)),
+            'address_self_quote': _q('用户原文里自称（名字、昵称、落款）的最短完整片段；只用“我”则none。', quote_options(user)),
+            'address_user_quote': _q('林离回信里直接称呼用户（名字、昵称）的最短完整片段；只用“你”则none。', quote_options(reply))})
         if data.get('contact_invited'):
             questions['contact_choice'] = _q('用户明确选择交换联系方式；提及应用/猜测/假设不算。',
                 {'none': '无选择', **{s: s for s in ('qq', 'wechat', 'both', 'declined', 'later')}})
@@ -204,7 +217,8 @@ async def extract(port, data, instructions, request_id):
             answers[f'boundary_{i}_action'] = 'none' if answers[f'boundary_{i}_quote'] == 'none' else 'new'
     if answers['capacity'] != 'ok':
         raise ValueError('JEV_EXCHANGE_UNREPRESENTABLE_UPDATE')
-    payload = {'updates': [], 'current_quote': None, 'relationship': None, 'routine': None, 'boundaries': []}
+    payload = {'updates': [], 'current_quote': None, 'relationship': None, 'routine': None, 'boundaries': [],
+               'addressing': {}, 'world_update': answers['world_update']}
     def evidence(field, catalog):
         key = answers[field]
         if key not in catalog:
@@ -269,6 +283,12 @@ async def extract(port, data, instructions, request_id):
             raise ValueError('JEV_EXCHANGE_ROUTINE_EVIDENCE')
         payload['routine'] = {'sleep_minute': int(answers['sleep_hour']) * 60 + int(answers['sleep_minute']) if routine == 'set' else None,
             'utc_offset_minutes': int(answers['utc_offset']) if routine == 'set' else None, 'quote': evidence('routine_quote', user)}
+    if not proactive:
+        for field, name, catalog in (('address_linli_quote', 'user_calls_linli', user),
+                                     ('address_self_quote', 'user_self', user),
+                                     ('address_user_quote', 'linli_calls_user', reply)):
+            if answers.get(field, 'none') in catalog and len(catalog[answers[field]]) <= 80:
+                payload['addressing'][name] = catalog[answers[field]]
     if data.get('contact_invited') and not proactive:
         contact = answers['contact_choice']
         payload['contact_choice'] = {'choice': contact, 'quote': evidence('contact_quote', user)} if contact != 'none' else None

@@ -83,12 +83,24 @@ def test_dependency_quotes_are_selected_from_originals():
     assert len(port.calls) == 1
 
 
-def test_unsupported_recall_capacity_is_explicit():
+def test_recall_check_quotes_long_and_many_originals_instead_of_failing():
+    """Recall used to fail outright on a long original or more than 64 quoted sentences."""
     from runtime.memory.jev_history import check_recall
-    sources = [{'source': 's0', 'scope': 'historical_exchange',
-                'text': json.dumps([{'text': '长' * 1601}])}]
-    with pytest.raises(ValueError, match='JEV_RECALL_QUOTE_CAPACITY'):
-        asyncio.run(check_recall(Port(), '记得吗', sources))
+    long_text = '长' * 1601
+    many = '。'.join(f'第{i}句' for i in range(50)) + '。'
+    sources = [{'source': 's0', 'scope': 'historical_exchange', 'text': json.dumps([{'text': long_text}])},
+               {'source': 's1', 'scope': 'historical_exchange', 'text': json.dumps([{'text': many}])},
+               {'source': 's2', 'scope': 'historical_exchange', 'text': json.dumps([{'text': many + '另外'}])}]
+    port = Port()
+    asyncio.run(check_recall(port, '记得吗？' * 30, sources))
+    state, questions, purpose = port.calls[0]
+    assert purpose == 'recall-check'
+    quotes = [o for o in state['originals']]
+    assert 0 < len(quotes) <= 64
+    assert {o['source'] for o in quotes} >= {'s0'}  # the long original is quoted in pieces
+    assert len(state['current_questions']) <= 24
+    current = '记得吗？' * 30
+    assert all(current[r['start']:r['end']] for r in state['current_questions'].values())
 
 
 def test_dependency_correction_between_speakers_is_rejected():
@@ -96,8 +108,8 @@ def test_dependency_correction_between_speakers_is_rejected():
     refs = [{'citation': 'a', 'speaker': 'linli', 'text': '我收到了。', 'evidence_scope': 'recorded_utterance'},
             {'citation': 'b', 'speaker': 'user', 'text': '不是的，还没有。', 'evidence_scope': 'current_input'}]
     port = Port({'dep_0_kind': 'correction', 'dep_0_earlier': '0', 'dep_0_later': '1'})
-    with pytest.raises(ValueError, match='JEV_HISTORY_SPEAKER_CONFLICT'):
-        asyncio.run(select_history(port, {'candidates': []}, refs))
+    rejected = asyncio.run(select_history(port, {'candidates': []}, refs))
+    assert rejected['dependencies'] == [] and rejected['overflow'] is True  # dropped, recall still runs
     port = Port({'dep_0_kind': 'challenge', 'dep_0_earlier': '0', 'dep_0_later': '1'})
     result = asyncio.run(select_history(port, {'candidates': []}, refs))
     assert result['dependencies'][0]['kind'] == 'challenge'
@@ -207,21 +219,21 @@ def test_history_twenty_four_sources_use_fixed_relation_slots():
     assert not any(key.startswith('pair_') for key in port.calls[0][1])
 
 
-@pytest.mark.parametrize('answers,error', [
-    ({'dependency_overflow': 'yes'}, 'JEV_HISTORY_DEPENDENCY_CAPACITY'),
-    ({'dep_0_kind': 'correction', 'dep_0_earlier': '0', 'dep_0_later': '1', 'dep_0_later_quote': '1'},
-     'JEV_HISTORY_REFERENCE_INVALID'),
-    ({'dep_0_kind': 'correction', 'dep_0_earlier': '0', 'dep_0_later': '1',
-      'dep_1_kind': 'correction', 'dep_1_earlier': '0', 'dep_1_later': '1'},
-     'JEV_HISTORY_DUPLICATE_DEPENDENCY'),
+@pytest.mark.parametrize('answers', [
+    {'dependency_overflow': 'yes'},
+    {'dep_0_kind': 'correction', 'dep_0_earlier': '0', 'dep_0_later': '1', 'dep_0_later_quote': '1'},
+    {'dep_0_kind': 'correction', 'dep_0_earlier': '0', 'dep_0_later': '1',
+     'dep_1_kind': 'correction', 'dep_1_earlier': '0', 'dep_1_later': '1'},
 ])
-def test_history_slot_invalid_results_do_not_retry(answers, error):
+def test_history_slot_problems_drop_the_relation_not_the_recall(answers):
+    """An invalid or overflowing relation used to fail the whole recall."""
     from runtime.memory.jev_history import select_history
     refs = [{'citation': 'a', 'speaker': 'user', 'text': '明天去。后天再去。', 'evidence_scope': 'recorded_utterance'},
             {'citation': 'b', 'speaker': 'user', 'text': '说错了，不去。', 'evidence_scope': 'current_input'}]
     port = Port(answers)
-    with pytest.raises(ValueError, match=error):
-        asyncio.run(select_history(port, {'candidates': []}, refs))
+    result = asyncio.run(select_history(port, {'candidates': []}, refs))
+    assert result.get('overflow') is True  # the writer gets the "left out" note
+    assert len({(d['earlier'], d['later']) for d in result['dependencies']}) == len(result['dependencies'])
     assert len(port.calls) == 1
 
 
@@ -234,3 +246,53 @@ def test_memory_semantic_questions_do_not_shard_at_forty_eight():
     with pytest.raises(ValueError, match='JEV_INPUT_TOO_LARGE'):
         asyncio.run(_ask(port, {'original': 'x' * 32768}, questions, 'recall-check'))
     assert len(port.calls) == 1
+
+
+def test_recall_survives_empty_and_long_originals():
+    """One sticker-only message (empty text) made every recall fail, so replies invented the past."""
+    from runtime.memory.jev_history import select_history
+    long_sentence = '我' * 1200 + '。'
+    refs = [{'citation': 'empty', 'speaker': 'user', 'text': '', 'evidence_scope': 'recorded_utterance'},
+            {'citation': 'long', 'speaker': 'linli', 'text': long_sentence, 'evidence_scope': 'recorded_utterance'},
+            {'citation': 'plain', 'speaker': 'user', 'text': '别刚从琴房出来就吹冷风。', 'evidence_scope': 'recorded_utterance'},
+            {'citation': 'current', 'speaker': 'user', 'text': '当时是你自己应下来的，忘记啦？', 'evidence_scope': 'current_input'}]
+    packet = {'current_message': refs[-1]['text'],
+              'candidates': [{'id': 'h0', 'records': refs[:3]}]}
+    port = Port({'relevance_h0': 'yes'})
+    result = asyncio.run(select_history(port, packet, refs))
+    assert result['selected_ids'] == ['h0']
+    state, _questions, _purpose = port.calls[0]
+    assert 'empty' not in state['record_ids'].values()  # nothing to quote, but recall still runs
+    long_key = next(k for k, v in state['record_ids'].items() if v == 'long')
+    offsets = state['sentence_offsets'][long_key]
+    assert len(offsets) >= 3 and all(o['end'] - o['start'] <= 500 for o in offsets)
+    assert ''.join(long_sentence[o['start']:o['end']] for o in offsets) == long_sentence
+
+
+def test_failed_recall_tells_the_writer_not_to_reconstruct_the_past(monkeypatch):
+    """With recall failing, a reply claimed "你昨晚说的呀" and invented where it was written down."""
+    from runtime.diagnostics.recall_trace import project
+    port = Port(failure=ValueError('JEV_UNAVAILABLE'))
+    monkeypatch.setattr('runtime.reply.jev_questions.configured_questions', lambda: port)
+    captured = []
+    monkeypatch.setattr('runtime.diagnostics.recall_trace.finish', lambda *args: captured.append(args[-1]))
+    result = asyncio.run(select_history_messages(messages(), ForbiddenGateway(), max_input_chars=30000))
+    notes = [m['content'] for m in result if m.get('role') == 'system']
+    assert any('不得指认是谁说的' in note and '不得编造' in note for note in notes)
+    assert captured[-1]['reason'] == 'JEV_UNAVAILABLE'
+    projected = project({'event': 'history_recall', 'check_status': 'unavailable', 'reason': 'JEV_HISTORY_QUOTE_CAPACITY'})
+    assert projected['reason'] == 'JEV_HISTORY_QUOTE_CAPACITY'  # exported, not dropped
+    assert 'reason' not in project({'event': 'history_recall', 'reason': '用户原话'})
+
+
+def test_recall_trace_records_intent_and_whether_evidence_reached_the_reply():
+    """Needed to measure how often a question about the past gets checked originals."""
+    from runtime.diagnostics import recall_trace
+    recall_trace._PENDING.set({'event': 'history_recall', 'trace_id': 'a' * 32})
+    recall_trace.finish([], [], {'status': 'checked', 'reply_intent': 'recall_question',
+                                 'findings': [{'validation_status': 'verified'}]})
+    record = recall_trace.snapshot()[-1]
+    assert record['reply_intent'] == 'recall_question' and record['evidence_used'] is True
+    recall_trace.finish([], [], {'status': 'unavailable', 'reply_intent': 'made-up', 'findings': []})
+    record = recall_trace.snapshot()[-1]
+    assert record['evidence_used'] is False and 'reply_intent' not in record

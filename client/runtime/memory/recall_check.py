@@ -423,5 +423,5 @@ async def prepare_recall_messages(messages, gateway, *, max_input_chars, request
         reason = ('timeout' if isinstance(error, TimeoutError) else
                   str(error) if isinstance(error, ValueError) and str(error).startswith('JEV_') else phase)
         value = {'status': 'unavailable', 'reason': reason, 'findings': [],
-                 'meaning': '来源核实暂未完成；可回应当前消息，不把未知或冲突说成确定经历，也不以读取失败否定过去。'}
+                 'meaning': '本轮没有可以核对的往来原话（原文核对未完成）。用户问起过去的事时，记不清就如实说记不太清，或请对方提醒；不得指认是谁说的、谁答应的，不得编造时间、地点、物品等细节，也不能据此否认发生过。'}
     return _project(messages, value, sources, max_input_chars=max_input_chars)

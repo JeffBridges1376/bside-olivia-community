@@ -30,7 +30,9 @@ class Decisions:
                 continue
             if 'layers' in state:
                 key = key.split(':', 1)[1]
-            if key == 'soft': value = 'none'
+            if key == 'contact': value = 's0' if self.contact else 'none'
+            elif key == 'contact_tier': value = 'c' if self.contact else 'n'
+            elif key == 'soft': value = 'none'
             elif key == 'drift': value = 'no'
             elif key == 'intimacy_request': value = 'requested' if self.contact else 'none'
             elif key.startswith('contact:'):
@@ -60,6 +62,22 @@ class Decisions:
         return {key: 'CONFIRM' if self.confirm else 'REJECT' for key in questions}
 
 
+class FlagEveryCode(Decisions):
+    async def ask(self, state, questions, **kwargs):
+        answers = await super().ask(state, questions, **kwargs)
+        if 'confirmation_rules' not in state:
+            for key, question in questions.items():
+                code = key.split(':', 1)[1]
+                if code.isupper() and 's0' in question['criteria']:
+                    answers[key] = 's0'
+        return answers
+
+
+def confirm_call(port):
+    """The second (confirmation) request, asked only when something was flagged."""
+    return next((state, questions) for state, questions in port.calls if 'confirmation_rules' in state)
+
+
 def transport(monkeypatch, port):
     authorities = tuple(quality._LayerAuthority(name, spec['question'], spec['codes'],
         'Approved identity', 'Approved layer', 'Permission ledger is authoritative')
@@ -87,8 +105,9 @@ def test_jev_review_keeps_span_evidence_independent_adjudication_and_permissions
     assert result['intimacy_request'] == 'requested'
     assert result['intimacy_claims'][0]['tier'] == 'close_contact'
     assert len(port.adjudications) == 0
-    assert len(port.calls) == 1
-    state, questions = port.calls[0]
+    assert len(port.calls) == 2  # detect, then confirm only the flagged span
+    assert 'confirmation_rules' not in port.calls[0][0]
+    state, questions = confirm_call(port)
     relationship = state['adjudication_contexts']['relationship']
     assert 'current_user_input' not in relationship
     assert 'memory_evidence' not in relationship
@@ -110,33 +129,35 @@ def test_preconfirmation_is_bound_to_exact_span_not_only_code(monkeypatch):
     class DifferentSpan(Decisions):
         async def ask(self, state, questions, **kwargs):
             answers = await super().ask(state, questions, **kwargs)
-            key = next(k for k, v in state['confirmation_rules'].items() if v['layer'] == 'identity_boundary' and v['code'] == 'STAGE_DRIFT')
-            answers[key + ':s0'] = 'R'
-            answers[key + ':s1'] = 'C'
+            if 'confirmation_rules' in state:
+                key = next(k for k, v in state['confirmation_rules'].items() if v['layer'] == 'identity_boundary' and v['code'] == 'STAGE_DRIFT')
+                assert key + ':s0' in questions and key + ':s1' not in questions  # only the flagged span
+                answers[key + ':s0'] = 'R'
             return answers
     port = DifferentSpan()
     result = transport(monkeypatch, port).review_json(request('First.\nSecond.'), model='jev', timeout_seconds=5)
     assert result['verdict'] == 'pass'
-    assert len(port.calls) == 1 and not port.adjudications
+    assert len(port.calls) == 2 and not port.adjudications
 
 
 def test_missing_preconfirmation_fails_closed_without_second_call(monkeypatch):
     class Missing(Decisions):
         async def ask(self, state, questions, **kwargs):
             answers = await super().ask(state, questions, **kwargs)
-            key = next(k for k, v in state['confirmation_rules'].items() if v['layer'] == 'identity_boundary' and v['code'] == 'STAGE_DRIFT')
-            answers.pop(key + ':s0')
+            if 'confirmation_rules' in state:
+                key = next(k for k, v in state['confirmation_rules'].items() if v['layer'] == 'identity_boundary' and v['code'] == 'STAGE_DRIFT')
+                answers.pop(key + ':s0')
             return answers
     port = Missing()
     with pytest.raises(RuntimeError, match='quality model unavailable'):
         transport(monkeypatch, port).review_json(request(), model='jev', timeout_seconds=5)
-    assert len(port.calls) == 1 and not port.adjudications
+    assert len(port.calls) == 2 and not port.adjudications  # no third call, no text fallback
 
 
 def test_preconfirmation_contexts_preserve_distinct_authorities(monkeypatch):
-    port = Decisions()
+    port = FlagEveryCode()
     transport(monkeypatch, port).review_json(request(), model='jev', timeout_seconds=5)
-    state, _ = port.calls[0]
+    state, _ = confirm_call(port)
     contexts = state['adjudication_contexts']
     assert 'current_user_input' not in contexts['identity_world']
     assert 'relationship_context' not in contexts['identity_world']
@@ -184,7 +205,7 @@ def test_reviewer_model_label_is_jev_not_the_text_generator(monkeypatch):
 
 def test_jev_confirmation_cannot_reintroduce_full_policy_or_history(monkeypatch):
     import json
-    port = Decisions()
+    port = FlagEveryCode()
     review = transport(monkeypatch, port)
     # Neither constructing legacy prompt messages nor independent confirmation
     # may drag these large strings back into the provider packet.
@@ -197,9 +218,9 @@ def test_jev_confirmation_cannot_reintroduce_full_policy_or_history(monkeypatch)
         {'reference_id':'current.recent_dialogue','summary':json.dumps(turns)},
         {'reference_id':'current.character_reply_history','summary':'UNRELATED_OLD_HISTORY' * 3000}])
     review.review_json(value, model='jev', timeout_seconds=5)
-    assert len(port.calls) == 1
-    state, _ = port.calls[0]
-    assert 'UNRELATED_OLD_HISTORY' not in json.dumps(state)
+    assert len(port.calls) == 2
+    assert all('UNRELATED_OLD_HISTORY' not in json.dumps(call_state) for call_state, _ in port.calls)
+    state, _ = confirm_call(port)
     def unpack(refs): return {k:state['catalog'][v] for k,v in refs.items()}
     for layer in ('voice_style', 'focus_response'):
         assert set(unpack(state['layers'][layer]['input_refs'])) <= {'mode','current_user_input','candidate_reply','output_constraints'}
@@ -254,22 +275,33 @@ def test_purpose_packets_keep_only_scoped_fields_and_two_turn_window():
             assert state['input']['selected_persona_facts'] == 'approved selected identity'
 
 
-def test_twelve_sentence_review_keeps_every_confirmation_in_one_bounded_packet(monkeypatch):
+def test_detection_size_does_not_grow_with_confirmations(monkeypatch):
+    """Confirmations are asked only for flagged spans, never for every sentence up front."""
     from runtime.reply.companion_decision import _json
-    port = Decisions()
-    transport(monkeypatch, port).review_json(request('你慢慢说，我在听。' * 12), model='jev', timeout_seconds=5)
-    assert len(port.calls) == 1
-    state, questions = port.calls[0]
-    assert len(state['spans']) == 12
-    assert len(_json(dict(state=state, questions=questions, purpose='quality-review')).encode()) < 32768
+    port = FlagEveryCode()
+    transport(monkeypatch, port).review_json(request('你慢慢说，我在听。' * 20), model='jev', timeout_seconds=5)
+    detect_state, detect = port.calls[0]
+    assert len(detect_state['spans']) == 20
+    assert not any(key[0] == 'c' and key[1:2].isdigit() for key in detect)
+    assert len(detect) < 40  # one question per code, not per code x sentence
+    assert len(_json(dict(state=detect_state, questions=detect, purpose='quality-review')).encode()) < 32768
+    state, questions = confirm_call(port)
     for cid, spec in state['confirmation_rules'].items():
         assert spec['code'] in state['layers'][spec['layer']]['rules']
         assert spec['context'] in state['adjudication_contexts']
-        for sid in state['spans']:
-            question = questions[cid + ':' + sid]
-            assert cid in question['instructions'] and sid in question['instructions']
-            assert set(question['criteria']) == {'C', 'R'}
+        asked = [key for key in questions if key.startswith(cid + ':')]
+        assert asked == [cid + ':s0']  # exactly the flagged span
+        assert set(questions[asked[0]]['criteria']) == {'C', 'R'}
     # Full prose permissions remain scoped once; abbreviations never merge scopes.
     assert 'current_user_input' not in state['adjudication_contexts']['relationship']
     assert 'memory_evidence' not in state['adjudication_contexts']['relationship']
     assert 'current_user_input' in state['adjudication_contexts']['boundary_fact']
+
+
+def test_memory_fabrication_rule_covers_misattributed_speakers():
+    """A reply said "你昨晚说的呀" about something Linli herself had agreed to."""
+    from runtime.reply.jev_quality import _CODE_RULES
+    from runtime.memory.history_selection import _SELECTED
+    rule = _CODE_RULES['MEMORY_FABRICATION']
+    assert '安到错误的人身上' in rule and '你答应过' in rule
+    assert 'speaker' in _SELECTED and '不得颠倒' in _SELECTED

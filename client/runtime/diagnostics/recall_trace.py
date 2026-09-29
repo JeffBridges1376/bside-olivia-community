@@ -23,6 +23,9 @@ _COUNTS = frozenset({'archive_count', 'indexed_letters', 'archive_total', 'archi
 _STATES = frozenset({'available', 'unavailable', 'degraded', 'disabled', 'paused', 'incomplete'})
 _RESULTS = frozenset({'checked', 'partial', 'unavailable', 'skipped'})
 _MODES = frozenset({'direct', 'contextual', 'ambiguous', 'history_tail'})
+_INTENTS = frozenset({'sharing', 'recall_question', 'action_request', 'correction'})
+# Fixed JEV failure codes (e.g. JEV_RECALL_SOURCE_CAPACITY) name the failing limit.
+_JEV_REASON = re.compile(r'JEV_[A-Z0-9_]{2,60}')
 _REASONS = frozenset({'capacity', 'timeout', 'validation', 'provider', 'source_parse',
                      'input_capacity', 'no_history', 'not_enabled'})
 
@@ -40,9 +43,14 @@ def project(value):
         item = value.get(key)
         if type(item) is int and 0 <= item <= 1_000_000_000:
             result[key] = item
-    for key, allowed in (('check_status', _RESULTS), ('query_mode', _MODES), ('reason', _REASONS)):
+    # reply_intent + evidence_used give the recall hit rate: how often a question about
+    # the past was answered with checked originals.
+    if isinstance(value.get('evidence_used'), bool):
+        result['evidence_used'] = value['evidence_used']
+    for key, allowed in (('check_status', _RESULTS), ('query_mode', _MODES), ('reason', _REASONS),
+                         ('reply_intent', _INTENTS)):
         item = value.get(key)
-        if isinstance(item, str) and item in allowed:
+        if isinstance(item, str) and (item in allowed or key == 'reason' and _JEV_REASON.fullmatch(item)):
             result[key] = item
     states = value.get('source_status')
     if isinstance(states, dict):
@@ -137,6 +145,8 @@ def finish(before, after, check):
         findings = check.get('findings', [])
         value.update(before_groups=len(initial), final_groups=len(final), final_ids=sorted(final)[:16],
                      check_status=check.get('status', 'checked'), reason=check.get('reason'),
+                     reply_intent=check.get('reply_intent'),
+                     evidence_used=bool(final) or any(item.get('validation_status') != 'unavailable' for item in findings),
                      verified_topics=sum(item.get('validation_status') != 'unavailable' for item in findings),
                      unverified_topics=sum(item.get('validation_status') == 'unavailable' for item in findings))
         with _LOCK:
