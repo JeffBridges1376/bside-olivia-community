@@ -430,6 +430,25 @@ def _letter_reply_timeout_seconds(config: GatewayConfig) -> float:
     return config.timeout_seconds
 
 
+def _reply_writer_unavailable() -> bool:
+    """True when the letter writer itself has no provider or key.
+
+    The account key alone is not enough: a 1.x user could hold one while
+    replies still pointed at a retired provider, and every letter then failed.
+    """
+
+    gateway = letters_adapter.gateway
+    if isinstance(gateway, UnconfiguredAdapter):
+        return True
+    key = getattr(gateway, "_key", None)
+    if not callable(key) or not getattr(getattr(gateway, "config", None), "requires_api_key", False):
+        return False
+    try:
+        return not key()
+    except Exception:
+        return True
+
+
 def apply_runtime_llm_config(
     managed: ManagedLLMConfig,
     api_key: str | None,
@@ -4132,6 +4151,11 @@ async def route(
             return err(503, 'OLIVIA_KEY_REQUIRED', {
                 'status': 'FAILED', 'error_code': 'OLIVIA_KEY_REQUIRED', 'retryable': False,
             })
+        # Same gate as the account-key check: only the cloud account build.
+        if _os.environ.get('OLIVIA_JEV_BILLING_ENABLED') == '1' and _reply_writer_unavailable():
+            return err(503, 'REPLY_SERVICE_NOT_CONNECTED', {
+                'status': 'FAILED', 'error_code': 'REPLY_SERVICE_NOT_CONNECTED', 'retryable': False,
+            })
         try:
             routes = video_reply_settings_store.routes_snapshot()
         except VideoReplySettingsError as exc:
@@ -4570,6 +4594,11 @@ async def route(
         if await asyncio.to_thread(account_key_missing):
             return err(503, 'OLIVIA_KEY_REQUIRED', {
                 'status': 'FAILED', 'error_code': 'OLIVIA_KEY_REQUIRED', 'retryable': False,
+            })
+        # Same gate as the account-key check: only the cloud account build.
+        if _os.environ.get('OLIVIA_JEV_BILLING_ENABLED') == '1' and _reply_writer_unavailable():
+            return err(503, 'REPLY_SERVICE_NOT_CONNECTED', {
+                'status': 'FAILED', 'error_code': 'REPLY_SERVICE_NOT_CONNECTED', 'retryable': False,
             })
         idempotency_key = _request_value(
             body,

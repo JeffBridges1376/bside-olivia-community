@@ -116,3 +116,11 @@ def test_actual_photo_worker_uses_jev_path_and_preserves_error(monkeypatch):
     assert row['image_status'] == 'FAILED'
     assert row['image_error_code'] == 'JEV_RESPONSE_INVALID'
     assert not calls
+
+
+def test_photo_writer_keeps_light_posture_and_classroom_consistent_with_the_reply():
+    """A 10:15 class photo came back dark, empty, with feet on the desk."""
+    rules = image_reply._DESCRIPTION_SYSTEM
+    assert 'time_of_day' in rules and '回信里描述的光线' in rules
+    assert '不把脚搭在桌上' in rules and '不坐在桌子上' in rules
+    assert '老师和正在听课的同学' in rules and '空无一人' in rules

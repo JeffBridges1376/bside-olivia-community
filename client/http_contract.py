@@ -49,6 +49,7 @@ ERROR_CODES: dict[str, dict[str, Any]] = {
     "STORE_STATE_UNAVAILABLE": {"http_status": 503, "retryable": False},
     "LLM_UNAVAILABLE": {"http_status": 503, "retryable": True},
     "OLIVIA_KEY_REQUIRED": {"http_status": 503, "retryable": False},
+    "REPLY_SERVICE_NOT_CONNECTED": {"http_status": 503, "retryable": False},
     "LLM_QUOTA_EXHAUSTED": {"http_status": 503, "retryable": False},
     "LLM_AUTH_FAILED": {"http_status": 503, "retryable": False},
     "LLM_USAGE_PENDING": {"http_status": 503, "retryable": False},

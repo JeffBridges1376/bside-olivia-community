@@ -212,6 +212,66 @@ def test_launcher_silently_ignores_retired_custom_provider(
     assert "legacy-secret" not in environment.values()
 
 
+def test_launcher_adopts_saved_account_key_over_retired_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 1.x user with DeepSeek plus an Olivia account key replies through the relay."""
+    data_root = tmp_path / "data"
+    config_root = data_root / "config"
+    config_root.mkdir(parents=True)
+    retired_name = f"deepseek_api_key.{'f' * 32}.dpapi"
+    (config_root / retired_name).write_text("retired-provider-ciphertext\n", encoding="utf-8")
+    retired = {
+        "schema_version": 3, "provider": "openai_compatible", "base_url": "https://api.deepseek.com",
+        "model": "deepseek-flash", "max_retries": 2, "requires_api_key": True, "key_file": retired_name,
+        "key_sha256": hashlib.sha256((config_root / retired_name).read_bytes()).hexdigest(),
+    }
+    (config_root / "llm.json").write_text(json.dumps(retired), encoding="utf-8")
+    (config_root / "olivia_relay_key.dpapi").write_text("account-key-ciphertext", encoding="utf-8")
+    unprotected = []
+    monkeypatch.setattr(
+        start_local, "_load_dpapi_key",
+        lambda path: unprotected.append(path.name) or ("account-key" if path.read_text(encoding="utf-8").strip() == "account-key-ciphertext" else "legacy-secret"),
+    )
+
+    environment = start_local._load_llm_environment({}, data_root, include_secret=True)
+
+    assert environment["OLIVIA_LLM_PROVIDER"] == "openai_compatible"
+    assert environment["OLIVIA_LLM_BASE_URL"] == "https://175.24.191.6/v1"
+    assert environment["OLIVIA_LLM_API_KEY"] == "account-key"
+    assert retired_name not in unprotected
+    saved = json.loads((config_root / "llm.json").read_text(encoding="utf-8"))
+    assert saved["base_url"] == "https://175.24.191.6/v1" and saved["model"] == "qwen3.7-flash"
+    assert json.loads((config_root / "llm.retired.json").read_text(encoding="utf-8")) == retired
+    # The setup API sees the same binding, so the account shows as connected.
+    setup = LLMSetupService(data_root, protect=lambda value: value, unprotect=lambda value: value)
+    assert setup.status()["llm"]["key_configured"] is True
+
+    # A second start is a no-op and keeps the adopted binding.
+    before = (config_root / "llm.json").read_bytes()
+    start_local._load_llm_environment({}, data_root, include_secret=True)
+    assert (config_root / "llm.json").read_bytes() == before
+
+
+def test_launcher_does_not_replace_an_existing_relay_binding(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    config_root = data_root / "config"
+    config_root.mkdir(parents=True)
+    key_name = f"deepseek_api_key.{'a' * 32}.dpapi"
+    (config_root / key_name).write_bytes(b"bound-relay-key")
+    config = {"schema_version": 3, "provider": "openai_compatible", "base_url": "https://175.24.191.6/v1",
+              "model": "qwen3.7-flash", "max_retries": 2, "requires_api_key": True, "key_file": key_name,
+              "key_sha256": hashlib.sha256(b"bound-relay-key").hexdigest()}
+    (config_root / "llm.json").write_text(json.dumps(config), encoding="utf-8")
+    (config_root / "olivia_relay_key.dpapi").write_text("other-account-key", encoding="utf-8")
+
+    start_local._load_llm_environment({}, data_root)
+
+    assert json.loads((config_root / "llm.json").read_text(encoding="utf-8")) == config
+    assert not (config_root / "llm.retired.json").exists()
+
+
 def test_launcher_reuses_saved_non_deepseek_provider_schema_on_restart(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

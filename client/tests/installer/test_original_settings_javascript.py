@@ -524,3 +524,25 @@ def test_component_progress_preserves_controls_until_terminal_state():
     assert 'if (!panel.isConnected) return' in poll
     assert 'if (!["queued", "extracting", "checking", "testing"].includes(current.state))' in poll
     assert '歌词识别为可选' in source
+
+
+def test_statement_states_the_published_minimum_charge():
+    node = shutil.which('node')
+    if node is None:
+        pytest.skip('Node.js is unavailable')
+    source = 'const drawUnifiedStatement =' + BOOTSTRAP_JAVASCRIPT.split('const drawUnifiedStatement =', 1)[1].split('\n  };\n', 1)[0] + '\n  };'
+    harness = r'''
+const assert = require('node:assert/strict');
+class Element { constructor(){this.children=[];this.style={};} append(...c){this.children.push(...c);} replaceChildren(...c){this.children=c;} }
+const document={createElement:()=>new Element()};
+const text=(tag,value)=>({textContent:value});
+''' + source + r'''
+const render=account=>{const target=new Element();drawUnifiedStatement(target,account);return target.children.map(c=>c.textContent||'').join('\n');};
+const base={remaining_yuan:'1',reserved_yuan:'0',used_yuan:'0',items:[]};
+const withMinimum=render({...base,minimum_charge_yuan:'0.01'});
+assert.match(withMinimum,/每次最低 ¥0\.01/);
+assert.match(withMinimum,/未产生费用的调用不收费/);
+assert.doesNotMatch(render(base),/每次最低/);
+'''
+    result = subprocess.run([node, '-e', harness], capture_output=True, text=True, encoding='utf-8', timeout=30)
+    assert result.returncode == 0, result.stderr
