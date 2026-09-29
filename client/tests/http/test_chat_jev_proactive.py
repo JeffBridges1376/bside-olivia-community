@@ -32,7 +32,7 @@ def environment(monkeypatch, tmp_path, *, action='send', medium='text', body=Non
         'location':'宿舍', 'activity':'读书'},
         world={'schedule':{'current_class':None}}, rhythm={'phase':'awake', 'availability':'open'})
     emotion = dict(interpretation_only=True, reaction_subject='character', reactions=[], concerns=[],
-                   current_affect={'label':'relieved', 'reason':'读完后轻松一些'})
+                   current_affect={'label':'relieved', 'reason':'读完后轻松一些', 'status':'available'})
     async def appraise(content, **kwargs):
         assert content is None
         return deepcopy(emotion)

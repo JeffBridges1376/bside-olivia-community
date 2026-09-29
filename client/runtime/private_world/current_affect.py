@@ -69,14 +69,17 @@ class CurrentAffect:
                  'recent_episodes有具体过程时，优先依据遇到的障碍、应对和实际结果，不仅凭活动名称猜心情；'
                  'episode.interpretation仅是此前的角色主观理解，不能提升为客观事实。'
                  '没有用户消息也可因生活变化而改变心情。单次reaction=none不等于当前心情消失或平静。'
-                 '这是有依据的角色主观状态，不新增世界事实。证据不足选unknown。')
+                 '这是有依据的角色主观状态，不新增世界事实。证据不足选unknown。'
+                 'previous_affect只是上一次的判断，不是依据：心情会随时间和新经历自然平复，'
+                 '没有新的具体依据支撑时不要沿用上次的负面心情，选unknown或更平和的心情。')
         reasons = {'unknown': '不足以判断当前心情',
                    'life': '近期真实生活经历的影响',
                    'body': '当前身体感受与作息的影响',
                    'progress': '在意事项的实际进展或结果',
                    'interaction': '近期交流带来的感受',
-                   'concern': '仍在意尚未解决的事情',
-                   'continuity': '此前的心情仍在延续'}
+                   'concern': '仍在意尚未解决的事情'}
+        # No "the earlier mood continues" basis: offered it, the judgment kept
+        # re-selecting the previous label, so one frustrated moment lasted all day.
         reason_choices = dict(reasons)
         for group in ('reactions', 'concerns', 'published_moments', 'projects', 'shared'):
             for index, item in enumerate(packet.get(group, [])):

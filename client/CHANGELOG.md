@@ -2,6 +2,14 @@
 
 每个版本的完整内容、升级方式和已知问题见 [`docs/releases/`](docs/releases/) 下对应的更新说明；附件以 [GitHub Releases](https://github.com/Ornn8/bside-olivia-community/releases) 为准。
 
+## 2.0.6 - 2026-09-29
+
+修复林离回信变得冷淡、带攻击性，以及 Key 带空格时回复失败。详见 [2.0.6 更新说明](docs/releases/v2.0.6.md)。
+
+- 林离的心情不再凭“此前的心情仍在延续”一直保持烦躁；过期的心情不再影响回信。
+- 回信可以带情绪，但不迁怒、嘲讽、贬低或攻击你。
+- 导入或保存时带有首尾空格、换行的 Olivia 账户 Key 不再导致 `JEV_BILLING_ACCOUNT_UNAVAILABLE`。
+
 ## 2.0.5 - 2026-09-29
 
 减少林离日常在后台的无意义更新和扣费。详见 [2.0.5 更新说明](docs/releases/v2.0.5.md)。

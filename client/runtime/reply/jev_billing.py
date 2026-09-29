@@ -25,7 +25,12 @@ _account_key = None
 
 def configure_account(get_key):
     global _account_key
-    _account_key = get_key
+    def stripped():
+        # A key pasted with a trailing space or newline still works on the relay;
+        # it must not make every reply fail here with ACCOUNT_UNAVAILABLE.
+        key = get_key()
+        return key.strip() if isinstance(key, str) else key
+    _account_key = stripped
 
 
 def account_key_missing():
