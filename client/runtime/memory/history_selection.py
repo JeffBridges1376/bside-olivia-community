@@ -33,6 +33,7 @@ _INSTRUCTION = (
     '关联只要求原话一起供参考，不裁定谁说的是真的。当前消息的引用ID是current_citation字段的值；'
     'current_message只是正文，不能把字段名当引用ID；不得编造id或改写原文。'
 )
+_RECALL_UNAVAILABLE = '本轮没有可以核对的往来原话（原文核对未完成）。用户问起过去的事时，记不清就如实说记不太清，或请对方提醒；不得指认是谁说的、谁答应的，不得编造时间、地点、物品等细节，也不能据此否认发生过。'
 _DEPENDENCY_GAP = '部分旧原文的后续说明不可用或放不下，本轮已省略相关旧说法；不能据此断定事情未发生。'
 
 
@@ -297,6 +298,9 @@ async def select_history_messages(messages, gateway, *, max_input_chars, request
         base.insert(len(base) - 1, {'role': 'system', 'content': _SELECTED})
     if gap and sum(len(m['content']) for m in base) + len(_DEPENDENCY_GAP) <= max_input_chars:
         base.insert(len(base) - 1, {'role': 'system', 'content': _DEPENDENCY_GAP})
+    # Without checked originals the writer must not reconstruct who said or promised what.
+    if status == 'unavailable' and sum(len(m['content']) for m in base) + len(_RECALL_UNAVAILABLE) <= max_input_chars:
+        base.insert(len(base) - 1, {'role': 'system', 'content': _RECALL_UNAVAILABLE})
     base = [m for m in base if m.get('role') != 'system' or m.get('content', '').strip()]
     if persona_snapshot is not None:
         base = project_persona_selection(base, persona_snapshot, persona_mode, persona_ids,
