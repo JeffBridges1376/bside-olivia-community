@@ -80,8 +80,30 @@ def test_wrong_relay_amount_is_not_consumed(configured, monkeypatch, field, valu
     answer[field] = value
     monkeypatch.setattr(billing, '_post_settlement', lambda *a: answer)
     with billing.billing_scope('synthetic:turn'):
-        with pytest.raises(ValueError, match='JEV_BILLING_UNAVAILABLE'):
+        # A wrong amount is a real mismatch, reported as such, never "unavailable".
+        with pytest.raises(ValueError, match='JEV_BILLING_RESPONSE_INVALID'):
             billing.settle_receipt_sync(signed(), DIGEST)
+
+
+@pytest.mark.parametrize('replayed', [False, True])
+def test_published_minimum_is_accepted_for_small_judgments(configured, monkeypatch, replayed):
+    answer = result(signed(), replayed=replayed)
+    answer.update(charged_units=billing.MINIMUM_CHARGE_UNITS,
+                  debited_units=0 if replayed else billing.MINIMUM_CHARGE_UNITS)
+    monkeypatch.setattr(billing, '_post_settlement', lambda *a: answer)
+    with billing.billing_scope('synthetic:turn'):
+        assert billing.settle_receipt_sync(signed(), DIGEST)['charged_units'] == billing.MINIMUM_CHARGE_UNITS
+        assert billing.billing_headers()['X-Olivia-Billing-Minimum'] == '1'
+
+
+def test_minimum_is_not_accepted_when_usage_already_exceeds_it(configured, monkeypatch):
+    big = signed(tokens=20000)
+    answer = result(big)
+    answer.update(charged_units=billing.MINIMUM_CHARGE_UNITS, debited_units=billing.MINIMUM_CHARGE_UNITS)
+    monkeypatch.setattr(billing, '_post_settlement', lambda *a: answer)
+    with billing.billing_scope('synthetic:turn'):
+        with pytest.raises(ValueError, match='JEV_BILLING_RESPONSE_INVALID'):
+            billing.settle_receipt_sync(big, DIGEST)
 
 
 def test_no_scope_does_not_retroactively_charge_existing_receipt(configured, monkeypatch):
