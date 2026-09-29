@@ -201,6 +201,9 @@ class CharacterEmotionRuntime:
                 unavailable = True
         if ids:
             try:
+                # Life moments published since the last exchange are read now,
+                # in the same evaluation as this message, never in the background.
+                self._discover_world(now)
                 # A failed earlier receipt remains causally relevant to the next
                 # reply. One overflow probe avoids silently keeping only an old
                 # prefix while dropping the clarification that follows it.
@@ -221,19 +224,22 @@ class CharacterEmotionRuntime:
             view['pending_current_input'] = True
         return view
 
+    def _discover_world(self, now):
+        # Limit automatic discovery to recent context. Registered pending
+        # work still recovers after the discovery window has passed.
+        with self.life_store._db() as db:
+            sources = [row[0] for row in db.execute(
+                "SELECT m.source_id FROM life_moments m WHERE m.kind='daily' "
+                'AND m.occurred_at>=? AND m.occurred_at<=? '
+                'AND NOT EXISTS (SELECT 1 FROM character_emotion_sources s WHERE s.source_id=m.source_id) '
+                'ORDER BY m.occurred_at DESC,m.source_id LIMIT ?',
+                (_time(now - REACTION_WINDOW), _time(now), _BATCH_LIMIT))]
+        for source_id in sources:
+            self.store.publish(source_id)
+
     async def refresh_world(self, now):
         try:
-            # Limit automatic discovery to recent context. Registered pending
-            # work still recovers below after the discovery window has passed.
-            with self.life_store._db() as db:
-                sources = [row[0] for row in db.execute(
-                    "SELECT m.source_id FROM life_moments m WHERE m.kind='daily' "
-                    'AND m.occurred_at>=? AND m.occurred_at<=? '
-                    'AND NOT EXISTS (SELECT 1 FROM character_emotion_sources s WHERE s.source_id=m.source_id) '
-                    'ORDER BY m.occurred_at DESC,m.source_id LIMIT ?',
-                    (_time(now - REACTION_WINDOW), _time(now), _BATCH_LIMIT))]
-            for source_id in sources:
-                self.store.publish(source_id)
+            self._discover_world(now)
             ids = self.store.pending_source_ids(before=now, limit=_BATCH_LIMIT)
             if ids:
                 basis = self.store.assessment(ids, now=now)

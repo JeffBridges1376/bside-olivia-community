@@ -44,20 +44,48 @@ def _refresh_delay(source_id: str) -> timedelta:
     return timedelta(minutes=180 + spread)  # A stable 3-5 hours per moment.
 
 
-def _activity_refresh_delay(current: dict) -> timedelta:
+# Every reconsideration is a paid judgment. Repeating the same activity backs
+# off (x2 per repeat, at most four hours) and, while the user has not written
+# for a while, life advances only every 3-5 hours.
+_UNCHANGED_BACKOFF_CAP = timedelta(hours=4)
+IDLE_AFTER = timedelta(hours=2)
+
+
+def _activity_refresh_delay(current: dict, *, repeats: int = 0, idle: bool = False) -> timedelta:
     kind = current.get("activity_kind")
     if kind is None and current.get("meals"):
         kind = "meal"  # Older published records already carry structured meals.
     # Reconsider an awake activity at a bounded cadence. This only expires
     # the observation; a new decision/episode must still establish what
     # happens next, and the runtime continues to protect sleep and bathing.
-    if kind == "rest":
-        return timedelta(minutes=30)
-    if kind in {"practice", "reading", "creative", "housework", "walk", "errand"}:
-        return timedelta(minutes=60)
-    if kind in _SHORT_ACTIVITY_MINUTES:
-        return timedelta(minutes=_SHORT_ACTIVITY_MINUTES[kind])
-    return _refresh_delay(current["source_id"])
+    if kind in {"rest", "practice", "reading", "creative", "housework", "walk", "errand"}:
+        base = timedelta(minutes=60)
+    elif kind in _SHORT_ACTIVITY_MINUTES:
+        base = timedelta(minutes=_SHORT_ACTIVITY_MINUTES[kind])
+    else:
+        base = _refresh_delay(current["source_id"])
+    delay = min(base * 2 ** min(max(repeats, 0), 3), max(base, _UNCHANGED_BACKOFF_CAP))
+    return max(delay, _refresh_delay(current["source_id"])) if idle else delay
+
+
+def _user_idle(exchanges, now: datetime) -> bool:
+    """No message from the user in the last IDLE_AFTER (or none at all)."""
+    return not exchanges or now - max(received for received, _ in exchanges) >= IDLE_AFTER
+
+
+def _same_activity_repeats(db, current: dict | None, now: datetime) -> int:
+    """How many earlier published moments in a row share the current activity kind."""
+    kind = current.get("activity_kind") if current else None
+    if not kind:
+        return 0
+    repeats = 0
+    for (payload,) in db.execute(
+            "SELECT payload FROM life_moments WHERE kind='daily' AND occurred_at<=? "
+            "ORDER BY occurred_at DESC, source_id DESC LIMIT 9", (_time(now),)):
+        if json.loads(payload).get("activity_kind") != kind:
+            break
+        repeats += 1
+    return max(repeats - 1, 0)
 
 
 def _meal_observation(meal: dict, now: datetime) -> dict:
@@ -1043,7 +1071,9 @@ class DailyLifeStore:
             "current": current,
             "world": world,
             "rhythm": body,
-            "stale": current is None or class_changed or meal_boundary or meal_finished or now - datetime.fromisoformat(current["occurred_at"]) >= _activity_refresh_delay(current),
+            "stale": current is None or class_changed or meal_boundary or meal_finished or now - datetime.fromisoformat(current["occurred_at"]) >= _activity_refresh_delay(
+                current, repeats=_same_activity_repeats(db, current, now),
+                idle=_user_idle(exchanges, now)),
             "projects": [p for p in projects if p["kind"] == "linli"][:6],
             "shared": [p for p in projects if p["kind"] == "shared"][:6],
             "moments": self._moments(rows),

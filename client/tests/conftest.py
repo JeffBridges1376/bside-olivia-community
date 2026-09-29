@@ -12,6 +12,15 @@ def immediate_reply_rhythm(monkeypatch):
     monkeypatch.setattr(local_server, "_current_life_rhythm", lambda: {})
 
 
+@pytest.fixture(autouse=True)
+def present_user(request, monkeypatch):
+    # Life slows to 3-5 hours while the user has not written. Synthetic worlds
+    # rarely record exchanges, so tests see an active user unless they opt in.
+    if request.node.get_closest_marker("real_user_idle") is None:
+        from runtime.private_world import daily_life
+        monkeypatch.setattr(daily_life, "_user_idle", lambda exchanges, now: False)
+
+
 def pytest_configure(config) -> None:
     """Create the parent of pytest's configured basetemp before fixtures run.
 
@@ -20,6 +29,7 @@ def pytest_configure(config) -> None:
     parent directory on all supported Windows runners.
     """
 
+    config.addinivalue_line("markers", "real_user_idle: use the real absent-user check for life cadence")
     configured = config.getoption("basetemp")
     if configured:
         Path(configured).parent.mkdir(parents=True, exist_ok=True)

@@ -612,11 +612,14 @@ def test_appraisal_failure_does_not_stop_life_publication(tmp_path):
     asyncio.run(daily.refresh(NOW))
     assert life.snapshot(NOW)['current'] is not None
     assert daily.error_code is None
+    # Background life never appraises; the moment waits for the user's next message.
+    assert daily.emotion.error_code is None
+    asyncio.run(daily.emotion.evaluate_received([receipt()], now=NOW + timedelta(minutes=1)))
     assert daily.emotion.error_code == 'EMOTION_EVALUATION_UNAVAILABLE'
-    assert daily.emotion.store.pending_source_ids(before=NOW)
+    assert daily.emotion.store.pending_source_ids(before=NOW + timedelta(minutes=1))
 
 
-def test_stale_life_refresh_catches_up_emotion_before_early_return_and_guides_next_choice(tmp_path):
+def test_life_moments_are_appraised_with_the_next_message_and_guide_the_next_choice(tmp_path):
     from tests.private_world.decisions import life_decision
     class Combined(Gateway):
         def __init__(self):
@@ -633,14 +636,19 @@ def test_stale_life_refresh_catches_up_emotion_before_early_return_and_guides_ne
     gateway = Combined()
     daily = DailyLifeRuntime(life, lambda: gateway, lambda: '[]')
     asyncio.run(daily.refresh(NOW))
-    assert len(gateway.calls) == 1 and gateway.life_calls == []
+    assert gateway.calls == [] and gateway.life_calls == []  # No paid appraisal without the user.
+    # The user writes: one evaluation covers the message and the life moment.
+    asyncio.run(daily.emotion.evaluate_received([receipt()], now=NOW + timedelta(minutes=1)))
+    assert len(gateway.calls) == 1
+    kinds = {s['source_kind'] for s in gateway.calls[0][0]['assessment']['sources']}
+    assert 'published_world' in kinds
     asyncio.run(daily.refresh(NOW + timedelta(hours=5, minutes=30)))
     assert len(gateway.life_calls) == 1
     decision, messages = gateway.life_calls[0]
     assert decision['emotion']['interpretation_only'] is True
     assert decision['emotion']['reactions'][0]['action_tendency'] == 'rest'
     assert '倾向' in messages[0]['content']
-    assert len(gateway.calls) == 2  # The newly published life event is also evaluated.
+    assert len(gateway.calls) == 1  # The new life moment waits for the next message.
 
 
 @pytest.mark.parametrize('mistake', ['joined_quote', 'unknown_concern'])
