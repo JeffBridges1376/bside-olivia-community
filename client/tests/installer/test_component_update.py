@@ -1355,3 +1355,78 @@ def test_component_update_rejects_reparse_component_target(
 
     assert (external / "old.py").read_text(encoding="utf-8") == "external"
     assert not (external / "new.py").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows process inspection")
+def test_running_client_lookup_only_matches_this_installation_app(tmp_path: Path) -> None:
+    installation = tmp_path / "install"
+    inside = installation / "app" / "0.0.9.627" / "Olivia.exe"
+    outside = tmp_path / "elsewhere" / "Olivia.exe"
+    for target in (inside, outside):
+        target.parent.mkdir(parents=True)
+        # A standalone system executable; a venv python.exe stub cannot run once copied.
+        shutil.copy2(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "PING.EXE", target)
+    sleeper = ["-n", "60", "127.0.0.1"]
+    own = subprocess.Popen([str(inside), *sleeper])
+    other = subprocess.Popen([str(outside), *sleeper])
+    try:
+        found = version_launcher._running_client_processes(installation)
+        assert own.pid in found and other.pid not in found
+        version_launcher._terminate_processes(found)
+        assert own.wait(timeout=10) is not None
+        assert other.poll() is None
+    finally:
+        for process in (own, other):
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=10)
+
+
+def test_start_replaces_a_running_client_instead_of_doing_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A client left in the tray made a second double-click do nothing."""
+    installation, legacy = _managed_installation(tmp_path)
+    entrypoint = legacy / "installer" / "start_local.py"
+    entrypoint.parent.mkdir()
+    record = tmp_path / "backend-entrypoint-ran.txt"
+    entrypoint.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(record)!r}).write_text('ran', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    first = version_launcher._try_acquire_start_instance(installation)
+    assert first is not None
+    terminated = []
+
+    def terminate(process_ids):
+        terminated.extend(process_ids)
+        first.close()  # The first launcher sees its client exit and releases the lease.
+
+    monkeypatch.setattr(version_launcher, "_running_client_processes", lambda root: [4242])
+    monkeypatch.setattr(version_launcher, "_terminate_processes", terminate)
+    monkeypatch.setattr(version_launcher, "_own_windows_start_process_tree", lambda: None)
+
+    assert version_launcher._cli(["--install-root", str(installation), "start"]) == 0
+
+    assert terminated == [4242]
+    assert record.read_text(encoding="utf-8") == "ran"
+    events = [json.loads(line) for line in (installation / "data" / "logs" / "launcher.jsonl")
+              .read_text(encoding="utf-8").splitlines()]
+    assert events == [{"event": "launch_already_running"}, {"event": "launch_replaced_running"}]
+
+
+def test_start_gives_up_quietly_when_the_lease_is_not_released(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installation, _legacy = _managed_installation(tmp_path)
+    first = version_launcher._try_acquire_start_instance(installation)
+    assert first is not None
+    monkeypatch.setattr(version_launcher, "_running_client_processes", lambda root: [4242])
+    monkeypatch.setattr(version_launcher, "_terminate_processes", lambda ids: None)
+    try:
+        assert version_launcher._replace_running_start(installation, wait_seconds=0.3, poll_seconds=0.05) is None
+    finally:
+        first.close()

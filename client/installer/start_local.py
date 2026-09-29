@@ -861,6 +861,28 @@ def _configure_memory_environment(
     return environment
 
 
+def _refresh_stable_launcher(root: Path, data_root: Path) -> None:
+    """Keep install/launcher/ in step with the active backend.
+
+    Patch updates never replace the stable launcher, so launcher fixes (such as
+    replacing a client left in the tray) would otherwise never reach users.
+    """
+
+    launcher = root / "launcher" / "version_launcher.py"
+    source = Path(__file__).resolve().with_name("version_launcher.py")
+    if not launcher.parent.is_dir():
+        return
+    try:
+        if launcher.is_file() and launcher.read_bytes() == source.read_bytes():
+            return
+        from installer.proactive_login import _refresh_stable_launcher as refresh
+        refresh(root)
+    except (OSError, RuntimeError, ValueError):
+        _append_launcher_event(data_root, "stable_launcher_refresh_failed")
+        return
+    _append_launcher_event(data_root, "stable_launcher_refreshed")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--install-root", type=Path, required=True)
@@ -898,6 +920,7 @@ def main(argv: list[str] | None = None) -> int:
     from installer.user_data_root import resolve_user_data_root
     from installer.repair_image_dependency import ensure_bundled_image_dependency
     data_root = resolve_user_data_root(root)
+    _refresh_stable_launcher(root, data_root)
     if data_root != root / 'data':
         import atexit
         from installer.version_launcher import _try_acquire_start_instance
