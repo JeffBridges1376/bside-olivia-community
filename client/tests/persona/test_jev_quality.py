@@ -296,3 +296,12 @@ def test_detection_size_does_not_grow_with_confirmations(monkeypatch):
     assert 'current_user_input' not in state['adjudication_contexts']['relationship']
     assert 'memory_evidence' not in state['adjudication_contexts']['relationship']
     assert 'current_user_input' in state['adjudication_contexts']['boundary_fact']
+
+
+def test_memory_fabrication_rule_covers_misattributed_speakers():
+    """A reply said "你昨晚说的呀" about something Linli herself had agreed to."""
+    from runtime.reply.jev_quality import _CODE_RULES
+    from runtime.memory.history_selection import _SELECTED
+    rule = _CODE_RULES['MEMORY_FABRICATION']
+    assert '安到错误的人身上' in rule and '你答应过' in rule
+    assert 'speaker' in _SELECTED and '不得颠倒' in _SELECTED
