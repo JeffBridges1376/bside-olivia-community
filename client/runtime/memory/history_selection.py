@@ -36,7 +36,7 @@ _INSTRUCTION = (
 _DEPENDENCY_GAP = '部分旧原文的后续说明不可用或放不下，本轮已省略相关旧说法；不能据此断定事情未发生。'
 
 
-_HISTORY_RECORD_LIMIT = 24  # Matches jev_history.select_history's record capacity.
+_HISTORY_RECORD_LIMIT = 24  # Same record capacity as the JEV recall request.
 
 
 def _encode(value):
@@ -182,7 +182,7 @@ async def select_history_messages(messages, gateway, *, max_input_chars, request
     seen = set()
     # Recall offers the best-ranked groups within a fixed budget (12 groups,
     # 24 original records, candidate_limit characters) so the request size
-    # does not grow with history; omitted groups are counted in the trace.
+    # does not grow with past letters; omitted groups are counted in the trace.
     cited = {r.get('citation') for r in visible_recent} | {'current'}
     for group in groups:
         if len(offered) == 12:
