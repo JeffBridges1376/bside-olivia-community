@@ -44,6 +44,26 @@ MANAGED_LLM_SCHEMA_VERSION = 3
 _MANAGED_LLM_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 
 
+_PURPOSE_WORD = re.compile(r'[a-z][a-z-]*')
+
+
+def _wire_request_id(request_id: str, label: str | None) -> str:
+    """X-Request-ID with a purpose prefix so the relay statement can label it.
+
+    Ids that already start with a purpose word ("day:", "letter-reply:") are
+    sent unchanged; random ids get the call's scope in front. Only the header
+    changes; the request id used internally and returned stays the same.
+    """
+    word = _PURPOSE_WORD.match(request_id)
+    if word and re.search('[g-z]', word.group(0)):
+        return request_id
+    return f"{label or 'llm'}-{request_id}"
+
+
+def _scope_label(scope: "GatewayRequestScope | None") -> str:
+    return scope.value.replace('_', '-') if scope is not None else 'llm'
+
+
 class GatewayRequestScope(str, Enum):
     """Trusted in-process call scope; never serialized into provider request ids."""
 
@@ -834,7 +854,7 @@ class OpenAICompatibleAdapter(Gateway):
         suffix = "responses" if self.config.api_style == "responses" else "chat/completions"
         return self.config.base_url.rstrip("/") + "/" + suffix
 
-    def _headers(self, key: str | None, request_id: str) -> dict[str, str]:
+    def _headers(self, key: str | None, request_id: str, label: str | None = None) -> dict[str, str]:
         headers = {
             "Accept": "application/json",
             "Content-Type": "application/json",
@@ -844,7 +864,7 @@ class OpenAICompatibleAdapter(Gateway):
             headers["Authorization"] = "Bearer " + key
         if request_id.startswith("letter-reply:"):
             headers["Idempotency-Key"] = request_id
-        headers["X-Request-ID"] = request_id
+        headers["X-Request-ID"] = _wire_request_id(request_id, label)
         return headers
 
     def _uses_max_reasoning(self, scope: GatewayRequestScope | None) -> bool:
@@ -931,6 +951,7 @@ class OpenAICompatibleAdapter(Gateway):
         background_reasoning: bool = False,
         endpoint: str | None = None,
         allow_redirects: bool = True,
+        label: str | None = None,
     ) -> dict[str, Any]:
         try:
             key = self._ensure_configured()
@@ -953,7 +974,7 @@ class OpenAICompatibleAdapter(Gateway):
                         endpoint or self._url(),
                         ssl=client_tls_context(),
                         json=body,
-                        headers=self._headers(key, request_id),
+                        headers=self._headers(key, request_id, label),
                         allow_redirects=allow_redirects,
                     ) as response:
                         status = response.status
@@ -1111,9 +1132,9 @@ class OpenAICompatibleAdapter(Gateway):
                 else:
                     body['response_format'] = wire
         if scope is GatewayRequestScope.BACKGROUND_REASONING:
-            data = await self._post_json(body, request, background_reasoning=True)
+            data = await self._post_json(body, request, background_reasoning=True, label=_scope_label(scope))
         else:
-            data = await self._post_json(body, request, max_reasoning=max_reasoning)
+            data = await self._post_json(body, request, max_reasoning=max_reasoning, label=_scope_label(scope))
         if _extract_finish_reason(data) == "length" or data.get('status') in {'incomplete', 'failed'}:
             raise ProviderProtocolError()
         text = _extract_response_text(data)
@@ -1159,7 +1180,8 @@ class OpenAICompatibleAdapter(Gateway):
                     body['response_format'] = {'type':'json_object'}
             try:
                 data = await self._post_json(body, request, max_reasoning=self._uses_max_reasoning(scope),
-                                             background_reasoning=scope is GatewayRequestScope.BACKGROUND_REASONING)
+                                             background_reasoning=scope is GatewayRequestScope.BACKGROUND_REASONING,
+                                             label=_scope_label(scope))
             except ProviderRejected as error:
                 if getattr(error, 'diagnostic_detail', None) != 'unsupported_response_format' or attempt + 1 == attempts:
                     raise
@@ -1233,7 +1255,7 @@ class OpenAICompatibleAdapter(Gateway):
         if self.config.api_style != "chat_completions" or capabilities.tool_choice:
             body["tool_choice"] = tool_choice
         try:
-            data = await self._post_json(body, request)
+            data = await self._post_json(body, request, label='tool-call')
         except ProviderRejected as error:
             if single is not None and getattr(error, 'diagnostic_detail', None) in {'unsupported_tools', 'unsupported_tool_choice'}:
                 return await structured_tool(attempts=1)
@@ -1330,7 +1352,7 @@ class OpenAICompatibleAdapter(Gateway):
                         self._url(),
                         ssl=client_tls_context(),
                         json=body,
-                        headers=self._headers(key, request),
+                        headers=self._headers(key, request, _scope_label(scope)),
                     ) as response:
                         status = response.status
                         await _check_provider_quota(response)
