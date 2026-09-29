@@ -1490,9 +1490,16 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const feelings = card();
       feelings.append(text('h5', '她现在的心情', 'text-text-title text-label-l'));
       const emotion = payload.emotion;
-      const reactions = {pleased:'挺开心', frustrated:'有点不顺心', concerned:'有些担心', hurt:'有点难过', relieved:'松了口气', calm:'平静'};
+      const reactions = {pleased:'开心', anticipation:'期待', relieved:'松了口气', moved:'感动', affection:'心动', shy:'害羞',
+        missing:'想你', angry:'生气', frustrated:'烦躁', jealous:'吃醋', sad:'难过', disappointed:'失落', hurt:'委屈', lonely:'孤单',
+        concerned:'担心', afraid:'不安', surprised:'惊讶', bored:'无聊', calm:'平静'};
+      const graded=(label,intensity)=>{
+        const name=reactions[label];
+        if(!name || ['calm','relieved'].includes(label))return name;
+        return intensity==='low' ? `有点${name}` : intensity==='high' ? `很${name}` : name;
+      };
       const hasCurrentAffect=Boolean(emotion && Object.prototype.hasOwnProperty.call(emotion,'current_affect'));
-      const affect=emotion?.current_affect, affectName=reactions[affect?.label];
+      const affect=emotion?.current_affect, affectName=graded(affect?.label, affect?.intensity);
       const affectState=affect?.status==='available' && affectName ? affectName
         : ['stale','missing'].includes(affect?.status) ? '平静' : '暂时读不到';
       const affectReason=()=>{

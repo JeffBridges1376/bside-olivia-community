@@ -195,7 +195,7 @@ def packet(*, channel, now, profile, world, rhythm, emotion, messages, opportuni
                      if k in {'activity','activity_kind','location','note','occurred_at'}},
         'emotion': {'status':emotion.get('status'), 'current_affect':
                     {k:v for k,v in (emotion.get('current_affect') or {}).items()
-                     if k in {'label','reason','status','as_of','pending_sources'}}},
+                     if k in {'label','intensity','reason','status','as_of','pending_sources'}}},
         'recent_dialogue': [{'role': r['role'], 'content': r['text']} for r in recent],
         'opportunities': opportunities, 'contact': contact_summary(rows, now),
         'available_media': list(available_media), 'hard_gates': hard_gates})

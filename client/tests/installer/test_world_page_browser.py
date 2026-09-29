@@ -186,6 +186,15 @@ window.renderWorld = '''+renderer+';')
         assert '因为身体和作息的状态' in body
         assert '练习后的休息与刚才被理解的对话' not in body
         assert '判断于' not in body and 'private-source-not-for-display' not in body
+        payload['emotion']['current_affect'].update(label='jealous', intensity='low')
+        page.evaluate('(value)=>window.payload=value',payload)
+        render()
+        assert '心情：有点吃醋' in page.locator('#world').inner_text()
+        payload['emotion']['current_affect'].update(label='sad', intensity='high')
+        page.evaluate('(value)=>window.payload=value',payload)
+        render()
+        assert '心情：很难过' in page.locator('#world').inner_text()
+        payload['emotion']['current_affect'].update(label='calm', intensity='low')
         payload['emotion']['current_affect']['status'] = 'stale'
         page.evaluate('(value)=>window.payload=value',payload)
         render()

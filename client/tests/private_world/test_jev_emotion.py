@@ -14,12 +14,12 @@ class Decisions:
     async def ask(self, state, questions, *, purpose):
         self.calls.append((state, questions, purpose))
         if purpose == 'character-current-affect':
-            return {'label': 'calm', 'reason': 'body'}
+            return {'label': 'calm', 'reason': 'body', 'intensity': 'low'}
         if self.fail:
             raise RuntimeError('JEV_UNAVAILABLE')
         template = dict(reaction='frustrated', quote='q0', need='rest', action='rest', reported='none',
                     reported_quote='q0', concern='none', concern_action='open', revision='none')
-        return {key: 'none' if key.startswith('lifecycle_') or '_existing_' in key else ('calm' if key == 'affect_label' else 'body') if key.startswith('affect_')
+        return {key: 'none' if key.startswith('lifecycle_') or '_existing_' in key else ('calm' if key == 'affect_label' else 'low' if key == 'affect_intensity' else 'body') if key.startswith('affect_')
                 else template[key.split('_', 1)[1]] for key in questions}
 
 
@@ -143,7 +143,7 @@ def test_three_sources_and_present_mood_use_one_bounded_http_packet(tmp_path, mo
     assert view['current_affect']['label'] == 'calm'
     assert len(view['reactions']) == 3
     state, questions, purpose = port.calls[0]
-    assert len(questions) == 26
+    assert len(questions) == 27  # includes affect_intensity
     assert state['sources']['s0']['preceding_sources'] == []
     assert state['sources']['s2']['preceding_sources'] == ['s0', 's1']
     assert all(set(s['context']) == {'as_of', 'rhythm'} for s in state['sources'].values())
