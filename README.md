@@ -21,8 +21,9 @@ BSide Olivia Community 是面向 Windows 的非官方陪伴复刻项目。它复
 
 | 版本 | 状态 | 说明 |
 | --- | --- | --- |
-| [2.0.8](https://github.com/Ornn8/bside-olivia-community/releases/tag/v2.0.8) | 当前发布版 | 大幅减少 QQ 回复偶发发不出去；要语音时林离一定用语音回复，不再推辞；QQ 回复更省钱。[更新说明](client/docs/releases/v2.0.8.md) |
-| [2.0.7](https://github.com/Ornn8/bside-olivia-community/releases/tag/v2.0.7) | 上一版 | QQ 回复附带的设置不合规时只忽略该设置，回复照常发送；你约好的联系时间不受林离作息限制。[更新说明](client/docs/releases/v2.0.7.md) |
+| [2.0.9](https://github.com/Ornn8/bside-olivia-community/releases/tag/v2.0.9) | 当前发布版 | QQ 日常聊天林离会更常用短语音回复；需要细看的内容仍用文字。[更新说明](client/docs/releases/v2.0.9.md) |
+| [2.0.8](https://github.com/Ornn8/bside-olivia-community/releases/tag/v2.0.8) | 上一版 | 大幅减少 QQ 回复偶发发不出去；要语音时林离一定用语音回复，不再推辞；QQ 回复更省钱。[更新说明](client/docs/releases/v2.0.8.md) |
+| [2.0.7](https://github.com/Ornn8/bside-olivia-community/releases/tag/v2.0.7) | 旧版 | QQ 回复附带的设置不合规时只忽略该设置，回复照常发送；你约好的联系时间不受林离作息限制。[更新说明](client/docs/releases/v2.0.7.md) |
 | [2.0.6](https://github.com/Ornn8/bside-olivia-community/releases/tag/v2.0.6) | 旧版 | 林离的坏心情不再一直延续，回信不再迁怒或攻击你；修复 Key 带空格时 QQ 和回信报“账户不可用”。[更新说明](client/docs/releases/v2.0.6.md) |
 | [2.0.5](https://github.com/Ornn8/bside-olivia-community/releases/tag/v2.0.5) | 旧版 | 林离的日常不再在后台反复更新“休息”等没有变化的活动，大幅减少不聊天时的扣费。[更新说明](client/docs/releases/v2.0.5.md) |
 | [2.0.4](https://github.com/Ornn8/bside-olivia-community/releases/tag/v2.0.4) | 旧版 | 修复导入的官方旧信被当作 1970 年的信，林离回忆时说“太久远了记不清”。[更新说明](client/docs/releases/v2.0.4.md) |
