@@ -207,7 +207,7 @@ async def select_history_messages(messages, gateway, *, max_input_chars, request
     selected = []
     status, reason = 'skipped', 'no_history'
     if (offered or visible_recent or persona_offered) and len(_encode(packet)) <= candidate_limit:
-        status, reason = 'unavailable', 'provider'
+        status, reason, stage = 'unavailable', 'provider', 'prepare'
         try:
             refs = [r for group in offered.values() for r in group] + visible_recent + [
                 {'citation': 'current', 'speaker': 'user', 'text': current, 'evidence_scope': 'current_input'}]
@@ -236,6 +236,7 @@ async def select_history_messages(messages, gateway, *, max_input_chars, request
                     'items':{'type':'string', **({'enum':[item['id'] for item in persona_offered]} if persona_offered else {})}}
             if jev_configuration_error:
                 raise ValueError(jev_configuration_error)
+            stage = 'select'
             if jev_port is not None:
                 from .jev_history import select_history
                 value = await select_history(jev_port, packet, refs)
@@ -249,6 +250,7 @@ async def select_history_messages(messages, gateway, *, max_input_chars, request
                 if not isinstance(response.text, str) or len(response.text) > 7000:
                     raise ValueError('INVALID_HISTORY_SELECTION')
                 value = json.loads(response.text)
+            stage = 'validate'
             allowed = {'selected_ids', 'dependencies'} | (
                 {'persona_ids'} if persona_snapshot is not None and not use_persona_duty else set())
             ids = value.get('selected_ids') if isinstance(value, dict) and set(value) <= allowed else None
@@ -262,7 +264,14 @@ async def select_history_messages(messages, gateway, *, max_input_chars, request
                     persona_unavailable = False
                 except ValueError:
                     pass  # Valid prior messages remain usable; persona fails core-only.
-            save_dependencies(dependencies, index, user)
+            stage = 'save'
+            try:
+                save_dependencies(dependencies, index, user)
+            except Exception:
+                # The stored relations only speed up later turns. A valid selection
+                # checked above is still used for this reply.
+                reason = 'dependency_store'
+            stage = 'group'
             for record in historical:
                 prior = next((group for citation, group in required if citation == record['citation']), [record])
                 complete = close_group(prior, offered, dependencies)
@@ -276,10 +285,11 @@ async def select_history_messages(messages, gateway, *, max_input_chars, request
                     selected.append(complete)
                 elif complete != offered[source] or any(r.get('interpretation_dependencies') for r in complete):
                     gap = True
-            status, reason = 'checked', None
+            status, reason = 'checked', (reason if reason == 'dependency_store' else None)
         except Exception as error:
             reason = ('timeout' if isinstance(error, TimeoutError) else
-                      str(error) if isinstance(error, ValueError) and str(error).startswith('JEV_') else reason)
+                      str(error) if isinstance(error, ValueError) and str(error).startswith('JEV_') else
+                      f'error_{stage}_{type(error).__name__}'[:64])
     elif groups:
         status, reason = 'unavailable', 'capacity'
     if jev_configuration_error:
