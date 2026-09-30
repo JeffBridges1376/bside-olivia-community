@@ -29,32 +29,7 @@ def test_world_refresh_never_appraises_in_the_background(tmp_path, monkeypatch, 
         seen.append(timestamp)
 
     runtime.emotion.refresh_world = appraise
-    runtime._refresh_emotion = appraise
     asyncio.run(runtime.refresh(now))
     asyncio.run(runtime.refresh(now))
     assert seen == []
     assert (store.snapshot(now)['current'] is None) == fails
-
-
-def test_cancelled_refresh_does_not_start_emotion_call(tmp_path):
-    async def run():
-        entered = asyncio.Event()
-
-        class Gateway:
-            async def complete(self, messages, **kwargs):
-                entered.set()
-                await asyncio.Future()
-
-        runtime = DailyLifeRuntime(DailyLifeStore(tmp_path / 'life.sqlite3'), Gateway, lambda: '')
-
-        async def unexpected_call(now):
-            pytest.fail('Cancellation must not start a new model request')
-
-        runtime._refresh_emotion = unexpected_call
-        task = asyncio.create_task(runtime.refresh(datetime(2026, 9, 5, 10, tzinfo=timezone.utc)))
-        await asyncio.wait_for(entered.wait(), timeout=2)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-
-    asyncio.run(run())

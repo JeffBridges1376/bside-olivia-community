@@ -1490,18 +1490,36 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const feelings = card();
       feelings.append(text('h5', '她现在的心情', 'text-text-title text-label-l'));
       const emotion = payload.emotion;
-      const reactions = {pleased:'高兴', frustrated:'受挫', concerned:'担忧', hurt:'受伤', relieved:'释然', calm:'平静'};
-      const hasCurrentAffect=Boolean(emotion && Object.prototype.hasOwnProperty.call(emotion,'current_affect'));
-      const affect=emotion?.current_affect, affectName=reactions[affect?.label];
-      const affectState=affect?.status==='available' && affectName ? affectName
-        : affect?.status==='stale' && affectName ? `上次为${affectName}；当前待更新`
-        : affect?.status==='missing' ? '待评估' : '暂时无法读取';
-      const appendAffectBasis=target=>{
-        if(!affectName || !['available','stale'].includes(affect?.status))return;
-        if(typeof affect.reason==='string' && affect.reason.trim())target.append(text('p',`${affect.status==='stale'?'上次依据':'当前依据'}：${affect.reason}`,'text-text-secondary text-body-m'));
-        if(affect.as_of && when(affect.as_of))target.append(text('small',`${affect.status==='stale'?'上次判断于':'判断于'} ${when(affect.as_of)}`,'text-text-secondary text-caption-m'));
+      const reactions = {pleased:'开心', anticipation:'期待', relieved:'松了口气', moved:'感动', affection:'心动', shy:'害羞',
+        missing:'想你', angry:'生气', frustrated:'烦躁', jealous:'吃醋', sad:'难过', disappointed:'失落', hurt:'委屈', lonely:'孤单',
+        concerned:'担心', afraid:'不安', surprised:'惊讶', bored:'无聊', calm:'平静'};
+      const graded=(label,intensity)=>{
+        const name=reactions[label];
+        if(!name || ['calm','relieved'].includes(label))return name;
+        return intensity==='low' ? `有点${name}` : intensity==='high' ? `很${name}` : name;
       };
-      if(hasCurrentAffect){feelings.append(text('p',`当前情绪：${affectState}`,'text-text-title text-label-l'));appendAffectBasis(feelings);}
+      const hasCurrentAffect=Boolean(emotion && Object.prototype.hasOwnProperty.call(emotion,'current_affect'));
+      const affect=emotion?.current_affect, affectName=graded(affect?.label, affect?.intensity);
+      const affectState=affect?.status==='available' && affectName ? affectName
+        : ['stale','missing'].includes(affect?.status) ? '平静' : '暂时读不到';
+      const affectReason=()=>{
+        const kind=String(affect?.basis?.kind || '');
+        const group=kind==='body' ? '身体和作息的状态'
+          : kind==='progress' || kind.startsWith('projects_') ? '在意的事情有了进展或结果'
+          : kind==='interaction' || kind.startsWith('reactions_') ? '和你刚才的交流'
+          : kind==='concern' || kind.startsWith('concerns_') ? '还有放不下的事'
+          : kind==='life' || kind.startsWith('published_moments_') || kind.startsWith('episode_') ? '最近生活里的经历' : '';
+        const ids=new Set(affect?.basis?.source_ids || []);
+        const related=(emotion?.reactions || []).find(item=>ids.has(item.source_id) && typeof item.goal_or_need==='string' && item.goal_or_need.trim());
+        if(!group)return '';
+        return `因为${group}${related ? `，她在意的是${related.goal_or_need.trim()}` : ''}`;
+      };
+      const appendAffectBasis=target=>{
+        if(!affectName || affect?.status!=='available')return;
+        const reason=affectReason();
+        if(reason)target.append(text('p',reason,'text-text-secondary text-body-m'));
+      };
+      if(hasCurrentAffect){feelings.append(text('p',`心情：${affectState}`,'text-text-title text-label-l'));appendAffectBasis(feelings);}
       if (!emotion || emotion.status !== 'available') {
         feelings.append(text('p', hasCurrentAffect ? '情绪变化记录暂时无法读取。' : '当前情绪暂时无法读取，不能据此判断她心情平静。', 'text-text-secondary text-body-m'));
       } else {
@@ -1605,17 +1623,27 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const refresh=button('更新近况',()=>load(true));refresh.disabled=Boolean(payload.refreshing);top.append(weatherInfo,refresh);
         const overview=document.createElement('section');overview.className='olivia-world-overview';
         const current=payload.current, fresh=current && !payload.stale;
-        overview.append(text('h3',fresh ? (current.activity || '她最近的近况') : (payload.rhythm?.activity || '此刻的近况待更新')));
+        const phase=payload.rhythm?.phase, restWindow=payload.rhythm?.planned_rest_window;
+        const clock=value=>{const date=new Date(value);return Number.isNaN(date.getTime()) ? '' : date.toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',hour12:false,timeZone:'Asia/Shanghai'});};
+        const heading=phase==='sleep' ? '已经睡下了'
+          : phase==='interrupted_rest' ? '还醒着，在和你聊天'
+          : phase==='bathing' ? '在洗澡'
+          : fresh ? (current.activity || '她最近的近况')
+          : current?.activity && current?.occurred_at ? `${when(current.occurred_at)} 在${current.activity}，之后还没有新动态`
+          : (payload.rhythm?.activity || '暂时还没有她的近况');
+        overview.append(text('h3',heading));
         const meta=document.createElement('div');meta.className='olivia-world-meta';
-        if(fresh && current.location)meta.append(line('home',current.location));
-        if(current?.occurred_at)meta.append(line('clock',`${fresh?'记录于':'上次分享'} ${when(current.occurred_at)}`));
-        if(!fresh)meta.append(text('span','作息仅供参考，旧活动不代表此刻仍在进行。'));
+        const resting=['sleep','interrupted_rest','bathing'].includes(phase);
+        if(resting && restWindow?.start && restWindow?.end && clock(restWindow.start) && clock(restWindow.end))
+          meta.append(line('clock',`她计划 ${clock(restWindow.start)}–${clock(restWindow.end)} 休息`));
+        else if(fresh && current.location)meta.append(line('home',current.location));
+        if(!resting && fresh && current?.occurred_at)meta.append(line('clock',`记录于 ${when(current.occurred_at)}`));
         overview.append(meta);
         const mood=document.createElement('div');mood.className='olivia-world-mood';
         const valid=emotion?.status==='available';
         const recent=valid ? [...(emotion.reactions || [])].filter(item=>reactions[item.reaction]).reverse() : [];
         const emotionNames=[...new Set(recent.map(item=>reactions[item.reaction]))];
-        mood.append(line('emotion',`当前情绪：${hasCurrentAffect?affectState:!valid?'暂时无法读取':emotionNames.length?emotionNames.join('、'):'暂无有效记录'}`));
+        mood.append(line('emotion',`心情：${hasCurrentAffect?affectState:!valid?'暂时读不到':emotionNames.length?emotionNames.join('、'):'平静'}`));
         appendAffectBasis(mood);
         const detail=document.createElement('details');detail.className='olivia-world-emotion-detail';
         detail.open=Boolean(panel._emotionOpen);
@@ -1634,10 +1662,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           if(item.reaction==='relieved')entry.append(text('p','变化：对这件事感到释然，不等同于开心。'));
           detail.append(entry);
         }
-        if(recent.length){
-          if(!hasCurrentAffect)mood.append(text('p',`相关原因：${recent[0].quote}`,'olivia-world-muted'));
-          mood.append(detail);
-        }else mood.append(text('p',hasCurrentAffect?'暂无新的情绪变化记录。':valid?'没有记录不代表平静，也不代表没有情绪。':'情绪暂时无法读取，已有生活记录仍可查看。','olivia-world-muted'));
+        if(recent.length)mood.append(detail);
         if(valid && emotion.concerns?.length)mood.append(line('thought',`挂心的事：${emotion.concerns.map(item=>item.summary).join('；')}`));
         overview.append(mood);
         const tabs=document.createElement('div');tabs.className='olivia-world-tabs';tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','世界内容');

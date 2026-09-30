@@ -339,6 +339,10 @@ class ReviewFailureStage(StrEnum):
     AGGREGATION = "aggregation"
 
 
+_TRANSIENT_JEV = frozenset({'JEV_TIMEOUT', 'JEV_UNAVAILABLE', 'JEV_HTTP_503', 'JEV_HTTP_429',
+    'JEV_PROVIDER_HTTP_500', 'JEV_PROVIDER_HTTP_502', 'JEV_PROVIDER_HTTP_503', 'JEV_PROVIDER_HTTP_504', 'JEV_PROVIDER_HTTP_529'})
+
+
 class ReviewFailureReason(StrEnum):
     INTERNAL = "internal"
     TRANSPORT = "transport"
@@ -1720,8 +1724,16 @@ def _complete_layer_reviews(
                     try:
                         attempt = []
                         for group in groups:
-                            texts, decisions = await review_layers_json(
-                                port, group, candidate, evidence_bound, max_spans=max_spans)
+                            for retry in range(2):
+                                try:
+                                    texts, decisions = await review_layers_json(
+                                        port, group, candidate, evidence_bound, max_spans=max_spans)
+                                    break
+                                except ValueError as transient:
+                                    # A timeout or busy service re-checks this same candidate once;
+                                    # failing here regenerates and re-bills the whole reply.
+                                    if retry or str(transient) not in _TRANSIENT_JEV:
+                                        raise
                             attempt.append((group, texts, decisions))
                     except ValueError as exc:
                         if str(exc) != 'JEV_INPUT_TOO_LARGE':

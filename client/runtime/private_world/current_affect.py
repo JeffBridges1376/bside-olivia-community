@@ -104,6 +104,8 @@ class CurrentAffect:
         questions = {
             'label': {'instructions': '遵守state.contract判断当前心情。', 'criteria': {
                 'unknown': '没有足够依据判断', **{k: v for k, v in REACTIONS.items() if k != 'none'}}},
+            'intensity': {'instructions': '遵守state.contract判断这份心情的强弱；label为unknown或calm时选low。',
+                          'criteria': {'low': '轻微，隐约有一点', 'medium': '明显，能感觉到', 'high': '强烈，难以掩饰'}},
             'reason': {'instructions': '遵守state.contract。state_path是完整state记录的字段/数组路径，读取该原文或过程对象。选择支撑本次心情的主要依据，与label一致；无依据选unknown。',
                        'criteria': reason_choices}}
         return {'state': {**state, 'contract': rules}, 'questions': questions, 'reasons': reasons}
@@ -127,13 +129,14 @@ class CurrentAffect:
                 if choices is None:
                     choices = await port.ask(plan['state'], plan['questions'], purpose='character-current-affect')
                 label, reason = choices.get('label'), choices.get('reason')
+                intensity = choices.get('intensity') if choices.get('intensity') in {'low', 'medium', 'high'} else 'medium'
                 if label not in (set(REACTIONS) - {'none'}) | {'unknown'} or reason not in reasons:
                     raise ValueError('CURRENT_AFFECT_INVALID_CHOICE')
                 if label != 'unknown' and reason == 'unknown':
                     raise ValueError('CURRENT_AFFECT_MISSING_BASIS')
                 if digest(packet_factory()) != key:
                     return  # A newer canonical state must not receive this stale inference.
-                payload = (dict(label=label, as_of=now.isoformat(), reason=reasons[reason][:240],
+                payload = (dict(label=label, intensity=intensity, as_of=now.isoformat(), reason=reasons[reason][:240],
                                 basis={'context_digest': key, 'kind': reason,
                                        'source_ids': [r['source_id'] for r in [*packet['reactions'], *episodes] if 'source_id' in r]})
                            if label != 'unknown' else prior)

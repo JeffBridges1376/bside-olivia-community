@@ -202,7 +202,6 @@ def test_failed_cover_keeps_only_published_speech_then_retry_adds_cover(tmp_path
         path.write_bytes(b'cover')
         return {}
     monkeypatch.setattr(covers, 'render_cover_reply', cover)
-    monkeypatch.setattr(media, 'concatenate_reply_audio', lambda speech, song, output, env: output.write_bytes(b'combined'))
     for count in (1, 2, 2):
         asyncio.run(server._render_media_job('sample', row['content'], row['reply_text'], 'voice_song_video'))
         assert len(row['media_deliveries']) == count

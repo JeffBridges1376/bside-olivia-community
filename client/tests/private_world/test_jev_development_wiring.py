@@ -54,7 +54,7 @@ def setup(tmp_path, monkeypatch, duty, *, output=None):
         return deepcopy(extraction() if output is None else output)
     async def no_emotion(now):
         pass
-    runtime._complete, runtime._refresh_emotion = complete, no_emotion
+    runtime._complete = complete
     return store, runtime, calls
 
 

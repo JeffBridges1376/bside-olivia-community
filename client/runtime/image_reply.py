@@ -153,13 +153,14 @@ def _photo_reference(row, text):
             and not emotion.get('pending_current_input')):
         reactions = emotion.get('reactions')
         if isinstance(reactions, list):
-            allowed = {'pleased', 'frustrated', 'concerned', 'hurt', 'relieved', 'calm'}
+            from runtime.private_world.jev_emotion import REACTIONS
+            allowed = set(REACTIONS) - {'none'}
             reference['expression_options'] = sorted({item['reaction'] for item in reactions
                 if isinstance(item, dict) and isinstance(item.get('reaction'), str) and item['reaction'] in allowed})
         affect = emotion.get('current_affect')
         if (isinstance(affect, dict) and affect.get('status') == 'available'
-                and affect.get('label') in {'pleased', 'frustrated', 'concerned', 'hurt', 'relieved', 'calm'}):
-            reference['current_affect'] = {key: affect[key] for key in ('label', 'as_of', 'reason') if key in affect}
+                and affect.get('label') in set(__import__('runtime.private_world.jev_emotion', fromlist=['REACTIONS']).REACTIONS) - {'none'}):
+            reference['current_affect'] = {key: affect[key] for key in ('label', 'intensity', 'as_of', 'reason') if key in affect}
             reference['expression_options'] = [affect['label']]
     return reference
 

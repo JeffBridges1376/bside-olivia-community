@@ -71,13 +71,26 @@ def selection_instruction(allowed):
             '；'.join(f'{i}={_labels()[i]}' for i in allowed))
 
 
+# The model sometimes names the reserved line differently ([[image:...]]) or
+# puts it first. Any such marker is metadata wherever it appears, never prose.
+_MARKER = re.compile(
+    r'\[{1,2}\s*(?:sticker|image|img|picture|pic|illustration|插画|插图|表情|贴纸)\s*[:：]'
+    r'[^\[\]\n]{0,40}(?:\]{1,2}|$)', re.IGNORECASE | re.MULTILINE)
+_WELL_FORMED = re.compile(r'\[\[\s*[^\[\]:：]+\s*[:：]\s*(linli-\d{2,3})\s*\]\]')
+
+
 def split_selection(text, allowed):
-    # Strip even a malformed or truncated reserved footer; no corrective LLM call.
-    markers=list(re.finditer(r'\[{1,2}\s*sticker\s*:',text,re.IGNORECASE))
+    # Strip every reserved marker, even malformed or truncated; no corrective LLM call.
+    markers = list(_MARKER.finditer(text))
     if not markers:
         return text,'linli-01'
-    marker=markers[0]
-    footer=text[marker.start():].strip()
-    match=re.fullmatch(r'\[\[sticker:(linli-\d{2,3})\]\]',footer)
-    chosen=match.group(1) if match and match.group(1) in allowed else 'linli-01'
-    return text[:marker.start()].rstrip(),chosen
+    chosen = 'linli-01'
+    for marker in markers:
+        match = _WELL_FORMED.fullmatch(marker.group(0).strip())
+        if match and match.group(1) in allowed:
+            chosen = match.group(1)
+            break
+    cleaned = _MARKER.sub('', text)
+    cleaned = re.sub(r'[ \t]+\n', '\n', cleaned)
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+    return cleaned,chosen

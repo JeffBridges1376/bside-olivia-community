@@ -160,6 +160,10 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
       const code = error?.code || error?.message || String(error || "连接失败");
       target.textContent = ({
         QQ_BOT_AND_OWNER_MUST_DIFFER: "这里请填写你用来和机器人聊天的个人 QQ 号，不能填写刚扫码登录的机器人 QQ 号。",
+        JEV_BILLING_ACCOUNT_UNAVAILABLE: "还没有连接 Olivia 账户 Key，或 Key 无法读取。请在设置的“回信服务 → Olivia 账户”获取或导入 Key，点“连接并保存”后再聊天。",
+        OLIVIA_KEY_REQUIRED: "还没有连接 Olivia 账户 Key，请在设置的“回信服务 → Olivia 账户”获取或导入 Key，点“连接并保存”后再聊天。",
+        JEV_BALANCE_INSUFFICIENT: "Olivia 账户余额不足，请在“回信服务 → Olivia 账户”充值后再聊天。",
+        PERSONAL_CHAT_PROVIDER_QUOTA_EXHAUSTED: "Olivia 账户余额不足，请在“回信服务 → Olivia 账户”充值后再聊天。",
         NAPCAT_START_TIMEOUT: "QQ 组件在一分钟内未就绪。请检查安全软件拦截，并导出诊断包排查；可点击重试。",
         NAPCAT_LOGIN_OPEN_FAILED: "登录窗口未能打开。可以直接扫描本页二维码；需要额外验证时，请设置默认浏览器后再点“打开 QQ 登录窗口”。",
         NAPCAT_LOGIN_UNAVAILABLE: "暂未取得 QQ 登录信息，请稍后刷新二维码。",

@@ -25,29 +25,6 @@ class RemoteGeneration:
         self.url = endpoint(url) if url else ''
         self.token = token
 
-    async def claim_key(self, identity):
-        if not self.url:
-            raise CloudError('GPU_NOT_CONFIGURED', 400)
-        try:
-            async with ClientSession(timeout=ClientTimeout(total=20), trust_env=False, connector=TCPConnector(ssl=gpu_tls_context())) as session:
-                async with session.post(self.url + '/v1/keys/claim', json={'identity': identity}, allow_redirects=False) as response:
-                    raw = await response.content.read(4097)
-                    if len(raw) > 4096:
-                        raise ValueError()
-                    if response.status != 200:
-                        code = raw.decode('ascii', errors='ignore').strip()
-                        allowed = {'GPU_CLAIM_DISABLED', 'GPU_CLAIM_REVOKED', 'GPU_CLAIM_LIMIT'}
-                        raise CloudError(code if code in allowed else 'GPU_CLAIM_FAILED', 503)
-                    result = json.loads(raw)
-                    if (not isinstance(result, dict) or not re.fullmatch(r'[a-f0-9]{64}', result.get('key', ''))
-                            or not re.fullmatch(r'anon-[a-f0-9]{32}', result.get('owner', ''))):
-                        raise ValueError()
-                    return result
-        except (ClientError, TimeoutError) as exc:
-            raise connection_error(exc) from None
-        except (ValueError, TypeError, UnicodeError):
-            raise CloudError('GPU_RESPONSE_INVALID', 502) from None
-
     async def request(self, action, data):
         if not self.url or not self.token:
             raise CloudError('GPU_NOT_CONFIGURED', 503)

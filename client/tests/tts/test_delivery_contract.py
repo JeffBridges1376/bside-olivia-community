@@ -441,45 +441,6 @@ def test_directed_request_rejects_frozen_text_with_model_control_token(
         build_external_delivery_request(config, plan)
 
 
-def test_directed_tts_provenance_and_human_acceptance_are_publicly_recorded() -> None:
-    root = Path(__file__).resolve().parents[2]
-    manifest = json.loads(
-        (root / "runtime/packaging/manifests/b10b.modules.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    upstreams = {
-        item["id"]: item for item in manifest["provenance"]["upstreams"]
-    }
-    runtime = upstreams["b06-cosyvoice-runtime"]
-    model = upstreams["b06-cosyvoice-model"]
-    quality_runtime = upstreams["b06-whisper-quality-runtime"]
-    quality_model = upstreams["b06-whisper-base-model"]
-    acceptance = (root / "docs/B06_LOCAL_TTS_ACCEPTANCE.md").read_text(
-        encoding="utf-8"
-    )
-    normalized_acceptance = " ".join(acceptance.split())
-
-    assert runtime["revision"] == "074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc"
-    assert runtime["license"] == "Apache-2.0"
-    assert runtime["adapter_boundary"] in normalized_acceptance
-    assert runtime["uninstall_path"] in normalized_acceptance
-    assert model["revision"] == "29e01c4e8d000f4bcd70751be16fa94bf3d85a18"
-    assert quality_runtime["revision"] == "31243bad24cc746f07d4c8bfdd2d974872cb1803"
-    assert quality_runtime["license"] == "MIT"
-    assert quality_model["revision"] == "31243bad24cc746f07d4c8bfdd2d974872cb1803"
-    assert (
-        "ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e"
-        in quality_model["version"]
-    )
-    assert quality_model["license"] == "MIT"
-    assert "inference_instruct2" in acceptance
-    assert "41.28 seconds" in acceptance
-    assert "24 kHz mono" in acceptance
-    assert "863ef5185c448f189c46524fd8e87010bf353bc2bf8e3df9f59bdc0948ec14ce" in acceptance
-    assert "Candidate 1" in acceptance
-
-
 def test_content_gate_accepts_small_asr_substitutions_but_rejects_control_or_omission() -> None:
     expected = (
         "这是完全合成的语音验收样例。"

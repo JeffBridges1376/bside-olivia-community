@@ -3,9 +3,34 @@ import re
 import json
 
 
-REACTIONS = {'none': '没有可确认的角色心理影响', 'pleased': '角色感到高兴或满意',
-             'frustrated': '角色的目标、边界或需要受阻，感到烦扰或受挫', 'concerned': '角色感到担忧',
-             'hurt': '角色感到受伤或难过', 'relieved': '角色因压力缓解而释然', 'calm': '有证据表明角色心情平静'}
+# The character's own emotions, grouped as joy / closeness / anger / sorrow /
+# fear / other. The original six keys keep their meaning for stored records.
+REACTIONS = {'none': '没有可确认的角色心理影响',
+             'pleased': '喜：高兴、满意',
+             'anticipation': '喜：对接下来的事有期待、盼着',
+             'relieved': '喜：压力或担心解除后松了口气',
+             'moved': '喜：被对方的心意或付出打动，感动',
+             'affection': '亲近：心动、甜蜜、喜欢对方的感觉',
+             'shy': '亲近：害羞、不好意思',
+             'missing': '亲近：想念对方，盼着见面或联系',
+             'angry': '怒：被冒犯或不公对待而生气',
+             'frustrated': '怒：目标、边界或需要受阻，烦躁、不顺心',
+             'jealous': '怒：吃醋、嫉妒，在意对方和别人的亲近',
+             'sad': '哀：难过、伤心',
+             'disappointed': '哀：期待落空而失落',
+             'hurt': '哀：被误解或冷落而受伤、委屈',
+             'lonely': '哀：孤单、没人陪',
+             'concerned': '惧：担心某人某事',
+             'afraid': '惧：不安、害怕',
+             'surprised': '其他：意外、惊讶',
+             'bored': '其他：无聊、提不起兴趣',
+             'calm': '其他：有证据表明心情平静'}
+# Other people's reported feelings need only a coarse category; the full
+# REACTIONS set is for the character herself (and keeps batches in bounds).
+# Short subject codes keep per-source reported choices small: u=user,
+# t=third_party, x=unclear (legend in state.reported_choices).
+_SUBJECTS = {'u': 'user', 't': 'third_party', 'x': 'unclear'}
+REPORTED_AFFECTS = ('pleased', 'affection', 'angry', 'frustrated', 'sad', 'hurt', 'concerned', 'afraid', 'calm')
 NEEDS = {'none': None, 'rest': '休息与恢复精力', 'autonomy': '按自己的意愿决定，维护个人边界',
          'connection': '得到理解与陪伴', 'respect': '受到尊重并被认真对待', 'clarity': '弄清情况，减少误解',
          'progress': '推进当前任务与生活安排', 'safety': '确认自己或在意的人安好', 'sharing': '分享真实的生活与感受'}
@@ -84,8 +109,8 @@ def prepare(packet):
             'reported': question('本来源是否明确报告用户或第三人的具体感受？联合选择主体及感受；单纯道歉不证明某种感受，未明确则none。不是角色自身反应。',
                                  {'none': '没有明确报告可辨识的感受', **{
                                      f'{subject}:{affect}': f'{subject}:{affect}'
-                                     for subject in ('user', 'third_party', 'unclear')
-                                     for affect, meaning in REACTIONS.items() if affect != 'none'}}),
+                                     for subject in _SUBJECTS
+                                     for affect in REPORTED_AFFECTS}}),
             'reported_quote': question('选择最能证明报告他人感受的原句；若无明确报告，仅选代表原句且reported必须none，引用不代表感受存在。', quote_choices),
             'revision': question('当前来源是否明确推翻某条既有理解？单纯道歉、情绪平缓或较新一句话不够。',
                                  {'none': '没有明确撤回依据', **{k: {'prior_id': k} for k in prior_keys}}),
@@ -146,11 +171,11 @@ def prepare(packet):
         'revision': '本来源是否明确推翻所列旧理解？仅道歉/较新/平静不够。'}
     for key, rule in short_rules.items():
         question_rules[key]['instructions'] = rule
-    question_rules['reaction']['choices'] = dict(none='无确认影响', pleased='高兴满意', frustrated='需要/目标/边界受阻',
-        concerned='担忧', hurt='受伤难过', relieved='压力缓解释然', calm='有证据平静')
+    question_rules['reaction']['choices'] = {key: ('无确认影响' if key == 'none' else meaning.split('：', 1)[1])
+                                             for key, meaning in REACTIONS.items()}
     question_rules['need']['choices'] = dict(none='未知', rest='休息恢复', autonomy='自主与边界', connection='理解陪伴',
         respect='尊重', clarity='消除误解', progress='任务进展', safety='确认安好', sharing='分享感受')
-    state['reported_choices'] = 'reported的subject:affect中subject为user/third_party/unclear，affect含义沿用question_rules.reaction.choices，但主体不是角色。'
+    state['reported_choices'] = 'reported的subject:affect中subject为u=用户、t=第三人、x=不明，affect含义沿用question_rules.reaction.choices，但主体不是角色。'
     state['question_reference'] = 'instructions为sN/name时按question_rules.name判断sources.sN；sN/existing_cN按existing_rule；lifecycle_N按lifecycle_rule。'
     state['existing_rule'] = ('sN/existing_cN按sources.sN.concerns.cN判断这一已有关注：'
         'none=本源没有明确改变；open=有原文依据延续或重新挂心；resolve=本源明确解决同一事情，且原status必须open。'
@@ -172,7 +197,8 @@ def prepare(packet):
     if affect:
         state['current_affect'] = {key: affect['state'][key] for key in ('as_of', 'previous_affect', 'rhythm', 'contract')
                                    if key in affect['state']}
-        state['current_affect']['contract'] = ('依上一刻心情、本批原文和身体作息判断现在心情，不只是最后一句用户反应。'
+        state['current_affect']['contract'] = ('依本批原文和身体作息判断现在心情，不只是最后一句用户反应；上一刻心情只作参考，'
+            '没有新的具体依据时心情会自然平复，不沿用旧的负面心情。强度按原文和处境判断，不因为用词激烈就判强烈。'
             'reaction=none不等于平静。计划不证明发生，倾向不授权行动，不凭空归因；证据不足unknown。')
         state['current_affect']['coverage'] = '仅上一刻心情、当前身体作息和本批来源；未处理来源仍待评估，不表示所有历史均已消化。'
         affect_questions = {key: dict(q) for key,q in affect['questions'].items()}
@@ -230,6 +256,7 @@ async def appraise(port, packet, *, prepared_plan=None):
             if answers['reported_quote'] not in quotes:
                 raise ValueError('JEV_EMOTION_MISSING_EVIDENCE')
             subject, affect_label = answers['reported'].split(':', 1)
+            subject = _SUBJECTS.get(subject, subject)
             reported = dict(subject=subject, quote=quotes[answers['reported_quote']], affect=affect_label)
         result.append(dict(source_id=source['source_id'], quote=quote, reaction=reaction,
             goal_or_need=NEEDS[answers['need']], action_tendency=answers['action'],

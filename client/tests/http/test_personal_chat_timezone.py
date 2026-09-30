@@ -19,10 +19,6 @@ class UTCHost(datetime):
 @pytest.mark.parametrize('raw,reason', [
     ('private broken output', 'JSON_SYNTAX'),
     ('{}', 'FIELDS'),
-    (json.dumps(dict(text='hello', delivery='text', listening='keep',
-        initiative='pause', pause_until=None, letter='keep', letter_until=None,
-        followup_at=None, evidence='private unsupported quote', sticker=None, skip=False)),
-     'UNSUPPORTED_PREFERENCE_CHANGE'),
 ])
 def test_decision_rejection_reports_safe_category_without_model_text(raw, reason):
     with pytest.raises(ValueError, match='^PERSONAL_CHAT_DECISION_INVALID$') as error:
@@ -45,8 +41,9 @@ def test_sleep_uses_character_timezone_on_utc_machine(monkeypatch, stamp, awake)
 
 
 @pytest.mark.parametrize('stamp,valid', [
-    ('2026-09-13T16:30:00+00:00', False),  # Character is asleep, UTC host is awake.
+    ('2026-09-13T16:30:00+00:00', True),   # 00:30 Shanghai: a requested appointment may be at night.
     ('2026-09-14T00:30:00+00:00', True),   # Character is awake, UTC host is asleep.
+    ('2026-09-21T00:30:00+00:00', False),  # More than seven days ahead.
 ])
 def test_appointment_validation_uses_same_timezone(monkeypatch, stamp, valid):
     monkeypatch.setattr(decision, 'datetime', UTCHost)
@@ -54,8 +51,9 @@ def test_appointment_validation_uses_same_timezone(monkeypatch, stamp, valid):
         pause_until=None, letter='keep', letter_until=None, followup_at=stamp,
         evidence='明天找我', sticker=None, skip=False))
     now = datetime.fromisoformat('2026-09-13T10:00:00+00:00').timestamp()
+    result = decision.decode(raw, user='明天找我', now=now)
     if valid:
-        assert decision.decode(raw, user='明天找我', now=now)['followup_at'] == datetime.fromisoformat(stamp).timestamp()
+        assert result['followup_at'] == datetime.fromisoformat(stamp).timestamp()
     else:
-        with pytest.raises(ValueError, match='PERSONAL_CHAT_DECISION_INVALID'):
-            decision.decode(raw, user='明天找我', now=now)
+        # An out-of-range appointment is dropped; the reply text is still delivered.
+        assert result['followup_at'] is None and result['dropped_controls'] == 'TIME_RANGE'

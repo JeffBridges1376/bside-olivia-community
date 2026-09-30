@@ -125,7 +125,6 @@ def test_runtime_episode_failure_changes_actual_project_and_next_world_context(t
     async def choice(*a,**k):
         return dict(activity=dict(kind='practice',place_id='home',focus='衔接片段'),meal=None,
                     project=dict(id='small-task',title='片段练习',status='completed',progress='完成片段',next_activity=None))
-    monkeypatch.setattr(runtime,'_refresh_emotion',no_emotion)
     monkeypatch.setattr(runtime,'_complete',choice)
     monkeypatch.setattr(module,'configured_duties',lambda:None)
     monkeypatch.setattr(jev_questions,'configured_questions',lambda:port)

@@ -14,7 +14,8 @@ REACTION_WINDOW = timedelta(hours=6)
 MAX_SOURCE_CHARS = 100_000
 _BATCH_LIMIT = 32
 _VIEW_LIMIT = 12
-_REACTIONS = {"none", "pleased", "frustrated", "concerned", "hurt", "relieved", "calm"}
+from .jev_emotion import REACTIONS as _REACTION_MEANINGS
+_REACTIONS = set(_REACTION_MEANINGS)
 _ACTIONS = {"none", "continue", "adjust", "rest", "share", "quiet"}
 _FIELDS = {"source_id", "quote", "reported_affect", "reaction", "goal_or_need",
            "action_tendency", "concern", "revises"}

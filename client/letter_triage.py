@@ -518,13 +518,6 @@ def _singing_video_configured(env: Mapping[str, str]) -> bool:
     return musical_reply_configured(env, performance_video_path=_current_music_performance(env), include_spoken=False)
 
 
-def _musical_video_configured(env: Mapping[str, str]) -> bool:
-    return musical_reply_configured(
-        env,
-        performance_video_path=_current_music_performance(env),
-    )
-
-
 def _current_music_performance(
     env: Mapping[str, str],
 ) -> Path | None:
