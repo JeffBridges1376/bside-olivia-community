@@ -7,6 +7,11 @@ from runtime.reply.fact_attribution import FACT_ATTRIBUTION_BOUNDARY
 from runtime.reply.media_delivery import delivery_references, grouped_delivery_evidence, delivery_outcome
 
 LOCAL = timezone(timedelta(hours=8))
+# Chat windows start on multiples of this many exchanges, so the dialogue that
+# opens the prompt stays identical for several turns and keeps hitting the cache.
+WINDOW_STEP = 4
+# A stepped window averages about as much dialogue as the unstepped one needs this headroom.
+CHAT_WINDOW_HEADROOM = 1.25
 
 
 def _time(value):
@@ -48,6 +53,8 @@ def conversation_context(rows, *, query, now, excluded_sources=(), max_chars=600
     sources = []
     # Continuity gets first use of the existing budget; old retrieval only uses
     # spare capacity, never displacing a just-delivered answer.
+    if frozen is not None:
+        max_chars = int(max_chars * CHAT_WINDOW_HEADROOM)
     recent_budget = max_chars
     for row in reversed(candidates):
         item = {'source_id': f"reply:{row['letter_id']}:{row.get('reply_revision', 1)}",
@@ -98,6 +105,13 @@ def conversation_context(rows, *, query, now, excluded_sources=(), max_chars=600
                 sources.append(item['source_id'])
             break  # Never jump over a missing exchange and call the result continuous.
         sources.append(item['source_id'])
+    shown = packet['letters']
+    if frozen is not None and len(shown) > WINDOW_STEP and not shown[0].get('truncated'):
+        drop = -(len(candidates) - len(shown)) % WINDOW_STEP
+        if drop:
+            gone = {item['source_id'] for item in shown[:drop]}
+            packet['letters'] = shown[drop:]
+            sources = [source for source in sources if source not in gone]
     recent = json.dumps(packet, ensure_ascii=False, separators=(',', ':'))
     if len(recent) > max_chars:
         # Do not substitute older messages and call them the continuous tail.

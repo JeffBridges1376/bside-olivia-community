@@ -458,6 +458,10 @@ async def _generate_billed(server, event, row):
             if delivery not in semantic_kinds:
                 raise RuntimeError('JEV_PLAN_UNSUPPORTED')
             mode = 'voice' if delivery == 'audio_speech' else 'text'
+            from runtime.reply.companion_runtime import media_requested
+            if (delivery == 'text' and decision['delivery'] == 'voice' and voice_available
+                    and not media_requested((row.get('companion_decision') or {}).get('plan'))):
+                mode = 'voice'  # Nothing was asked for; she may say it aloud.
         if contact is not None:
             delivery = contact['decision']['medium']
             if delivery not in {'text', 'audio_speech'} or delivery == 'audio_speech' and not voice_available:
