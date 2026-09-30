@@ -6124,6 +6124,19 @@ async def _generate_reply_billed(letter_id, content, *, idempotency_key=None):
     else:
         for field in ('companion_decision', 'companion_timing', 'companion_delivery'):
             letter.pop(field, None)
+    # A copied provenance header from an earlier message is metadata, never part of her letter.
+    from dataclasses import replace as _replace_result
+    from runtime.personal_chat.decision import HISTORY_HEADER
+    cleaned = HISTORY_HEADER.sub('', result.text or '').strip()
+    if cleaned != (result.text or '').strip():
+        if not cleaned:
+            letter["letter_status"] = "FAILED"
+            letter["error_code"] = "LLM_PROTOCOL_ERROR"
+            _mark_media_not_requested(letter)
+            _persist_store_state()
+            _safe_log("letter_failed", error_code="LLM_PROTOCOL_ERROR")
+            return False
+        result = _replace_result(result, text=cleaned)
     if (
         exact_mode
         in {
