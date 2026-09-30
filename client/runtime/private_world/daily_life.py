@@ -1056,9 +1056,13 @@ class DailyLifeStore:
         from .life_rhythm import with_recovery
         body = rhythm(now, exchanges, shifts)
         recovery_episodes = [json.loads(row[0]) for row in db.execute(
-            "SELECT payload FROM life_episodes WHERE occurred_at>=? AND occurred_at<=? ORDER BY occurred_at DESC LIMIT 128",
-            (_time(now.astimezone(LOCAL).replace(hour=0, minute=0, second=0, microsecond=0)), _time(now)))]
-        body = with_recovery(body, recovery_episodes, now)
+            """SELECT payload FROM life_episodes WHERE occurred_at>=? AND occurred_at<=?
+               AND (json_type(payload,'$.effects.body_recovery')='object'
+                    OR json_type(payload,'$.effects.sleep_plan')='object'
+                    OR json_type(payload,'$.effects.sleep_resolution')='object')
+               ORDER BY occurred_at DESC,source_id DESC LIMIT 128""",
+            (_time(now - timedelta(days=14)), _time(now)))]
+        body = with_recovery(body, recovery_episodes, now, exchanges=exchanges, shifts=shifts)
         latest_activity = world['today_activities'][-1] if world['today_activities'] else None
         if latest_activity and latest_activity.get('activity_kind') == 'rest':
             body['rest_observations'] = {
@@ -1071,7 +1075,7 @@ class DailyLifeStore:
             "current": current,
             "world": world,
             "rhythm": body,
-            "stale": current is None or class_changed or meal_boundary or meal_finished or now - datetime.fromisoformat(current["occurred_at"]) >= _activity_refresh_delay(
+            "stale": (body.get('authored_sleep') or {}).get('status') == 'due' or current is None or class_changed or meal_boundary or meal_finished or now - datetime.fromisoformat(current["occurred_at"]) >= _activity_refresh_delay(
                 current, repeats=_same_activity_repeats(db, current, now),
                 idle=_user_idle(exchanges, now)),
             "projects": [p for p in projects if p["kind"] == "linli"][:6],

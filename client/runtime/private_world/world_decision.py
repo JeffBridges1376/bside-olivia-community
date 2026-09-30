@@ -36,6 +36,7 @@ _VALIDATOR = Draft202012Validator(SCHEMA)
 
 LIFE_PROMPT = '''为角色决定现在这一小段自己的生活，只返回契约JSON，不写场景散文或历史叙述。
 生活由她自身课程、兴趣、精力、未完事项和选择推进，用户没发消息也有生活；平淡和休息都正常，不必每次有成果。既有私密用户经历不在生成范围。
+rhythm.historical_rest是历史通信负荷；当下精力看rest/current_load_minutes/recovery。night_correspondence不是疾病证据，不把熬夜变成全天只能休息；可选择补觉、吃饭和适量活动。authored_sleep到时只续接补觉，醒后恢复由新过程判断，不自动痊愈。
 world和places是不可更改的已知事实和计划，previous/recent_life是有时间的过去，不能改成现在。新增一个合理的当下活动、具体新食物或事项进展是允许的；不补造上午、昨天发生了什么。
 activity决定正在做的动作、地点类别和具体对象。focus只填具体名词短语，如“左手两处衔接”“记忆主题的随笔”“窗边的植物”，不能塞入天气、住处、课程时间、过去事件或完整叙述。程序会组合事实描述，不输出note/current/weather或感想。
 activity.kind只从allowed_activity_kinds选择；它由课表和已有身体/作息状态计算。class必须有world.schedule.current_class且地点campus；课程尚未结束。课表只是计划：本次明确选择class才形成上课生活记录，不能声称已上完此前课程。已有持续身体不适时可选择在家休养，睡眠/洗澡时段选择休息，不为逃课临时编造生病或请假。home严格指persona中的既有住处，places中的地点类别由程序提供，不添加宿舍或搬家。
@@ -71,12 +72,14 @@ def decision_context(data: dict) -> dict:
               'shop': {'label': '店里', 'basis': '本次日常外出'}}
     rest_phase = data['rhythm']['phase'] in {'sleep', 'bathing', 'interrupted_rest'}
     wellbeing = data['rhythm'].get('wellbeing', {})
-    unwell = wellbeing.get('state') in {'unwell', 'recovering'}
+    unwell = wellbeing.get('state') in {'unwell', 'recovering'} and wellbeing.get('basis') != 'night_correspondence'
     # Escalated care retains the existing rest constraint; it must not reopen
     # class/practice choices merely because the care enum changed.
     needs_rest = unwell and wellbeing.get('care') in {'rest', 'consider_consultation'}
-    allowed = (['rest'] if rest_phase or needs_rest else
-               ['class', 'rest'] if current_schedule['current_class'] and unwell else
+    sleep_due = (data['rhythm'].get('authored_sleep') or {}).get('status') == 'due'
+    allowed = (['rest'] if rest_phase or sleep_due else
+               ['rest', 'meal'] if needs_rest else
+               ['class', 'rest'] if current_schedule['current_class'] and (unwell or data['rhythm'].get('rest') in {'tired', 'depleted'}) else
                ['class'] if current_schedule['current_class'] else
                [kind for kind in KINDS if kind != 'class'])
     return {**data, 'places': places, 'allowed_activity_kinds': allowed,

@@ -15,10 +15,11 @@ def test_recovery_cannot_erase_new_night_load_or_active_illness():
     state['historical_rest']['load_minutes'] = 181
     assert 'recovery' not in with_recovery(state, [event], now)
     state['historical_rest']['load_minutes'] = 180
-    state['wellbeing']['state'] = 'unwell'
-    assert 'recovery' not in with_recovery(state, [event], now)
-    state['wellbeing']['state'] = 'well'
-    assert 'recovery' not in with_recovery(state, [event], now+timedelta(days=1))
+    state['wellbeing'] = {'state': 'unwell', 'care': 'rest', 'summary': '独立记录的不适'}
+    recovered = with_recovery(state, [event], now)
+    assert recovered['rest'] == 'rested'
+    assert recovered['wellbeing'] == state['wellbeing']
+    assert with_recovery(state, [event], now+timedelta(days=1))['recovery']['source_id'] == 'day:rest'
 import asyncio
 import json
 from types import SimpleNamespace
