@@ -239,6 +239,16 @@ def project_chat_task(value: Mapping[str, object]) -> dict[str, object]:
     if isinstance(code, str) and _CODE_RE.fullmatch(code):
         result['consumer_error_code'] = code
     if 'channel' in result:
+        if type(value.get('voice_ready')) is bool:
+            result['voice_ready'] = value['voice_ready']
+        if value.get('delivery_basis') in ('QQ_DEFAULT_VOICE', 'SPEAKER_UNAVAILABLE', 'VERBATIM_TEXT',
+                'JEV_MEDIA_PLAN', 'PROACTIVE_MEDIA_PLAN', 'WECHAT_TEXT', 'TRANSPORT_UNAVAILABLE',
+                'PROVIDER_UNAVAILABLE', 'WRITER_SELECTION', 'VOICE_RENDER_FAILED'):
+            result['delivery_basis'] = value['delivery_basis']
+        if value.get('requested_format') in ('text', 'voice'):
+            result['requested_format'] = value['requested_format']
+        if value.get('delivered_format') in ('text', 'audio'):
+            result['delivered_format'] = value['delivered_format']
         if value.get('quality_status') in ('not_checked', 'accepted', 'accepted_degraded', 'accepted_with_warnings', 'blocked'):
             result['quality_status'] = value['quality_status']
         for field, maximum in (('reviewer_calls', 2), ('rewrite_calls', 1)):

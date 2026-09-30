@@ -43,7 +43,8 @@ class Port:
             tasks=project(self.value), api_calls=1, usage={'input_tokens': 1})))
 
 
-def run(port, *, mode=ReplyMode.TEXT_LETTER, raw='我醒了，不是要睡觉', interpreter=None, history=(), budget=40000):
+def run(port, *, mode=ReplyMode.TEXT_LETTER, raw='我醒了，不是要睡觉', interpreter=None, history=(), budget=40000,
+        channel='qq'):
     engine = Engine(json.dumps(envelope(), ensure_ascii=False) if mode is ReplyMode.FUTURE_IM else '醒啦，休息得怎么样？')
     pipeline = ReplyPipeline(engine, reviewer=NullReviewer(), rewriter=UnavailableRewriter(),
         discover_runtime_ports=False, current_turn_interpreter=interpreter, companion_decision_port=port)
@@ -51,7 +52,7 @@ def run(port, *, mode=ReplyMode.TEXT_LETTER, raw='我醒了，不是要睡觉', 
         *history, dict(role='user', content=raw)), max_input_chars=budget)
     context = ReplyContext.create(mode, future_im_enabled=True,
         trusted_time=TrustedTime(datetime(2026, 9, 27, tzinfo=timezone.utc)))
-    token = CURRENT.set(dict(structured=True, raw_user_text=raw, proactive=False,
+    token = CURRENT.set(dict(structured=True, raw_user_text=raw, proactive=False, channel=channel,
         semantic_kinds=['text', 'audio_speech'], received_source_id='reply:dev:user', input_revision=3,
         decision_now='2026-09-27T08:00:00+08:00')) if mode is ReplyMode.FUTURE_IM else None
     try:
@@ -123,6 +124,33 @@ def test_audio_selection_is_frozen_without_tts_emotion_controls():
     result, engine = run(Port(plan(kind='audio_speech')), mode=ReplyMode.FUTURE_IM)
     assert result.state is ReplyState.COMPLETED and result.companion_delivery == 'audio_speech'
     assert 'inference_instruct' not in str(engine.requests[0].messages)
+
+
+@pytest.mark.parametrize('requirement', ['none', 'pending_image', 'current_text'])
+def test_qq_speech_default_keeps_one_jev_call_and_honors_current_media(requirement):
+    value = plan()
+    if requirement != 'none':
+        value['understanding']['requirements'] = [dict(id='r1',
+            fulfillment='pending' if requirement == 'pending_image' else 'current',
+            alternatives=[dict(kinds=['image'] if requirement == 'pending_image' else ['text'],
+                               min_assets=1, max_assets=1)], evidence_turn_ids=['t1'])]
+        if requirement == 'current_text':
+            value['proposal']['steps'][0]['requirement_ids'] = ['r1']
+    port = Port(value)
+    result, engine = run(port, mode=ReplyMode.FUTURE_IM)
+    assert result.state is ReplyState.COMPLETED
+    assert len(port.turns) == len(engine.requests) == 1
+    assert result.companion_decision['plan'] == value  # The original decision is not rewritten.
+    note = next(m['content'] for m in engine.requests[0].messages if '<companion_decision>' in m['content'])
+    assert ('QQ本轮默认语音' in note) is (requirement != 'current_text')
+
+
+def test_wechat_does_not_receive_qq_speech_default_even_with_overstated_capabilities():
+    port = Port()
+    result, engine = run(port, mode=ReplyMode.FUTURE_IM, channel='wechat')
+    assert result.state is ReplyState.COMPLETED and len(port.turns) == len(engine.requests) == 1
+    note = next(m['content'] for m in engine.requests[0].messages if '<companion_decision>' in m['content'])
+    assert 'QQ本轮默认语音' not in note and 'delivery 必须是 text' in note
 
 
 def test_presentation_does_not_serialize_local_callback_or_full_decision():
