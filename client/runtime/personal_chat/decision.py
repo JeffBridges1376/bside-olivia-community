@@ -72,6 +72,8 @@ def decode(raw, *, user, now, proactive=False):
             if fenced:
                 raw = fenced.group(1)
         data = json.loads(raw)
+        if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):
+            data = data[0]  # The model sometimes wraps its one decision in an array.
         required = {'text','delivery','listening','initiative','pause_until','letter','letter_until',
                     'followup_at','evidence','skip'}
         if not isinstance(data, dict) or not required <= data.keys():

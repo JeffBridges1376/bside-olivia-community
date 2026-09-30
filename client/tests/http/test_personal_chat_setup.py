@@ -46,7 +46,7 @@ def test_connected_setup_clears_restart_only_for_exact_loaded_binding(tmp_path, 
     monkeypatch.setattr(setup, '_read_config', lambda _server: {'qq':config})
     monkeypatch.setattr(setup, '_selected_channels', lambda _server: {'qq'})
     monkeypatch.setattr(setup, '_contact_access', lambda _server: {})
-    monkeypatch.setattr(backend, 'reply_errors', lambda *args: {'qq':'PERSONAL_CHAT_GENERATION_FAILED'})
+    monkeypatch.setattr(backend, 'reply_failures', lambda *args: ({'qq':'PERSONAL_CHAT_GENERATION_FAILED'}, {'qq':'2026-09-29T21:11:07+08:00'}))
     monkeypatch.setattr(napcat_installer, 'public_status', lambda *args: {})
     request = SimpleNamespace(app={backend._RUNTIME:active, setup._SETUP:{'qq':{'state':'READY_RESTART'}}})
     body = setup._public_status(request, _Server(tmp_path))

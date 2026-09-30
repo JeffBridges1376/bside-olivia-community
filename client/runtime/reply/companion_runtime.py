@@ -176,7 +176,8 @@ def project_decision(messages, decision, *, max_input_chars, delivery):
             '语气仅用于撰写正文，不产生语音情绪指令或速度控制。')
     if delivery == 'audio_speech':
         from runtime.personal_chat.presentation import VOICE_PROSE
-        note += '本轮交付已选定语音，结构化回复的 delivery 必须是 voice；只写将实际朗读的一份正文。'
+        note += ('本轮交付已选定语音，结构化回复的 delivery 必须是 voice；只写将实际朗读的一份正文。'
+                 '这条语音一定会发出：正文就是你此刻对用户说的话，不推辞、不说不想发、没空发、等下再发或不方便说话。')
         note += VOICE_PROSE
     elif delivery == 'text':
         note += '本轮交付已选定文字，结构化回复的 delivery 必须是 text。'
@@ -185,7 +186,8 @@ def project_decision(messages, decision, *, max_input_chars, delivery):
                  '图片由后续流程制作，不要把绘图提示词当作回信，不声称图片已经生成或发送。')
     elif delivery == 'image':
         note += ('本轮交付是一张图片，结构化回复的 delivery 使用 text，仅作为照片规划的内部描述。'
-                 '该正文不会作为聊天文字发出；描述符合当前请求的画面，不声称照片已生成或已发送。')
+                 '该正文不会作为聊天文字发出；描述符合当前请求的画面，不声称照片已生成或已发送。'
+                 '这张照片一定会发出：只描述画面，不推辞、不说拍不了、没带手机、不给看或下次再拍。')
     note += '\n<companion_decision>\n' + encoded + '\n</companion_decision>'
     result = [dict(message) for message in messages]
     position = next((i for i in range(len(result) - 1, -1, -1) if result[i].get('role') == 'user'), len(result))

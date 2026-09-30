@@ -86,3 +86,33 @@ def test_chat_delivery_changes_do_not_break_persona_cache_prefix(channel):
             assert declaration.declaration_id not in results[0]
         elif declaration.tier == 'PUBLIC_CANON':
             assert declaration.declaration_id in results[0]
+
+
+def test_chat_rules_move_into_cached_prefix_with_reminder_by_input():
+    from runtime.personal_chat.decision import INSTRUCTION
+    from runtime.reply.fact_attribution import cache_output_rules, CACHED_RULES_REMINDER
+    grounding = '<relationship_grounding>\n"stable rule"\n</relationship_grounding>\n'
+    messages = ({'role': 'system', 'content': '<persona>\nP\n</persona>\n<runtime_time>\n{}\n</runtime_time>\n'
+                                             + grounding + '<evidence_summary>\nE\n</evidence_summary>\n'},
+                {'role': 'user', 'content': '[历史消息 {}]\n早'}, {'role': 'assistant', 'content': '[历史消息 {}]\n早呀'},
+                {'role': 'system', 'content': INSTRUCTION}, {'role': 'user', 'content': '在吗'})
+    result = cache_output_rules(messages, INSTRUCTION)
+    prefix, dynamic = result[0]['content'].split('<runtime_time>\n', 1)
+    assert INSTRUCTION in prefix and grounding in prefix
+    assert grounding not in dynamic and '<evidence_summary>' in dynamic
+    assert result[3] == {'role': 'system', 'content': CACHED_RULES_REMINDER}
+    assert result[-1] == messages[-1] and len(result) == len(messages)
+    # Without the clock boundary nothing is moved.
+    plain = ({'role': 'system', 'content': 'P'}, {'role': 'system', 'content': INSTRUCTION}, {'role': 'user', 'content': 'x'})
+    assert cache_output_rules(plain, INSTRUCTION) == plain
+
+
+def test_decision_in_single_item_array_is_accepted():
+    from datetime import datetime, timezone
+    from runtime.personal_chat.decision import decode
+    body = {"text": "在呢", "delivery": "text", "listening": "keep", "initiative": "keep", "pause_until": None,
+            "letter": "keep", "letter_until": None, "followup_at": None, "evidence": "", "sticker": None, "skip": False}
+    now = datetime(2026, 9, 30, 13, tzinfo=timezone.utc)
+    assert decode(json.dumps([body]), user='在吗', now=now)['text'] == '在呢'
+    with pytest.raises(ValueError):
+        decode(json.dumps([body, body]), user='在吗', now=now)

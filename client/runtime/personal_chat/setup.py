@@ -229,6 +229,7 @@ def _public_status(request: web.Request, server) -> dict[str, object]:
     delivery_health = dict(active.get("delivery_health", {})) if isinstance(active, dict) else {}
     e2e_verified_at = dict(active.get("e2e_verified_at", {})) if isinstance(active, dict) else {}
     pending_tests = set(active.get("connection_tests", {}).keys()) if isinstance(active, dict) else set()
+    failures = backend.reply_failures(server, active or {})
     runtime = request.app[_SETUP]
     wechat = dict(runtime.get("wechat", {"state": "IDLE"}))
     wechat.pop("qrcode", None)
@@ -256,7 +257,8 @@ def _public_status(request: web.Request, server) -> dict[str, object]:
         "delivery_health": {name: delivery_health.get(name) for name in selected if delivery_health.get(name)},
         "e2e_verified_at": {name: e2e_verified_at.get(name) for name in selected if e2e_verified_at.get(name)},
         "connection_test_pending": sorted(name for name in selected if name in pending_tests),
-        "reply_errors": {name: code for name, code in backend.reply_errors(server, active or {}).items() if name in selected},
+        "reply_errors": {name: code for name, code in failures[0].items() if name in selected},
+        "reply_error_at": {name: stamp for name, stamp in failures[1].items() if name in selected},
         "wechat": wechat,
         "qq": qq,
         "napcat": napcat_installer.public_status(_root(server), runtime),
