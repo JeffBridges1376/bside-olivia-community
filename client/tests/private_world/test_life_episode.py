@@ -206,11 +206,14 @@ def test_authored_rest_recovery_feeds_next_world_without_erasing_night_load(tmp_
 
 @pytest.mark.parametrize('state', ['unwell', 'recovering'])
 def test_rest_does_not_author_illness_recovery(state):
-    port = Port(path='settled', meaning='recovery', effect='none')
+    from runtime.private_world.life_rhythm import with_recovery
+    port = Port(path='refreshed', meaning='recovery', effect='none')
+    body = {'wellbeing': {'state': state, 'care': 'rest'}, 'rest': 'depleted', 'historical_rest': {'load_minutes': 300}}
     value = asyncio.run(life_episode.create(port, 'day:rest', at(11), 'rest',
-        {'rhythm': {'wellbeing': {'state': state}, 'rest': 'depleted', 'historical_rest': {'load_minutes': 300}}}))
-    assert 'refreshed' not in port.calls[0][0]['paths']
-    assert 'body_recovery' not in value['effects']
+        {'rhythm': body}))
+    recovered = with_recovery(body, [value], at(11))
+    assert recovered['rest'] == 'rested'
+    assert recovered['wellbeing'] == body['wellbeing']
 
 
 def test_consecutive_identical_rest_records_group_without_deleting_evidence(tmp_path):

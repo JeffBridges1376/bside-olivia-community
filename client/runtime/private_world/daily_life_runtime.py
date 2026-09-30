@@ -368,7 +368,10 @@ class DailyLifeRuntime:
                 state = self.store.snapshot(now)
                 from runtime.reply.jev_questions import configured_questions
                 meal_port = configured_questions()
-                if meal_port is not None:
+                sleep_due = (state['rhythm'].get('authored_sleep') or {}).get('status') == 'due'
+                if sleep_due and meal_port is None:
+                    raise RuntimeError('JEV_RESPONSE_INVALID')
+                if meal_port is not None and not sleep_due:
                     from .meal_lifecycle import advance as advance_meals
                     await advance_meals(self.store, meal_port, now)
                     state = self.store.snapshot(now)
@@ -385,7 +388,7 @@ class DailyLifeRuntime:
                     # published moment advance again within that budget.
                     digest = hashlib.sha256(previous["source_id"].encode("utf-8")).hexdigest()[:12]
                     source_id += f":{digest}"
-                    if state["rhythm"]["phase"] in {"bathing", "sleep", "interrupted_rest"}:
+                    if not sleep_due and state["rhythm"]["phase"] in {"bathing", "sleep", "interrupted_rest"}:
                         return
                 if exchange_actions:
                     source_id += ':exchange:' + hashlib.sha256(exchange_actions[0]['source_id'].encode()).hexdigest()[:12]
@@ -470,6 +473,9 @@ class DailyLifeRuntime:
                             if duties is not None and str(exc).startswith('DAILY_LIFE_DEVELOPMENT_'):
                                 raise RuntimeError('JEV_RESPONSE_INVALID') from None
                             raise
+                        if sleep_due and meal_port is not None:
+                            from .meal_lifecycle import advance as advance_meals
+                            await advance_meals(self.store, meal_port, now)
                         break
                     except (ValueError, ProviderProtocolError) as exc:
                         from runtime.reply.jev_questions import configured_questions
@@ -498,7 +504,8 @@ class DailyLifeRuntime:
                     'JEV_WORLD_INCOMPATIBLE_PROJECT', 'JEV_WORLD_INCOMPATIBLE_OUTCOME',
                     'LIFE_EPISODE_CONTEXT_TOO_LARGE', 'LIFE_EPISODE_DECISION_INVALID',
                     'LIFE_EPISODE_INVALID', 'LIFE_EPISODE_SOURCE_UNAVAILABLE', 'LIFE_EPISODE_TOO_LARGE',
-                    'LIFE_EPISODE_REWRITE', 'LIFE_EPISODE_CLASS_NOT_CURRENT', 'LIFE_EPISODE_RECOVERY_INVALID'}
+                    'LIFE_EPISODE_REWRITE', 'LIFE_EPISODE_CLASS_NOT_CURRENT', 'LIFE_EPISODE_RECOVERY_INVALID',
+                    'LIFE_EPISODE_SLEEP_INVALID'}
                 from runtime.reply.companion_decision import ERROR_CODES
                 safe_codes.update(ERROR_CODES)
                 self._last_failure_code = str(exc) if str(exc) in safe_codes else 'DAILY_LIFE_EVALUATION_FAILED'

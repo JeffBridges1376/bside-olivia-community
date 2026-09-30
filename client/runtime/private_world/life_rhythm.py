@@ -15,6 +15,8 @@ RHYTHM_FACT_AUTHORITY = (
     "planned_rest_window 只支持她目前给自己定的休息安排，不证明长期习惯、实际入睡起床时刻、睡前活动或过去如何调整作息。"
     "作息只是计划，可以因为当下的事调整：她此刻正在回复就说明醒着，不说自己在睡、还没醒或被吵醒，"
     "可以自然表达困了、该睡了，但不借作息敷衍或打发对方。"
+    "authored_sleep另指已发布的角色补觉过程：sleeping是已开始，due是到续接时刻或通信打断后待判断；"
+    "到时不自动证明睡完或恢复。wellbeing.basis=night_correspondence只来自通信负荷，不证明疾病或请假。"
 )
 
 
@@ -31,7 +33,7 @@ def _rest_window(day, shifts):
     return begin, finish
 
 
-def rest_timeline(now: datetime, exchanges: list[tuple[datetime, datetime]], shifts: dict | None = None) -> dict:
+def rest_timeline(now: datetime, exchanges: list[tuple[datetime, datetime]], shifts: dict | None = None, *, since=None, initial_load=0) -> dict:
     """Union real correspondence intervals; sleep resumes after quiet settling.
 
     An interval begins at receipt and ends at canonical reply completion.
@@ -55,14 +57,14 @@ def rest_timeline(now: datetime, exchanges: list[tuple[datetime, datetime]], shi
         tomorrow = day + timedelta(days=1)
         awake, wakes = 0.0, 0
         for start, end in merged:
-            overlap = (min(end, finish, now) - max(start, begin)).total_seconds() / 60
+            overlap = (min(end, finish, now) - max(start, begin, since or begin)).total_seconds() / 60
             if overlap > 0:
                 awake += overlap
-                wakes += int(start > begin)
-        if begin <= now:
+                wakes += int(start > begin and (since is None or start >= since))
+        if begin <= now and (since is None or finish > since):
             nights.append({'begin': begin, 'end': finish, 'awake': awake, 'wakes': wakes})
         day = tomorrow
-    debt = peak_debt = 0.0
+    debt = peak_debt = float(initial_load)
     for night in nights:
         loss = night['awake'] + 10 * night['wakes'] * (night['wakes'] + 1) / 2
         # Recovery only after later sleep, never from clock time while awake.
@@ -77,6 +79,10 @@ def rest_timeline(now: datetime, exchanges: list[tuple[datetime, datetime]], shi
             'strained_nights': sum(n['awake'] >= 90 and n['begin'] >= now - timedelta(days=7) for n in nights),
             'previous_strain': any(n['awake'] >= 90 for n in nights),
             'awake_now': bool(merged and merged[-1][0] <= now < merged[-1][1])}
+
+
+def _rest(load):
+    return 'depleted' if load >= 120 else 'tired' if load >= FATIGUE_LOAD_MINUTES else 'rested'
 
 
 def rhythm(now: datetime, exchanges: list[tuple[datetime, datetime]], shifts: dict | None = None) -> dict:
@@ -102,12 +108,13 @@ def rhythm(now: datetime, exchanges: list[tuple[datetime, datetime]], shifts: di
     debt, awake = timeline['load_minutes'], timeline['awake_now']
     if phase == 'sleep' and awake:
         phase = 'interrupted_rest'
-    rest = 'depleted' if debt >= 120 else 'tired' if debt >= FATIGUE_LOAD_MINUTES else 'rested'
+    rest = _rest(debt)
     # These thresholds drive fictional continuity, not a disease probability.
     unwell = debt >= 240 and timeline['strained_nights'] >= 2
     consult = unwell and debt >= 360 and timeline['strained_nights'] >= 3
     recovering = timeline['previous_strain'] and timeline['recovering']
     wellbeing = {
+        'basis': 'night_correspondence',
         'state': 'unwell' if unwell else 'recovering' if recovering else 'well',
         'care': 'consider_consultation' if consult else 'rest' if rest != 'rested' else 'none',
         'summary': ('连续休息不足，身体不太舒服，减少练习；若休息后仍不适，安排门诊咨询。' if consult else
@@ -118,7 +125,7 @@ def rhythm(now: datetime, exchanges: list[tuple[datetime, datetime]], shifts: di
     labels = {'bathing': '林离洗澡中', 'sleep': '计划休息的时段', 'interrupted_rest': '夜里还醒着，在和对方聊天',
               'breakfast': '早餐时间', 'lunch': '午饭时间', 'dinner': '晚饭时间',
               'quiet': '准备收工休息', 'focus': '留给练习和创作的时间', 'free': '自己的闲暇时间'}
-    return {'phase': phase, 'rest': rest, 'local_time': local.isoformat(),
+    return {'phase': phase, 'rest': rest, 'current_load_minutes': debt, 'local_time': local.isoformat(),
             'historical_rest': {'load_minutes': debt, 'rest': rest,
                 'meaning': '夜间通信历史负荷，不是当前精力测量；不证明已睡着或当前仍需一直休息。'},
             'phase_basis': 'schedule_and_correspondence', 'wake_cause': 'unknown',
@@ -134,25 +141,52 @@ def rhythm(now: datetime, exchanges: list[tuple[datetime, datetime]], shifts: di
                             'busy' if phase in {'focus', 'breakfast', 'lunch', 'dinner'} else 'open'}
 
 
-def with_recovery(state, episodes, now):
-    """Consume authored recovery evidence without erasing accumulated sleep load."""
-    if state['wellbeing']['state'] in {'unwell', 'recovering'}:
-        return state  # Ordinary rest does not establish recovery from illness.
-    for episode in episodes:
+def with_recovery(state, episodes, now, *, exchanges=None, shifts=None):
+    """Persist authored energy recovery; later correspondence adds only new load.
+
+    Past correspondence load remains intact. Energy recovery cannot clear independently
+    evidenced illness. A nap needs an authored start and a later JEV resolution.
+    """
+    result = state
+    visible = sorted((e for e in episodes if datetime.fromisoformat(e['occurred_at']) <= now),
+                     key=lambda e: (e['occurred_at'], e['source_id']), reverse=True)
+    for episode in visible:
         recovery = episode.get('effects', {}).get('body_recovery')
         if not isinstance(recovery, dict) or episode.get('activity_kind') != 'rest':
             continue
         stamp = datetime.fromisoformat(episode['occurred_at'])
-        if stamp > now or stamp.astimezone(LOCAL).date() != now.astimezone(LOCAL).date():
+        if now - stamp > timedelta(days=14):
             continue
-        if state['historical_rest']['load_minutes'] > recovery.get('baseline_load_minutes', -1):
+        if exchanges is None and state['historical_rest']['load_minutes'] > recovery.get('baseline_load_minutes', -1):
             continue  # New night-time load invalidates an earlier recovery.
         rest = recovery.get('rest')
         if rest not in {'tired', 'rested'} or episode.get('result', {}).get('status') != 'completed':
             continue
-        return {**state, 'rest': rest,
+        remaining = recovery.get('remaining_load_minutes', 0 if rest == 'rested' else min(recovery['baseline_load_minutes'], 119))
+        load = (rest_timeline(now, exchanges, shifts, since=stamp, initial_load=remaining)['load_minutes']
+                if exchanges is not None else remaining)
+        rest = _rest(load)
+        wellbeing = state['wellbeing']
+        if wellbeing.get('basis') == 'night_correspondence':
+            wellbeing = {**wellbeing, 'state': 'well' if rest == 'rested' else 'recovering',
+                         'care': 'none' if rest == 'rested' else 'rest',
+                         'summary': '这段休息后精力有所恢复。' if rest == 'rested' else '恢复后又有新的消耗，放慢节奏安排生活。'}
+        result = {**state, 'rest': rest, 'current_load_minutes': load,
             'recovery': {'source_id': episode['source_id'], 'occurred_at': episode['occurred_at'],
                          'meaning': '本次已发布休息过程的精力恢复，不代表睡眠或疾病痊愈。'},
-            'wellbeing': {**state['wellbeing'], 'care': 'none' if rest == 'rested' else 'rest'},
+            'wellbeing': wellbeing,
             'note': '这段休息后精力有所恢复，可以按意愿接回轻活动。' if rest == 'rested' else '这段休息后缓过来一些，仍适合放慢节奏。'}
-    return state
+        break
+    latest = next((e for e in visible if e.get('effects', {}).get('sleep_plan')), None)
+    resolved = {e['effects']['sleep_resolution']['source_id'] for e in visible if e.get('effects', {}).get('sleep_resolution')}
+    if latest and latest['source_id'] not in resolved:
+        start = datetime.fromisoformat(latest['occurred_at'])
+        end = datetime.fromisoformat(latest['effects']['sleep_plan']['end_at'])
+        interrupted = any(received <= now and received < end and completed > start
+                          for received, completed in exchanges or [])
+        due = now >= end or interrupted
+        result = {**result, 'authored_sleep': {'source_id': latest['source_id'], 'started_at': latest['occurred_at'],
+                   'end_at': end.isoformat(), 'status': 'due' if due else 'sleeping', 'interrupted': interrupted}}
+        if not due:
+            result.update(phase='sleep', activity='补觉中', availability='rest', phase_basis='authored_sleep')
+    return result

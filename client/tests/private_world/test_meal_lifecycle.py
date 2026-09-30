@@ -143,14 +143,16 @@ def test_existing_terminal_daily_record_never_rewritten(tmp_path):
 
 def test_plan_waits_until_its_own_time_and_then_closes(tmp_path):
     store=DailyLifeStore(tmp_path/'world.db')
-    port=Port(lambda s,o:'plan_0' if 'plan_0' in o else next(iter(o)))
+    port=Port(lambda s,o:'plan_0' if not s['previous_meal'] else next(iter(o)))
     asyncio.run(advance(store,port,at(8)))
     record=meals(store,at(8))['breakfast']
     assert record['status']=='planned' and record['scheduled_for']
     asyncio.run(advance(store,port,at(8,15)))
     assert len(port.calls)==1
-    asyncio.run(advance(store,port,at(10)))
-    assert meals(store,at(10))['breakfast']['status']=='eaten'
+    asyncio.run(advance(store,port,at(8,30)))
+    assert meals(store,at(8,30))['breakfast']['status']=='eating'
+    asyncio.run(advance(store,port,at(8,55)))
+    assert meals(store,at(8,55))['breakfast']['status']=='eaten'
 
 
 def test_shanghai_date_and_schedule_are_server_authored(tmp_path):

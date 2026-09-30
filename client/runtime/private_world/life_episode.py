@@ -1,6 +1,6 @@
 """New authored experiences: process facts, subjective meaning, and next steps."""
 import json
-from datetime import timezone
+from datetime import datetime, timedelta, timezone
 from .world_decision import KINDS
 
 
@@ -60,12 +60,32 @@ def save(db, episode, source_id, now):
     recovery = episode.get('effects', {}).get('body_recovery')
     if recovery is not None:
         import math
-        if (not isinstance(recovery, dict) or set(recovery) != {'rest', 'baseline_load_minutes'}
+        if (not isinstance(recovery, dict) or not {'rest', 'baseline_load_minutes'} <= set(recovery)
+                or set(recovery) - {'rest', 'baseline_load_minutes', 'remaining_load_minutes'}
                 or recovery['rest'] not in {'tired', 'rested'}
                 or type(recovery['baseline_load_minutes']) not in {int, float}
                 or not math.isfinite(recovery['baseline_load_minutes']) or recovery['baseline_load_minutes'] < 0
                 or episode['activity_kind'] != 'rest' or episode.get('result', {}).get('status') != 'completed'):
             raise ValueError('LIFE_EPISODE_RECOVERY_INVALID')
+        remaining = recovery.get('remaining_load_minutes')
+        if remaining is not None and (type(remaining) not in {int, float} or not math.isfinite(remaining)
+                                      or not 0 <= remaining <= recovery['baseline_load_minutes']):
+            raise ValueError('LIFE_EPISODE_RECOVERY_INVALID')
+    sleep = episode.get('effects', {}).get('sleep_plan')
+    if sleep is not None:
+        if (not isinstance(sleep, dict) or set(sleep) != {'duration_minutes', 'end_at'}
+                or type(sleep['duration_minutes']) is not int or sleep['duration_minutes'] not in {30, 60, 90}
+                or sleep['end_at'] != (now + timedelta(minutes=sleep['duration_minutes'])).astimezone(timezone.utc).isoformat()
+                or episode['activity_kind'] != 'rest' or episode['result']['status'] != 'paused' or recovery is not None):
+            raise ValueError('LIFE_EPISODE_SLEEP_INVALID')
+    resolution = episode.get('effects', {}).get('sleep_resolution')
+    if resolution is not None:
+        if not isinstance(resolution, dict) or set(resolution) != {'source_id'} or not isinstance(resolution['source_id'], str):
+            raise ValueError('LIFE_EPISODE_SLEEP_INVALID')
+        prior = db.execute('SELECT payload FROM life_episodes WHERE source_id=? AND occurred_at<=?',
+                           (resolution['source_id'], episode['occurred_at'])).fetchone()
+        if episode['activity_kind'] != 'rest' or not prior or not json.loads(prior[0]).get('effects', {}).get('sleep_plan'):
+            raise ValueError('LIFE_EPISODE_SLEEP_INVALID')
     encoded = json.dumps(episode,ensure_ascii=False,sort_keys=True,allow_nan=False)
     if len(encoded)>4000:
         raise ValueError('LIFE_EPISODE_TOO_LARGE')
@@ -122,9 +142,27 @@ async def create(port, source_id, now, kind, context, *, meal=None):
             'settled':_path('脑子还挂着待办','先把待办放下，安静坐一会儿','completed','这一小段休息结束后，感觉节奏缓下来。'),
             'unsettled':_path('仍惦记未完成的事','尝试放松，但注意力又回到待办','partial','只放松了一点，还没完全缓过来。'),
             'ongoing':_path('精力仍不足','减少手头活动，继续安静休息','paused','仍需要继续休息，没有开始新的任务。')}
-        if (context.get('rhythm') or {}).get('wellbeing', {}).get('state') == 'well':
-            paths['refreshed'] = _path('需要从之前的消耗中缓过来','放下手头事务，安静休息后重新感受精力',
-                'completed','这段休息后精力有所恢复，可以按自己的意愿接回轻活动。')
+        paths['refreshed'] = _path('需要从之前的消耗中缓过来','放下手头事务，安静休息后重新感受精力',
+            'completed','这段休息后精力有所恢复，可以按自己的意愿接回轻活动。')
+        now_local = now.astimezone(timezone(timedelta(hours=8)))
+        next_class = (context.get('world') or {}).get('schedule', {}).get('next_class')
+        for duration in (30, 60, 90):
+            end = now + timedelta(minutes=duration)
+            if next_class and end > datetime.fromisoformat(next_class['start']):
+                continue
+            if 8 <= now_local.hour < 22:
+                paths[f'nap_{duration}'] = _path('想补一段觉来恢复精力', '放下手头事务，开始补觉并留出明确的休息时段',
+                    'paused', f'开始补觉，计划休息{duration}分钟，醒来后再判断精力和接下来的安排。')
+        sleep = (context.get('rhythm') or {}).get('authored_sleep')
+        if sleep and sleep['status'] == 'due':
+            if not sleep.get('interrupted'):
+                paths['nap_refreshed'] = _path('之前的补觉需要续接', '结束已经开始的补觉，重新感受醒来后的精力',
+                    'completed', '这段补觉结束，醒来后精力有所恢复，可以按意愿接回日常安排。')
+                paths['nap_tired'] = _path('补觉后仍有一些疲惫', '结束这一段补觉，先慢慢接回吃饭和轻活动',
+                    'completed', '补了一段觉，已经缓过来一些，仍适合放慢节奏。')
+            else:
+                paths['nap_interrupted'] = _path('补觉期间又开始通信', '结束这次未完整睡完的补觉，重新安排休息',
+                    'paused', '这段补觉没有完整结束，当前已经醒着，之后再安排休息。')
     else:
         triggers={'meal_time':'给自己留出这一餐的时间','body':'照顾当下的进食需要'}
         status=(meal or {}).get('status','eating')
@@ -144,14 +182,19 @@ async def create(port, source_id, now, kind, context, *, meal=None):
                      'ordinary':dict(meaning='把它当作普通的一段生活，没有额外解释',need=None)}
     effects={'none':dict(next_action=None,open_loop=None),
              'pause':dict(next_action='先留一段间隔再安排下一项',open_loop=None)}
-    if kind=='practice':
+    if kind == 'rest':
+        # Rest paths already describe whether to continue or resume. Avoid a
+        # duplicate next-step branch for every nap duration and interpretation.
+        effects = {'none': effects['none']}
+    elif kind=='practice':
         effects['return']=dict(next_action='下次优先回到本次未稳的片段',open_loop='练习片段仍待巩固')
     elif kind in _ACTIVITY_PATHS:
         effects['return']=dict(next_action='之后回到这次尚未解决的部分',open_loop='本次活动中留下的问题仍待处理')
     world=context.get('world') or {}
     projected={key:context[key] for key in ('time','selected_activity') if key in context}
     projected['rhythm']={k:v for k,v in (context.get('rhythm') or {}).items()
-                         if k in {'phase','rest','wellbeing','note','historical_rest','recovery','rest_observations'}}
+                         if k in {'phase','rest','wellbeing','note','historical_rest','recovery','rest_observations',
+                                  'current_load_minutes','authored_sleep'}}
     projected['previous']={k:v for k,v in (context.get('previous') or {}).items()
                            if k in {'activity','activity_kind','note','occurred_at'}}
     emotion=context.get('emotion') or {}
@@ -173,16 +216,24 @@ async def create(port, source_id, now, kind, context, *, meal=None):
         raise ValueError('LIFE_EPISODE_CONTEXT_TOO_LARGE')
     combinations={f'{p}:{i}:{e}':dict(path=p,interpretation=i,effect=e)
                   for p in paths for i in interpretations for e in effects}
+    experience_instructions = (
+        '创作并选择虚拟角色这一刻的新生活过程，不是检索或确认state中已经存在的事实；你选的过程将作为本次新事件提交。'
+        '从组合中选择连贯的过程结果(path)、角色主观解释(interpretation)和后续打算(effect)，编号完整定义在state目录。'
+        '可以困难、失败或未完成，不强行圆满。主观解释不改变过程事实，下一步不是已经执行，也不是要求用户行动。'
+        '只描述当前选定的小步，不把课表计划当已上完课程，不编造教师同学或用户的言行、交易、他人私事。'
+        'completed仅指所选小步，不代表读完整书、完成长期创作或所有家务；散步不完成待办，出门准备不代表外部事务办妥。'
+        '这只创作本次角色新经历，不是事后给旧事件编原因，不凭一次经历改写长期人格。')
+    if kind == 'rest':
+        experience_instructions += (
+            'context.rhythm.authored_sleep说明之前已开始补觉，due时需要续接；睡完后的新感受还没有记录，正要由本次选择生成。'
+            'depleted/historical_rest是补觉前的精力负荷，不是补觉后的结论。既无打断也无独立不适时，合理结束补觉并选择缓过来或恢复，'
+            '不要只因旧负荷高就继续照搬ongoing。独立不适不能宣布治愈，普通休息不证明睡着。'
+            'nap_N只开始未来补觉，不提前恢复；nap_refreshed/nap_tired只续接已开始且到时的补觉。'
+            '连续精力不足且日程有空档，可以安排nap_N补觉，不反复沿用同一句继续静坐。结合当前精力仍可继续休息，或选择新的恢复过程。')
     answers=await port.ask({'new_activity':kind,'context':projected,'meal':meal,
                            'paths':paths,'interpretations':interpretations,'effects':effects}, {
         'trigger':dict(instructions='为本次新发生的角色自身行动选择动机。不要替真实用户或他人编动作、对话或私事；不得补写旧事件的原因。',criteria=triggers),
-        'experience':dict(instructions='从组合中选择连贯的过程结果(path)、角色主观解释(interpretation)和后续打算(effect)，各编号完整定义在state目录。'
-            '可以困难、失败或未完成，不强行圆满。主观解释不改变过程事实，下一步不是已经执行，也不是要求用户行动。'
-            '只描述当前选定的小步，不把课表计划当已上完课程，不编造教师同学或用户的言行、交易、他人私事。'
-            'completed仅指所选小步，不代表读完整书、完成长期创作或所有家务；散步不完成待办，出门准备不代表外部事务办妥。'
-            '这只创作本次角色新经历，不是事后给旧事件编原因，不凭一次经历改写长期人格。'
-            '休息的历史负荷不是当前精力测量；结合本次过程判断仍需休息、缓过来或恢复，不机械沿用previous。'
-            '休息不等于睡着，已有不适不能凭普通休息宣布痊愈；refreshed仅表示本次精力恢复。',criteria=combinations)},
+        'experience':dict(instructions=experience_instructions, criteria=combinations)},
         purpose='world-life-episode')
     if (not isinstance(answers,dict) or set(answers)!={'trigger','experience'}
             or answers.get('trigger') not in triggers or answers.get('experience') not in combinations):
@@ -190,10 +241,20 @@ async def create(port, source_id, now, kind, context, *, meal=None):
     answers={**answers,**combinations[answers['experience']]}
     selected_effects = dict(effects[answers['effect']])
     baseline = (context.get('rhythm') or {}).get('historical_rest', {}).get('load_minutes')
-    if (kind == 'rest' and answers['path'] in {'settled', 'refreshed'} and type(baseline) in {int, float}
-            and (context.get('rhythm') or {}).get('wellbeing', {}).get('state') == 'well'):
-        selected_effects['body_recovery'] = {'rest': 'rested' if answers['path'] == 'refreshed' or context['rhythm'].get('rest') == 'rested' else 'tired',
-                                             'baseline_load_minutes': baseline}
+    if kind == 'rest':
+        path = answers['path']
+        if path in {'settled', 'refreshed', 'nap_refreshed', 'nap_tired'} and type(baseline) in {int, float}:
+            rest = 'rested' if path in {'refreshed', 'nap_refreshed'} or context['rhythm'].get('rest') == 'rested' else 'tired'
+            remaining = 0 if rest == 'rested' else min(baseline, context['rhythm'].get('current_load_minutes', baseline), 119)
+            selected_effects['body_recovery'] = {'rest': rest, 'baseline_load_minutes': baseline,
+                                                'remaining_load_minutes': remaining}
+        if path in {'nap_30', 'nap_60', 'nap_90'}:
+            duration = int(path.split('_')[1])
+            selected_effects['sleep_plan'] = {'duration_minutes': duration,
+                'end_at': (now + timedelta(minutes=duration)).astimezone(timezone.utc).isoformat()}
+        sleep = (context.get('rhythm') or {}).get('authored_sleep')
+        if sleep and sleep['status'] == 'due':
+            selected_effects['sleep_resolution'] = {'source_id': sleep['source_id']}
     return dict(schema='character-life-episode/1',source_id=source_id,occurred_at=now.astimezone(timezone.utc).isoformat(),
         actor='character',activity_kind=kind,trigger=dict(kind=answers['trigger'],detail=triggers[answers['trigger']]),
         **paths[answers['path']],interpretation=dict(subjective=True,**interpretations[answers['interpretation']]),

@@ -44,7 +44,7 @@ def test_existing_illness_permits_home_rest_during_class(tmp_path):
     data['rhythm']['wellbeing']['care'] = 'rest'
     data['world'] = state['world']
     data = decision_context(data)
-    assert data['allowed_activity_kinds'] == ['rest']
+    assert data['allowed_activity_kinds'] == ['rest', 'meal']
     with pytest.raises(ValueError, match='CLASS_CONFLICT'):
         compile_decision(decision(), data)
 
