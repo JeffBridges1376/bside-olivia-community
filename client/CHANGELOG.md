@@ -2,6 +2,15 @@
 
 每个版本的完整内容、升级方式和已知问题见 [`docs/releases/`](docs/releases/) 下对应的更新说明；附件以 [GitHub Releases](https://github.com/Ornn8/bside-olivia-community/releases) 为准。
 
+## 2.0.8 - 2026-09-30
+
+大幅减少 QQ 回复偶发发送失败（`PERSONAL_CHAT_DECISION_INVALID`），要语音时一定用语音回复。详见 [2.0.8 更新说明](docs/releases/v2.0.8.md)。
+
+- QQ 回复的固定规则放进可缓存的开头部分，每轮按全价计费的输入更少；输出格式也更稳定。
+- 模型把回复包在单项数组里时照常发送，不再判为失败。
+- 本轮已决定发语音时，林离直接用语音说话，不再说“不想发”“等下再发”。
+- QQ 设置页：连接 Key 后，之前“读不到 Key”的旧报错自动消失；其他报错注明是哪一时刻的失败。
+
 ## 2.0.7 - 2026-09-29
 
 修复 QQ 回复因附带的提醒或偏好设置不合规而整条发送失败（`PERSONAL_CHAT_DECISION_INVALID`）。详见 [2.0.7 更新说明](docs/releases/v2.0.7.md)。
