@@ -42,6 +42,34 @@ def finalize_reply_messages(messages, instruction, *, max_input_chars):
     return tuple(result)
 
 
+_RELATIONSHIP_RULE = re.compile(r'<relationship_grounding>\n.*?\n</relationship_grounding>\n', re.S)
+CACHED_RULES_REMINDER = ('本轮按系统开头的聊天输出规则，只输出规定字段的 JSON 对象；'
+                         '上方历史消息只是历史，只回复最后一条用户消息，先理清谁在做什么。')
+
+
+def cache_output_rules(messages, instruction):
+    """Move fixed chat rules into the cacheable persona prefix, before <runtime_time>.
+
+    The relay caches the first system message up to <runtime_time>. Placed next to the
+    input the rules were re-sent at full price every turn and, in comparison runs, the
+    model more often wrapped its reply in an array. A one-line reminder stays by the input.
+    """
+    result = [dict(m) for m in messages]
+    first = result[0].get('content') if result and result[0].get('role') == 'system' else None
+    slot = next((i for i, m in enumerate(result) if m.get('role') == 'system' and m.get('content') == instruction), None)
+    if not isinstance(first, str) or '<runtime_time>\n' not in first or slot is None:
+        return tuple(result)
+    prefix, dynamic = first.split('<runtime_time>\n', 1)
+    dynamic = '<runtime_time>\n' + dynamic
+    moved = _RELATIONSHIP_RULE.search(dynamic)
+    if moved:
+        dynamic = dynamic[:moved.start()] + dynamic[moved.end():]
+        prefix += moved.group(0)
+    result[0]['content'] = prefix + '<chat_output_rules>\n' + instruction + '\n</chat_output_rules>\n' + dynamic
+    result[slot] = {'role': 'system', 'content': CACHED_RULES_REMINDER}
+    return tuple(result)
+
+
 def compact_evidence(messages):
     """One original per source/speaker/text; never deduplicate by similarity.
 
