@@ -10,6 +10,14 @@ B01 的私有 manifest/state matrix 只允许存在于 ignored `.evidence/`。�
 
 ## 版本与 envelope
 
+### 本地信件文件导入
+
+`POST /toy/letter/backup/import` 继续使用已有用户确认和导入互斥门禁。`backup` 字段支持原有 JSON 字符串/信件备份对象，以及 `{ "format": "soul", "manifest": { "memory": { "exchanges": [...] } } }`（见 `contracts/soul_letter_import.schema.json`）。
+
+设置页在本地读取 `.soul` 的 `SOUL0001` 文件头、8 字节小端清单长度和 JSON 清单，只提交 `incoming`、`reply`、`date`、`time`；不读取或提交尾部媒体及媒体地址。清单上限 16 MiB，服务端另限制最多 10000 封并在事务前验证全部记录。日期按北京时间解释，无法解析时保留未知时间；信箱输出时间为 epoch 秒，相同时间按源文件顺序显示。双方原文相同（忽略空白差异）的已有信件跳过，不自动覆盖或修复已有记录。
+
+返回原有 `APPLIED/inserted/duplicates` 结果，格式错误沿用 `LETTER_BACKUP_INVALID`。保存原文不调用模型；成功后沿用历史关系评估流程，每五封评估一次，界面确认文案明确提示模型用量。
+
 - 运行时 HTTP envelope：`contract_version=b02.v1`、`schema_version=1`，保持原客户端兼容。
 - 机器可读 contract document：`contract_version=b02.v2`、`schema_version=2`；v2 新增必填 `letter_detail_generation`，因此不冒充 v1 schema。
 - core health 的 `backend_id` 是组件版本与安装实例摘要组成的不透明标识；不包含安装路径、用户名或密钥。启动器只复用与当前安装实例和活动组件同时匹配的本机后端。

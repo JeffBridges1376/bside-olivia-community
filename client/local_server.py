@@ -2694,7 +2694,8 @@ def _official_history_mailbox_projection(*, strict: bool = False) -> list[dict]:
                     if offline_pair
                     else {}
                 ),
-                **({"created_at": metadata["backup_record"]["created_at"],
+                **({"created_at": (_mailbox_created_at(metadata["backup_record"])
+                                  if metadata["backup_record"]["created_at"] is not None else None),
                     "replied_at": metadata["backup_record"]["replied_at"],
                     "title": metadata["backup_record"]["title"],
                     "origin": metadata["backup_record"]["origin"],
@@ -2722,6 +2723,8 @@ def _letter_collection(scope: str, *, strict: bool = False):
 
 def _mailbox_sort_key(letter: Mapping[str, object]) -> tuple:
     metadata = letter.get("metadata")
+    if is_letter_backup(metadata):
+        return (_mailbox_created_at(letter), 'backup', -int(metadata.get('import_position', 0)))
     if is_published_offline_letter_pair(metadata):
         provenance = metadata[OFFLINE_LETTER_PAIR_PROVENANCE_KEY]
         return (0.0, str(provenance["source_sha256"]), -provenance["source_index"])
@@ -3790,7 +3793,7 @@ async def route(
             async def restore_backup():
                 try:
                     return await asyncio.to_thread(import_letter_backup, body.get("backup"),
-                        adapter=_legacy_import_adapter(), existing=_letter_collection("current"))
+                        adapter=_legacy_import_adapter(), existing=_letter_collection("current", strict=True))
                 finally:
                     _history_memory_admin_gate.release()
             operation = asyncio.create_task(restore_backup())

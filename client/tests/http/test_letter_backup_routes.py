@@ -25,7 +25,7 @@ def test_restore_export_mailbox_roundtrip_without_model(tmp_path, monkeypatch):
         mailbox = server._letter_collection('current')
         assert len(mailbox) == 1
         assert mailbox[0]['read_only'] is True
-        assert mailbox[0]['created_at'] == payload['letters'][0]['created_at']
+        assert mailbox[0]['created_at'] == 1788000000
         assert mailbox[0]['reply_mode'] == 'text_letter'
         exported = await server.route('POST', '/toy/letter/backup/export', {}, {}, companion_confirmed=True)
         assert exported['data']['backup']['letters'] == payload['letters']
