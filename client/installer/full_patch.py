@@ -39,7 +39,6 @@ PAYLOAD_DIRS = (
     "control_center",
     "contracts",
     "installer",
-    "media_state",
     "tools",
     "tts",
     "linli_character",

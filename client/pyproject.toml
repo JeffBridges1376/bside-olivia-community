@@ -105,7 +105,6 @@ include = [
     "control_center*",
     "installer*",
     "linli_character*",
-    "media_state*",
     "runtime*",
     "tts*",
 ]
