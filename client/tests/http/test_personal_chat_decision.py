@@ -133,7 +133,8 @@ def test_retry_discards_unpublished_audio_and_decisions():
         rows, output = [], []
         async def generate(event, row):
             if row['generation_attempts'] == 1:
-                row.update(prepared_audio='unpublished.wav', initiative_preference='pause', followup_at=123)
+                row.update(prepared_audio='unpublished.wav', initiative_preference='pause', followup_at=123,
+                           delivery_basis='SPEAKER_UNAVAILABLE', voice_ready=True)
                 raise RuntimeError('failed')
             return '新的文字回复'
         async def send(text):
@@ -150,6 +151,7 @@ def test_retry_discards_unpublished_audio_and_decisions():
         await service.handle(event, send)
         assert output == ['新的文字回复']
         assert 'initiative_preference' not in rows[0] and 'followup_at' not in rows[0]
+        assert 'delivery_basis' not in rows[0] and 'voice_ready' not in rows[0]
     asyncio.run(run())
 
 

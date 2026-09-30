@@ -28,7 +28,7 @@ def _clear_draft(row):
     for key in ('reply_text', 'prepared_audio', 'reply_audio_duration', 'voice_fallback', 'sticker_id',
                 'letter_invitation', 'initiative_preference', 'pause_until', 'letter_preference',
                 'letter_until', 'followup_at', 'followup_quote', 'listening_preference', 'requested_format',
-                'presentation_status', 'quality_status', 'reviewer_calls', 'rewrite_calls',
+                'presentation_status', 'delivery_basis', 'voice_ready', 'quality_status', 'reviewer_calls', 'rewrite_calls',
                 'mailbox_notice_letter_id', 'decision_rejection_reason', 'semantic_shadow', 'expression_context',
                 'companion_decision', 'companion_timing', 'companion_delivery',
                 'proactive_decision', 'proactive_basis', 'proactive_opportunity'):
@@ -348,6 +348,7 @@ class PersonalChatService:
                 for key in ('prepared_audio', 'reply_audio_duration', 'voice_fallback', 'sticker_id',
                             'letter_invitation', 'initiative_preference', 'pause_until', 'letter_preference',
                             'letter_until', 'followup_at', 'listening_preference', 'requested_format', 'presentation_status',
+                            'delivery_basis', 'voice_ready',
                             'expression_context', 'companion_timing', 'companion_delivery'):
                     row.pop(key, None)
                 if not proactive:

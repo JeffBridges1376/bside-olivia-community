@@ -300,7 +300,11 @@ async def _generate_billed(server, event, row):
     from .initiative import letter_invitation_allowed
     allowed = letter_invitation_allowed(server.store.personal_chats, getattr(server.store, 'letters', []),
                                          datetime.now().timestamp())
-    voice_available = event.channel != 'wechat' and bool(row.get('voice_available')) and server._voice_reply_configured(os.environ)
+    voice_block = ('WECHAT_TEXT' if event.channel == 'wechat' else
+                   'TRANSPORT_UNAVAILABLE' if not row.get('voice_available') else
+                   'PROVIDER_UNAVAILABLE' if not server._voice_reply_configured(os.environ) else None)
+    voice_available = voice_block is None
+    row['voice_ready'] = voice_available
     semantic_kinds = ['text'] + (['audio_speech'] if voice_available else [])
     if (event.channel == 'qq' and row.get('image_available') and row['image_reply_settings'].get('enabled')
             and os.environ.get('OLIVIA_GPU_API_URL') and os.environ.get('OLIVIA_GPU_API_KEY')):
@@ -453,20 +457,25 @@ async def _generate_billed(server, event, row):
         if decision['skip']:
             return '[[skip]]'
         text, mode = decision['text'].strip(), decision['delivery']
+        basis = 'WRITER_SELECTION'
         if companion is not None:
             delivery = row['companion_delivery']
             if delivery not in semantic_kinds:
                 raise RuntimeError('JEV_PLAN_UNSUPPORTED')
             mode = 'voice' if delivery == 'audio_speech' else 'text'
-            from runtime.reply.companion_runtime import media_requested
-            if (delivery == 'text' and decision['delivery'] == 'voice' and voice_available
-                    and not media_requested((row.get('companion_decision') or {}).get('plan'))):
-                mode = 'voice'  # Nothing was asked for; she may say it aloud.
+            basis = 'JEV_MEDIA_PLAN'
+            from runtime.reply.companion_runtime import media_locked
+            if (delivery == 'text' and event.channel == 'qq' and voice_available
+                    and not media_locked((row.get('companion_decision') or {}).get('plan'))):
+                reason = decision['text_reason'] if decision['delivery'] == 'text' else None
+                mode = 'text' if reason else 'voice'
+                basis = reason.upper() if reason else 'QQ_DEFAULT_VOICE'
         if contact is not None:
             delivery = contact['decision']['medium']
             if delivery not in {'text', 'audio_speech'} or delivery == 'audio_speech' and not voice_available:
                 raise RuntimeError('JEV_PLAN_UNSUPPORTED')
             mode = 'voice' if delivery == 'audio_speech' else 'text'
+            basis = 'PROACTIVE_MEDIA_PLAN'
             row.pop('sticker_id', None)
             row.pop('mailbox_notice_letter_id', None)
         from .mailbox_notice import attach_notice
@@ -486,8 +495,9 @@ async def _generate_billed(server, event, row):
             row['sticker_id'] = sticker
         if not voice_available:
             mode = 'text'
+            basis = voice_block
         row['presentation_status'] = 'VALIDATED'
-        row.update(requested_format=mode, listening_preference='voice_ok')
+        row.update(requested_format=mode, listening_preference='voice_ok', delivery_basis=basis)
         if not turn_is_current():
             return text  # The service merges new input before any draft is sent.
         from runtime.reply.character_emotion_context import store_expression_context
@@ -500,7 +510,11 @@ async def _generate_billed(server, event, row):
             except Exception:
                 row.pop('prepared_audio', None)
                 row['voice_fallback'] = 'PERSONAL_CHAT_TTS_UNAVAILABLE'
-                if companion is not None or contact is not None:
+                if basis == 'QQ_DEFAULT_VOICE':
+                    # Speech is our presentation default, not a promised asset.
+                    # Keep the reply deliverable if this optional render fails.
+                    row['delivery_basis'] = 'VOICE_RENDER_FAILED'
+                elif companion is not None or contact is not None:
                     raise RuntimeError('JEV_PLAN_UNSUPPORTED') from None
         return text
     finally:

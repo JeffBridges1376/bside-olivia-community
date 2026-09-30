@@ -111,6 +111,30 @@ def test_chat_order_evidence_ignores_malformed_and_unrelated_identifiers():
     assert project_chat_task(raw) == {'channel': 'qq'}
 
 
+def test_chat_voice_route_reason_survives_export_without_user_content():
+    from runtime.diagnostics.support_bundle import project_chat_task
+    raw = dict(channel='qq', voice_ready=False, delivery_basis='PROVIDER_UNAVAILABLE',
+               requested_format='text', delivered_format='text', content='private message',
+               text_reason='private model annotation', key='sk-private')
+    projected = project_chat_task(raw)
+    assert projected == dict(channel='qq', voice_ready=False, delivery_basis='PROVIDER_UNAVAILABLE',
+                             requested_format='text', delivered_format='text')
+    assert project_chat_task(projected) == projected
+    source = _source()
+    source['tasks']['items'][0].update(raw)
+    with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(source))) as archive:
+        item = json.loads(archive.read('tasks.json'))['items'][0]
+    assert item['delivery_basis'] == 'PROVIDER_UNAVAILABLE' and item['voice_ready'] is False
+    assert 'private' not in json.dumps(item)
+
+
+def test_voice_route_projection_ignores_arbitrary_annotations_and_false_boolean_types():
+    from runtime.diagnostics.support_bundle import project_chat_task
+    assert project_chat_task(dict(channel='qq', voice_ready=1, delivery_basis='private reason',
+        requested_format='private', delivered_format='private')) == {'channel': 'qq'}
+    assert project_chat_task(dict(voice_ready=True, delivery_basis='QQ_DEFAULT_VOICE')) == {}
+
+
 def test_memory_install_diagnostics_only_keep_safe_stage_and_counts():
     source = _source()
     source["health"]["checks"]["memory_install"] = {

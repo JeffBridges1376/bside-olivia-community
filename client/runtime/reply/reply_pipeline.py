@@ -315,7 +315,7 @@ class ReplyPipeline:
                 prepared.messages, max_input_chars=prepared.max_input_chars))
         if use_companion:
             from .companion_runtime import (prepare_decision, delivery_for, project_decision, CompanionRuntimeError,
-                                            TURN_CONTEXT, media_requested)
+                                            TURN_CONTEXT, media_locked)
             metadata = chat_metadata if chat_metadata is not None else (TURN_CONTEXT.get() or {})
             kinds = metadata.get('semantic_kinds', ['text'])
             try:
@@ -341,10 +341,11 @@ class ReplyPipeline:
                     max_input_chars=original_budget-len(generation_note)-2,
                     delivery=('letter_image' if context.mode is ReplyMode.TEXT_LETTER
                               and companion_delivery == 'image' else
-                              # A plain chat turn may be spoken when nothing was asked for.
-                              'text_or_voice' if (context.mode is ReplyMode.FUTURE_IM and companion_delivery == 'text'
+                              # Apply the QQ speech default without changing requested media.
+                              'voice_default' if (context.mode is ReplyMode.FUTURE_IM and companion_delivery == 'text'
                                                   and (chat_metadata or {}).get('structured')
-                                                  and 'audio_speech' in kinds and not media_requested(decision.plan))
+                                                  and (chat_metadata or {}).get('channel') == 'qq'
+                                                  and 'audio_speech' in kinds and not media_locked(decision.plan))
                               else companion_delivery)),
                     max_input_chars=original_budget-len(generation_note)-2)
             except CompanionRuntimeError as error:
