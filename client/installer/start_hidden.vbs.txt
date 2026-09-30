@@ -3,7 +3,7 @@ Set fso = CreateObject("Scripting.FileSystemObject")
 root = fso.GetParentFolderName(WScript.ScriptFullName)
 If WScript.Arguments.Named.Exists("error") Then
     errorCode = WScript.Arguments.Named.Item("error")
-    MsgBox "Olivia 启动失败（错误码 " & errorCode & "）。" & vbCrLf & "请重新打开；如果仍然失败，请在设置中打开“客户端日志”查看原因。", 16, "Olivia 本地版"
+    MsgBox "Olivia 启动失败（错误码 " & errorCode & "）。" & vbCrLf & "请将安装目录 data\logs 下的启动日志提供给维护者。", 16, "Olivia 本地版"
     WScript.Quit 0
 End If
 wscriptExe = shell.ExpandEnvironmentStrings("%WINDIR%") & "\System32\wscript.exe"
@@ -26,7 +26,9 @@ If launchErrorNumber <> 0 Then
 End If
 If exitCode <> 0 Then
     If exitCode <> -1 And CStr(exitCode) <> "4294967295" Then
-    MsgBox "Olivia 启动失败（错误码 " & CStr(exitCode) & "）。" & vbCrLf & "请重新打开；如果仍然失败，请在设置中打开“客户端日志”查看原因。", 16, "Olivia 本地版"
+    ' Batch mode also suppresses COM popups: explicitly use an interactive error host.
+    errorCommand = Chr(34) & wscriptExe & Chr(34) & " //I //Nologo " & Chr(34) & WScript.ScriptFullName & Chr(34) & " /error:" & CStr(exitCode)
+    shell.Run errorCommand, 0, True
 End If
 End If
 WScript.Quit exitCode

@@ -344,7 +344,9 @@ def test_windows_patch_docs_define_shortcut_refresh_as_best_effort() -> None:
     assert "桌面和开始菜单中仍然存在的快捷方式" in documentation
     assert "wscript.exe" in documentation
     assert "START.vbs" in documentation
-    assert "立即显示“Olivia 正在启动，请稍候”" in documentation
+    assert "点击后先播放 Community 开机动画" in documentation
+    assert "后台准备与资源检查同时继续" in documentation
+    assert "直到主界面就绪" in documentation
     assert "只有隐藏启动器最终返回非零退出码" in documentation
     assert "正常关闭返回 `0` 时不会弹出错误" in documentation
     assert "其他安装或无关的 wscript 快捷方式不会被改写" in documentation

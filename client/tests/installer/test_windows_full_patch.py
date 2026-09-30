@@ -111,7 +111,7 @@ def test_hidden_start_uses_visible_error_branch_only_for_failures(
     error_record = tmp_path / "visible-error.txt"
     escaped_record = str(error_record).replace('"', '""')
     launch_failure_line = [
-        line for line in template.splitlines() if "CStr(exitCode)" in line and "MsgBox" in line
+        line for line in template.splitlines() if "shell.Run errorCommand" in line
     ][-1]
     instrumented = template.replace(
         "shell.Run noticeCommand, 0, False",
@@ -1972,7 +1972,8 @@ def test_install_isolated_copy_activates_original_client_surfaces(
     assert 'WScript.ScriptFullName & Chr(34) & " /notice"' not in start_hidden
     assert 'exitCode <> -1' in start_hidden
     assert 'CStr(exitCode) <> "4294967295"' in start_hidden
-    assert 'shell.Run errorCommand' not in start_hidden
+    assert 'shell.Run errorCommand, 0, True' in start_hidden
+    assert ' //I //Nologo ' in start_hidden
     assert "shell.Run noticeCommand, 0, False" not in start_hidden
     assert "On Error Resume Next" in start_hidden
     assert "exitCode = shell.Run" in start_hidden
@@ -1982,7 +1983,7 @@ def test_install_isolated_copy_activates_original_client_surfaces(
     assert ", 0, True)" in start_hidden
     assert "If exitCode <> 0 Then" in start_hidden
     assert "Olivia 启动失败（错误码" in start_hidden
-    assert start_hidden.count("MsgBox") == 2
+    assert start_hidden.count("MsgBox") == 1
     assert "shell.Run noticeCommand" not in start_hidden
     start = (installed / "START.cmd").read_text(encoding="utf-8")
     assert "launcher\\version_launcher.py" in start

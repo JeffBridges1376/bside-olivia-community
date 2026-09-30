@@ -538,6 +538,37 @@ def _load_fixed_video_assets_environment(
     return values
 
 
+def _frontend_patcher_digest() -> str:
+    """Invalidate the repair receipt when UI patch code or bundled assets change."""
+
+    source = Path(__file__).resolve().parents[1]
+    files = [source / name for name in (
+        "installer/start_local.py", "patch_feapp.py", "patch_webplayer.py",
+        "patch_companion_settings.py", "original_client_settings_ui.py",
+        "installer/patch_letter_stickers.py", "installer/assets/wechat-payment.jpeg",
+    )]
+    files.extend((source / "runtime/personal_chat").glob("*.py"))
+    files.extend(path for path in (source / "runtime/letter_stickers").iterdir()
+                 if path.suffix in {".png", ".gif", ".json", ".js"})
+    digest = hashlib.sha256()
+    for path in sorted(files):
+        digest.update(path.relative_to(source).as_posix().encode("utf-8") + b"\0")
+        with path.open("rb") as handle:
+            digest.update(hashlib.file_digest(handle, "sha256").digest())
+    return digest.hexdigest()
+
+
+def _frontend_receipt(resources: Path, port: int, patcher_digest: str) -> dict:
+    archives = {}
+    for name in ("feapp.dat", "webplayer.dat"):
+        path = resources / name
+        if path.is_file():
+            with path.open("rb") as handle:
+                archives[name] = hashlib.file_digest(handle, "sha256").hexdigest()
+    return {"schema_version": 1, "port": port, "patcher_digest": patcher_digest,
+            "archives": archives}
+
+
 def _repair_client_frontend(root: Path, port: int) -> str:
     """Upgrade repository-owned UI in an existing isolated client copy."""
 
@@ -545,6 +576,16 @@ def _repair_client_frontend(root: Path, port: int) -> str:
     feapp = client.parent / "resources" / "feapp.dat"
     if not feapp.is_file():
         raise CompanionSettingsPatchError("COMPANION_ARCHIVE_NOT_FOUND")
+    from installer.user_data_root import resolve_user_data_root
+    receipt_path = resolve_user_data_root(root) / "logs/frontend-patch.json"
+    patcher_digest = None
+    try:
+        patcher_digest = _frontend_patcher_digest()
+        before = _frontend_receipt(feapp.parent, port, patcher_digest)
+        if json.loads(receipt_path.read_text(encoding="utf-8")) == before:
+            return "ALREADY_PATCHED"
+    except (OSError, ValueError):
+        pass
     repair_web_player_event_ids(feapp, work_root=feapp.parent)
     result = patch_companion_settings(
         feapp,
@@ -559,6 +600,16 @@ def _repair_client_frontend(root: Path, port: int) -> str:
             raise CompanionSettingsPatchError("COMPANION_PLAYER_PATCH_FAILED") from exc
     from installer.patch_letter_stickers import patch_letter_stickers
     sticker_status = patch_letter_stickers(feapp)
+    # Record only a fully successful repair; failures keep taking the normal path.
+    try:
+        if patcher_digest is not None:
+            receipt = _frontend_receipt(feapp.parent, port, patcher_digest)
+            receipt_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = receipt_path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(receipt, sort_keys=True), encoding="utf-8")
+            temporary.replace(receipt_path)
+    except OSError:
+        pass  # An optional speed optimization cannot prevent a valid launch.
     if sticker_status == "PATCHED":
         return "PATCHED"
     return result["status"]
@@ -611,10 +662,12 @@ def _run_client_with_native_layout(
     environment: dict[str, str],
     data_root: Path,
     attempt: int,
+    startup_player: object | None = None,
 ) -> int:
     """Run the copied client while a bounded guard preserves its native layout."""
 
     animation = environment.get("OLIVIA_STARTUP_VIDEO")
+    client_pid_file = environment.get("OLIVIA_STARTUP_CLIENT_PID_FILE")
     player = Path(__file__).with_name("startup_animation.ps1")
     if attempt == 1 and os.name == "nt" and animation and Path(animation).is_file() and player.is_file():
         from installer.patch_native_splash import NativeSplashPatchError, patch_native_splash
@@ -642,6 +695,21 @@ def _run_client_with_native_layout(
     )
     worker.start()
     try:
+        if client_pid_file:
+            process = subprocess.Popen(_client_command(client, local), cwd=cwd, env=environment)
+            try:
+                signal = Path(client_pid_file)
+                temporary = signal.with_suffix(".tmp")
+                temporary.write_text(str(process.pid), encoding="ascii")
+                temporary.replace(signal)
+            except OSError:
+                _append_launcher_event(data_root, "startup_handoff_unavailable")
+                if startup_player is not None:
+                    try:
+                        startup_player.terminate()
+                    except OSError:
+                        pass
+            return process.wait()
         if attempt == 1 and os.name == 'nt' and animation and Path(animation).is_file() and player.is_file():
             process = subprocess.Popen(_client_command(client, local), cwd=cwd, env=environment)
             try:
@@ -689,7 +757,7 @@ def _append_launcher_event(data_root: Path, event: str, **fields: object) -> Non
     try:
         log_root = data_root / "logs"
         log_root.mkdir(parents=True, exist_ok=True)
-        record = {"event": event, **fields}
+        record = {"event": event, "timestamp": time.time(), **fields}
         with (log_root / "launcher.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
     except (OSError, TypeError, ValueError):
@@ -745,10 +813,19 @@ def _active_backend() -> Path:
 
 
 _BACKEND_BOOTSTRAP = (
-    "import runpy,sys; "
-    "backend,entrypoint,*args=sys.argv[1:]; "
-    "sys.path.insert(0, backend); "
-    "sys.argv=[entrypoint,*args]; "
+    "import os,runpy,sys,time\n"
+    "from pathlib import Path\n"
+    "backend,entrypoint,*args=sys.argv[1:]\n"
+    "sys.path.insert(0, backend)\n"
+    "def report_failure(kind,error,traceback):\n"
+    "    try:\n"
+    "        from installer.version_launcher import _append_launcher_event,_startup_exception_fields\n"
+    "        root=Path(os.environ['OLIVIA_LOCAL_DATA_ROOT']).parent\n"
+    "        _append_launcher_event(root,'backend_failed',timestamp=time.time(),**_startup_exception_fields(error))\n"
+    "    except Exception:\n"
+    "        pass\n"
+    "sys.excepthook=report_failure\n"
+    "sys.argv=[entrypoint,*args]\n"
     "runpy.run_path(entrypoint,run_name='__main__')"
 )
 
@@ -873,14 +950,30 @@ def _refresh_stable_launcher(root: Path, data_root: Path) -> None:
     if not launcher.parent.is_dir():
         return
     try:
-        if launcher.is_file() and launcher.read_bytes() == source.read_bytes():
-            return
-        from installer.proactive_login import _refresh_stable_launcher as refresh
-        refresh(root)
+        changed = False
+        if not launcher.is_file() or launcher.read_bytes() != source.read_bytes():
+            from installer.proactive_login import _refresh_stable_launcher as refresh
+            refresh(root)
+            changed = True
+        hidden = source.with_name("start_hidden.vbs.txt").read_text(encoding="utf-8")
+        for target, content in (
+            (launcher.with_name("start_hidden.vbs.txt"), hidden.encode("utf-8")),
+            (root / "START.vbs", hidden.encode("utf-16")),
+        ):
+            if target.is_file() and target.read_bytes() == content:
+                continue
+            temporary = target.with_name(f".{target.name}-{secrets.token_hex(4)}.tmp")
+            try:
+                temporary.write_bytes(content)
+                temporary.replace(target)
+            finally:
+                temporary.unlink(missing_ok=True)
+            changed = True
     except (OSError, RuntimeError, ValueError):
         _append_launcher_event(data_root, "stable_launcher_refresh_failed")
         return
-    _append_launcher_event(data_root, "stable_launcher_refreshed")
+    if changed:
+        _append_launcher_event(data_root, "stable_launcher_refreshed")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -899,6 +992,51 @@ def main(argv: list[str] | None = None) -> int:
         health = _health(args.port)
         print(json.dumps({"status": health}))
         return 0 if health == "READY" else 2
+    from installer.user_data_root import resolve_user_data_root
+    data_root = resolve_user_data_root(root)
+    animation = os.environ.get("OLIVIA_STARTUP_VIDEO") or str(backend / "installer/assets/startup.mp4")
+    player = backend / "installer/startup_animation.ps1"
+    animation_process = None
+    signal = data_root / "logs" / f"startup-client-{os.getpid()}-{secrets.token_hex(4)}.pid"
+    previous_signal = os.environ.pop("OLIVIA_STARTUP_CLIENT_PID_FILE", None)
+    try:
+        if os.name == "nt" and Path(animation).is_file() and player.is_file():
+            try:
+                signal.parent.mkdir(parents=True, exist_ok=True)
+                animation_process = subprocess.Popen(
+                    ["powershell.exe", "-NoProfile", "-STA", "-WindowStyle", "Hidden",
+                     "-ExecutionPolicy", "Bypass", "-File", str(player), "-MediaPath", animation,
+                     "-LauncherProcessId", str(os.getpid()), "-ClientProcessIdFile", str(signal),
+                     "-ReportPath", str(data_root / "logs/startup-animation.json")],
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+                os.environ["OLIVIA_STARTUP_CLIENT_PID_FILE"] = str(signal)
+                _append_launcher_event(data_root, "startup_animation_started")
+            except OSError:
+                pass
+        _refresh_stable_launcher(root, data_root)
+        return _launch(args, root, backend, entrypoint, data_root, startup_player=animation_process)
+    finally:
+        os.environ.pop("OLIVIA_STARTUP_CLIENT_PID_FILE", None)
+        if previous_signal is not None:
+            os.environ["OLIVIA_STARTUP_CLIENT_PID_FILE"] = previous_signal
+        if animation_process is not None and animation_process.poll() is None:
+            try:
+                animation_process.terminate()
+                animation_process.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        try:
+            signal.unlink(missing_ok=True)
+            signal.with_suffix(".tmp").unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _launch(args: argparse.Namespace, root: Path, backend: Path, entrypoint: Path, data_root: Path,
+            *, startup_player: object | None = None) -> int:
+    """Prepare the backend and native client while the startup animation plays."""
+
     health = _health(args.port)
     if health == "PORT_CONFLICT":
         print("PORT_CONFLICT")
@@ -917,10 +1055,9 @@ def main(argv: list[str] | None = None) -> int:
         if health != "UNAVAILABLE":
             print("STALE_BACKEND_RUNNING")
             return 2
-    from installer.user_data_root import resolve_user_data_root
     from installer.repair_image_dependency import ensure_bundled_image_dependency
-    data_root = resolve_user_data_root(root)
-    _refresh_stable_launcher(root, data_root)
+    preparation_started = time.monotonic()
+    _append_launcher_event(data_root, "startup_preparing")
     if data_root != root / 'data':
         import atexit
         from installer.version_launcher import _try_acquire_start_instance
@@ -964,6 +1101,8 @@ def main(argv: list[str] | None = None) -> int:
     if backend_environment.get("OLIVIA_LLM_REQUIRES_API_KEY") != "0" and not any(backend_environment.get(name) for name in ("OLIVIA_LLM_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY")):
         print("LLM_API_KEY_NOT_CONFIGURED: 尚未连接 Olivia 账户 Key，请在设置的“回信服务 → Olivia 账户”中获取或导入。")
     server = None
+    _append_launcher_event(data_root, "startup_environment_ready",
+                           elapsed_seconds=round(time.monotonic() - preparation_started, 3))
     try:
         if health != "READY":
             server, health = _start_backend_server(
@@ -990,8 +1129,13 @@ def main(argv: list[str] | None = None) -> int:
             print("CLIENT_NATIVE_NAVIGATION_REPAIR_FAILED")
             return 2
         try:
+            frontend_started = time.monotonic()
             _repair_client_frontend(root, args.port)
-        except (CompanionSettingsPatchError, OSError, ValueError):
+            _append_launcher_event(data_root, "frontend_ready",
+                                   elapsed_seconds=round(time.monotonic() - frontend_started, 3))
+        except (CompanionSettingsPatchError, OSError, ValueError) as exc:
+            _append_launcher_event(data_root, "startup_failed", code="CLIENT_FRONTEND_REPAIR_FAILED",
+                                   exception_type=type(exc).__name__)
             print("CLIENT_FRONTEND_REPAIR_FAILED")
             return 2
         owned_ready = (
@@ -1044,7 +1188,8 @@ def main(argv: list[str] | None = None) -> int:
         _seed_native_user_settings(source_settings_roaming, roaming)
         _prepare_native_user_settings(roaming, data_root)
         client_environment.setdefault("OLIVIA_STARTUP_VIDEO", str(backend / "installer" / "assets" / "startup.mp4"))
-        _append_launcher_event(data_root, "client_start", attempt=1)
+        _append_launcher_event(data_root, "client_start", attempt=1,
+                               preparation_seconds=round(time.monotonic() - preparation_started, 3))
         exit_code = _run_client_with_native_layout(
             client,
             local,
@@ -1052,6 +1197,7 @@ def main(argv: list[str] | None = None) -> int:
             environment=_client_environment(client_environment, roaming, local),
             data_root=data_root,
             attempt=1,
+            startup_player=startup_player,
         )
         _append_launcher_event(
             data_root,
@@ -1075,6 +1221,7 @@ def main(argv: list[str] | None = None) -> int:
                 environment=_client_environment(client_environment, roaming, local),
                 data_root=data_root,
                 attempt=2,
+                startup_player=startup_player,
             )
             _append_launcher_event(
                 data_root,

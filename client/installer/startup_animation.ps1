@@ -1,7 +1,9 @@
 param(
     [Parameter(Mandatory = $true)][string]$MediaPath,
     [string]$ReportPath,
-    [int]$ClientProcessId = 0
+    [int]$ClientProcessId = 0,
+    [int]$LauncherProcessId = 0,
+    [string]$ClientProcessIdFile
 )
 
 $ErrorActionPreference = 'Stop'
@@ -145,7 +147,7 @@ public static class OliviaStartupReady {
         $script:report.ended = $true
         $script:report.status = 'holding_last_frame'
         Save-Report
-        if ($ClientProcessId -le 0) { $window.Close() }
+        if ($ClientProcessId -le 0 -and -not $ClientProcessIdFile) { $window.Close() }
     })
     $media.Add_MediaFailed({ param($sender, $eventArgs) Fail-Media $eventArgs.ErrorException.Message })
     $window.Add_PreviewKeyDown({
@@ -160,21 +162,37 @@ public static class OliviaStartupReady {
     $window.Add_Closed({
         $media.Close()
         if ($script:timer) { $script:timer.Stop() }
-        if ($script:report.status -notin @('holding_last_frame', 'ready', 'client_exited', 'skipped', 'error')) {
+        if ($script:report.status -notin @('holding_last_frame', 'ready', 'client_exited', 'launcher_exited', 'skipped', 'error')) {
             $script:report.status = 'closed'
         }
         Save-Report
     })
     $script:readyCount = 0
+    $script:clientId = $ClientProcessId
     $script:timer = New-Object Windows.Threading.DispatcherTimer
     $timer.Interval = [TimeSpan]::FromMilliseconds(500)
     $timer.Add_Tick({
-        if ($ClientProcessId -le 0) { return }
-        if (-not (Get-Process -Id $ClientProcessId -ErrorAction SilentlyContinue)) {
+        if ($LauncherProcessId -gt 0 -and -not (Get-Process -Id $LauncherProcessId -ErrorAction SilentlyContinue)) {
+            $script:report.status = 'launcher_exited'; Save-Report; $window.Close(); return
+        }
+        if ($ClientProcessIdFile) {
+            try {
+                $candidate = [int](Get-Content -LiteralPath $ClientProcessIdFile -Raw -ErrorAction Stop)
+                if ($candidate -gt 0 -and $candidate -ne $script:clientId) {
+                    $script:clientId = $candidate
+                    $script:readyCount = 0
+                }
+            } catch { } # The client PID is published after backend preparation.
+        }
+        if ($script:clientId -le 0) { return }
+        if (-not (Get-Process -Id $script:clientId -ErrorAction SilentlyContinue)) {
+            if ($ClientProcessIdFile -and $LauncherProcessId -gt 0) {
+                $script:readyCount = 0; return # Keep the frame during a native-client retry.
+            }
             $script:report.status = 'client_exited'; Save-Report; $window.Close(); return
         }
         if (-not $script:report.ended) { return }
-        $handle = [OliviaStartupReady]::Find($ClientProcessId)
+        $handle = [OliviaStartupReady]::Find($script:clientId)
         if ($handle -gt 0) { $script:readyCount++ } else { $script:readyCount = 0 }
         if ($script:report.ended -and $script:readyCount -ge 3) {
             $script:report.status = 'ready'; $script:report.main_window = $handle
