@@ -166,6 +166,14 @@ def delivery_for(decision, *, kinds):
     return timing, kind
 
 
+def media_requested(plan):
+    """True when the user asked for any medium this turn or later."""
+    try:
+        return bool(plan['understanding']['requirements'])
+    except (KeyError, TypeError):
+        return True  # Unknown shape: keep JEV's chosen medium.
+
+
 def project_decision(messages, decision, *, max_input_chars, delivery):
     payload = decision.writer_projection()
     encoded = json.dumps(payload, ensure_ascii=False, separators=(',', ':')).replace('<', r'\u003c').replace('>', r'\u003e')
@@ -178,6 +186,14 @@ def project_decision(messages, decision, *, max_input_chars, delivery):
         from runtime.personal_chat.presentation import VOICE_PROSE
         note += ('本轮交付已选定语音，结构化回复的 delivery 必须是 voice；只写将实际朗读的一份正文。'
                  '这条语音一定会发出：正文就是你此刻对用户说的话，不推辞、不说不想发、没空发、等下再发或不方便说话。')
+        note += VOICE_PROSE
+    elif delivery == 'text_or_voice':
+        # JEV plans the minimum (text) when nothing was asked for; the chat's
+        # own voice rules choose how she says it.
+        from runtime.personal_chat.presentation import VOICE_PROSE
+        note += ('本轮用户没有要求媒体：按聊天规则自行选择 delivery。voice_available 为 true 时，'
+                 '日常短聊、问候、安慰、撒娇、想念、晚安等适合开口说的一两句话优先 voice；'
+                 '信息量大、步骤、地址、数字等需要对方反复查看的内容用 text。选 voice 时正文就是要说出口的话。')
         note += VOICE_PROSE
     elif delivery == 'text':
         note += '本轮交付已选定文字，结构化回复的 delivery 必须是 text。'

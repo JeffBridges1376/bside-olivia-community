@@ -219,7 +219,8 @@ def test_event_source_zero_hit_trace_reaches_actual_generation_call(tmp_path, mo
     assert result.state is ReplyState.COMPLETED
     assert result.quality_status == 'not_checked'
     assert len(selection_calls) == 1
-    system = capture.request.messages[0]['content']
+    # Recalled evidence is per-turn state; chat turns place it after the dialogue.
+    system = ''.join(m['content'] for m in capture.request.messages if m['role'] == 'system')
     assert '银环是去年挑的' in system
     assert '登记原定明天办理，后来取消了' in system
     assert '2026-09-01' in system

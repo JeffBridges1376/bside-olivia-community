@@ -314,7 +314,8 @@ class ReplyPipeline:
             prepared = replace(prepared, messages=prepare_dialogue_messages(
                 prepared.messages, max_input_chars=prepared.max_input_chars))
         if use_companion:
-            from .companion_runtime import prepare_decision, delivery_for, project_decision, CompanionRuntimeError, TURN_CONTEXT
+            from .companion_runtime import (prepare_decision, delivery_for, project_decision, CompanionRuntimeError,
+                                            TURN_CONTEXT, media_requested)
             metadata = chat_metadata if chat_metadata is not None else (TURN_CONTEXT.get() or {})
             kinds = metadata.get('semantic_kinds', ['text'])
             try:
@@ -339,7 +340,12 @@ class ReplyPipeline:
                 prepared = replace(prepared, messages=project_decision(_generation_messages(prepared), decision,
                     max_input_chars=original_budget-len(generation_note)-2,
                     delivery=('letter_image' if context.mode is ReplyMode.TEXT_LETTER
-                              and companion_delivery == 'image' else companion_delivery)),
+                              and companion_delivery == 'image' else
+                              # A plain chat turn may be spoken when nothing was asked for.
+                              'text_or_voice' if (context.mode is ReplyMode.FUTURE_IM and companion_delivery == 'text'
+                                                  and (chat_metadata or {}).get('structured')
+                                                  and 'audio_speech' in kinds and not media_requested(decision.plan))
+                              else companion_delivery)),
                     max_input_chars=original_budget-len(generation_note)-2)
             except CompanionRuntimeError as error:
                 return PipelineResult(getattr(request, 'request_id', ''), ReplyState.FAILED,

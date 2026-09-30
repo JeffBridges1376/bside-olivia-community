@@ -97,11 +97,14 @@ def test_chat_rules_move_into_cached_prefix_with_reminder_by_input():
                 {'role': 'user', 'content': '[历史消息 {}]\n早'}, {'role': 'assistant', 'content': '[历史消息 {}]\n早呀'},
                 {'role': 'system', 'content': INSTRUCTION}, {'role': 'user', 'content': '在吗'})
     result = cache_output_rules(messages, INSTRUCTION)
-    prefix, dynamic = result[0]['content'].split('<runtime_time>\n', 1)
-    assert INSTRUCTION in prefix and grounding in prefix
-    assert grounding not in dynamic and '<evidence_summary>' in dynamic
-    assert result[3] == {'role': 'system', 'content': CACHED_RULES_REMINDER}
-    assert result[-1] == messages[-1] and len(result) == len(messages)
+    prefix = result[0]['content']
+    assert INSTRUCTION in prefix and grounding in prefix and '<runtime_time>' not in prefix
+    # Dialogue first, then the per-turn state, then the reminder and the input.
+    assert [m['content'][:6] for m in result[1:3]] == ['[历史消息 ', '[历史消息 ']
+    assert result[3]['content'].startswith('<runtime_time>\n') and '<evidence_summary>' in result[3]['content']
+    assert grounding not in result[3]['content']
+    assert result[4] == {'role': 'system', 'content': CACHED_RULES_REMINDER}
+    assert result[-1] == messages[-1] and len(result) == len(messages) + 1
     # Without the clock boundary nothing is moved.
     plain = ({'role': 'system', 'content': 'P'}, {'role': 'system', 'content': INSTRUCTION}, {'role': 'user', 'content': 'x'})
     assert cache_output_rules(plain, INSTRUCTION) == plain
@@ -116,3 +119,40 @@ def test_decision_in_single_item_array_is_accepted():
     assert decode(json.dumps([body]), user='在吗', now=now)['text'] == '在呢'
     with pytest.raises(ValueError):
         decode(json.dumps([body, body]), user='在吗', now=now)
+
+
+def test_chat_window_start_moves_in_steps_so_the_dialogue_prefix_repeats():
+    from runtime.personal_chat.context import READ_WINDOW
+    from runtime.reply.conversation_context import conversation_context, WINDOW_STEP
+    now = datetime(2026, 9, 30, 13, tzinfo=timezone.utc)
+
+    def window(count):
+        rows = [dict(letter_id=f'x{i}', channel='qq', binding_id='b', delivery_status='DELIVERED',
+                     created_at=float(i), content='用户说了一段不算短的话' * 6, reply_text='她也回了一段话' * 6)
+                for i in range(count)]
+        token = READ_WINDOW.set(rows)
+        try:
+            recent, _ = conversation_context([], query='q', now=now)
+        finally:
+            READ_WINDOW.reset(token)
+        return [item['source_id'] for item in json.loads(recent)['letters']]
+
+    starts = []
+    for count in range(30, 38):
+        shown = window(count)
+        assert shown[-1] == f'reply:x{count - 1}:1'
+        starts.append(int(shown[0].split(':')[1][1:]))
+    assert all(start % WINDOW_STEP == 0 for start in starts)
+    assert len(set(starts)) < len(starts)  # the same start serves several turns
+
+
+def test_plain_chat_turn_may_be_spoken():
+    from types import SimpleNamespace
+    from runtime.reply.companion_runtime import project_decision, media_requested
+    plan = {'understanding': {'requirements': []}}
+    decision = SimpleNamespace(plan=plan, writer_projection=lambda: {})
+    messages = ({'role': 'system', 'content': 'p'}, {'role': 'user', 'content': '晚安'})
+    note = project_decision(messages, decision, max_input_chars=10000, delivery='text_or_voice')[1]['content']
+    assert '自行选择 delivery' in note and '必须是 text' not in note
+    assert not media_requested(plan) and media_requested({'understanding': {'requirements': [{'id': 'r1'}]}})
+    assert media_requested(None)
