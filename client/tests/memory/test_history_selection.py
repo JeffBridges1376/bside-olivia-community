@@ -106,3 +106,26 @@ def test_selection_bounds_recent_context_and_deduplicates_candidates():
     assert packet['recent_dialogue'] == [messages[-2]]
     assert sum(len(m['content']) for m in gateway.calls[0][0]) <= 12000
     assert tuple(m for m in result if m['role'] != 'system') == messages[1:]
+
+
+def test_dependency_store_failure_keeps_a_valid_selection(monkeypatch):
+    import runtime.memory.history_selection as selection
+    import runtime.diagnostics.recall_trace as trace
+    checks = []
+    monkeypatch.setattr(trace, 'finish', lambda before, after, check: checks.append(check))
+    def broken(*args, **kwargs):
+        raise OSError('disk')
+    monkeypatch.setattr(selection, 'save_dependencies', broken)
+    result = run(Gateway())
+    assert '推荐七里香' in result[0]['content']
+    assert checks[-1] == {'status': 'checked', 'reason': 'dependency_store', 'findings': []}
+
+
+def test_unexpected_failure_names_the_step_and_exception(monkeypatch):
+    import runtime.diagnostics.recall_trace as trace
+    checks = []
+    monkeypatch.setattr(trace, 'finish', lambda before, after, check: checks.append(check))
+    run(Gateway(failure=RuntimeError('offline')))
+    assert checks[-1]['status'] == 'unavailable' and checks[-1]['reason'] == 'error_select_RuntimeError'
+    assert trace.project({'event': 'history_recall', 'reason': 'error_select_RuntimeError'})['reason'] == 'error_select_RuntimeError'
+    assert 'reason' not in trace.project({'event': 'history_recall', 'reason': 'error_select_C:/secret'})

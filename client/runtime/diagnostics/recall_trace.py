@@ -26,7 +26,9 @@ _MODES = frozenset({'direct', 'contextual', 'ambiguous', 'history_tail'})
 _INTENTS = frozenset({'sharing', 'recall_question', 'action_request', 'correction'})
 # Fixed JEV failure codes (e.g. JEV_RECALL_SOURCE_CAPACITY) name the failing limit.
 _JEV_REASON = re.compile(r'JEV_[A-Z0-9_]{2,60}')
-_REASONS = frozenset({'capacity', 'timeout', 'validation', 'provider', 'source_parse',
+# Unexpected failures: the step that failed and the exception class, never a message.
+_ERROR_REASON = re.compile(r'error_(?:prepare|select|validate|save|group)_[A-Za-z][A-Za-z0-9]{0,40}')
+_REASONS = frozenset({'capacity', 'timeout', 'validation', 'provider', 'source_parse', 'dependency_store',
                      'input_capacity', 'no_history', 'not_enabled'})
 
 
@@ -50,7 +52,8 @@ def project(value):
     for key, allowed in (('check_status', _RESULTS), ('query_mode', _MODES), ('reason', _REASONS),
                          ('reply_intent', _INTENTS)):
         item = value.get(key)
-        if isinstance(item, str) and (item in allowed or key == 'reason' and _JEV_REASON.fullmatch(item)):
+        if isinstance(item, str) and (item in allowed or key == 'reason' and (
+                _JEV_REASON.fullmatch(item) or _ERROR_REASON.fullmatch(item))):
             result[key] = item
     states = value.get('source_status')
     if isinstance(states, dict):
