@@ -13,6 +13,7 @@ from aiohttp import web
 
 from .service import JEV_ERROR_CODES, PersonalChatService, persist_state
 from runtime.private_world.life_rhythm import LOCAL
+from runtime.reply.jev_billing import account_key_missing
 
 
 _RUNTIME = web.AppKey("personal_chat", dict)
@@ -123,18 +124,33 @@ def _generation_failure_code(code):
     return 'PERSONAL_CHAT_GENERATION_FAILED'
 
 
-def reply_errors(server, runtime):
+_KEY_ERRORS = {'JEV_BILLING_ACCOUNT_UNAVAILABLE', 'OLIVIA_KEY_REQUIRED'}
+
+
+def reply_failures(server, runtime):
+    """Channel error codes, and when a stored turn failed (for errors that came from one)."""
     errors = {channel: _failure_code(RuntimeError(code))
               for channel, code in runtime.get('errors', {}).items() if channel in ('qq', 'wechat', 'recovery')}
+    failed_at = {}
     latest = {row.get('channel'): row for row in getattr(server.store, 'personal_chats', [])}
     for channel, row in latest.items():
         if channel in runtime.get('status', {}) and (row.get('delivery_status') in {'FAILED', 'DELIVERY_UNCONFIRMED'}
                 or row.get('delivery_status') == 'SENDING' and row.get('error_code')):
             code = row.get('error_code', '')
-            errors.setdefault(channel, code if isinstance(code, str) and
-                              (code in JEV_ERROR_CODES or re.fullmatch(r'(?:PERSONAL_CHAT|IMAGE|LLM)_[A-Z0-9_]{1,80}', code))
-                              else 'PERSONAL_CHAT_GENERATION_FAILED')
-    return errors
+            if code in _KEY_ERRORS and not account_key_missing():
+                continue  # The key was connected after this turn failed.
+            if channel not in errors:
+                errors[channel] = (code if isinstance(code, str) and
+                                   (code in JEV_ERROR_CODES or re.fullmatch(r'(?:PERSONAL_CHAT|IMAGE|LLM)_[A-Z0-9_]{1,80}', code))
+                                   else 'PERSONAL_CHAT_GENERATION_FAILED')
+                stamp = row.get('life_received_at') or row.get('user_sent_at')
+                if isinstance(stamp, str):
+                    failed_at[channel] = stamp
+    return errors, failed_at
+
+
+def reply_errors(server, runtime):
+    return reply_failures(server, runtime)[0]
 
 
 def _publish_status(server, runtime):

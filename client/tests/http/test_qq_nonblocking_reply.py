@@ -181,3 +181,19 @@ def test_async_store_keeps_loop_live_orders_snapshots_and_flushes_cancel(monkeyp
         assert json.loads((tmp_path / 'state.json').read_text(encoding='utf-8'))['settings']['fixture'] == 'second'
         assert (tmp_path / 'state.json').read_bytes() == (tmp_path / 'state.json.bak').read_bytes()
     asyncio.run(scenario())
+
+
+def test_key_failure_clears_once_a_usable_key_is_connected(monkeypatch):
+    from runtime.reply import jev_billing
+    rows = [{'channel': 'qq', 'delivery_status': 'FAILED', 'error_code': 'JEV_BILLING_ACCOUNT_UNAVAILABLE',
+             'life_received_at': '2026-09-29T21:11:07+08:00'}]
+    server = SimpleNamespace(store=SimpleNamespace(personal_chats=rows))
+    runtime = {'status': {'qq': 'CONNECTED'}}
+    monkeypatch.setenv('OLIVIA_JEV_BILLING_ENABLED', '1')
+    monkeypatch.setattr(jev_billing, '_account_key', lambda: None)
+    assert backend.reply_failures(server, runtime) == (
+        {'qq': 'JEV_BILLING_ACCOUNT_UNAVAILABLE'}, {'qq': '2026-09-29T21:11:07+08:00'})
+    monkeypatch.setattr(jev_billing, '_account_key', lambda: 'olivia-connected')
+    assert backend.reply_failures(server, runtime) == ({}, {})
+    rows[0]['error_code'] = 'JEV_BALANCE_INSUFFICIENT'
+    assert backend.reply_errors(server, runtime) == {'qq': 'JEV_BALANCE_INSUFFICIENT'}

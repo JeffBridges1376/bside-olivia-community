@@ -26,7 +26,7 @@ const node=(tag,value)=>({textContent:value});
 const stateLabel=value=>value;
 const renderError=(box,error)=>box.append({code:error.code});
 let status={selected_channels:['qq'],listeners:{qq:'CONNECTED'},qq:{state:'CONNECTED'},
- reply_errors:{qq:'PERSONAL_CHAT_GENERATION_FAILED'}};
+ reply_errors:{qq:'PERSONAL_CHAT_GENERATION_FAILED'},reply_error_at:{qq:'2026-09-29T21:11:07+08:00'}};
 const request=async()=>{calls++;return status;};
 const setTimeout=(fn,ms)=>{timer=fn;delay=ms;return 1;},clearTimeout=()=>{};
 '''
@@ -36,6 +36,7 @@ const setTimeout=(fn,ms)=>{timer=fn;delay=ms;return 1;},clearTimeout=()=>{};
  await refresh(true);
  assert.equal(calls,1); assert.equal(delay,10000);
  assert.equal(health.children[1].code,'PERSONAL_CHAT_GENERATION_FAILED');
+ assert.match(health.children[2].textContent,/那条消息的失败/);
  assert.equal(field.value,'unsaved-owner');assert.equal(field.selectionStart,3);
  status={...status,reply_errors:{}};
  await refresh(true);assert.equal(health.children.length,0);
