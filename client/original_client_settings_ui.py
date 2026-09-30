@@ -84,17 +84,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   let mem0RuntimeProgressStartedAt = null;
   const LETTER_COMPOSER_TITLE = "写下你的感受";
   const LETTER_SUBMIT_LABEL = "寄出信件";
-  const VIDEO_CAPABILITY_BUNDLES = ["ordinary_video", "music_video"];
-  const VIDEO_REPLY_DEPENDENCY_LABELS = new Map([
-    ["voice_reference", "受管林离音色"],
-    ["livetalking", "实时驱动（LiveTalking，可选）"],
-    ["latentsync", "口型视频（LatentSync）"],
-    ["minimax_music3", "音乐生成（MiniMax Music 3）"],
-    ["roformer", "人声分离（RoFormer）"],
-    ["official_video_assets", "Olivia 场景与转场素材"],
-    ["ffmpeg", "媒体工具（FFmpeg）"],
-    ["media_workspace", "媒体工作目录"],
-  ]);
   const parseApiBase = (value) => {
     let url;
     try {
@@ -2183,149 +2172,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     if (payload.reason_code) setDiagnosticDetails(result, payload.reason_code);
   };
 
-  const videoCapabilityViewState = (bundles) => {
-    const states = bundles.map((item) => typeof item.state === "string" ? item.state : "missing");
-    const state = states.every((value) => value === "ready")
-      ? "ready"
-      : states.some((value) => ["queued", "downloading", "verifying"].includes(value))
-      ? "downloading"
-      : states.some((value) => value === "failed")
-      ? "failed"
-      : states.some((value) => value === "paused")
-      ? "paused"
-      : states.some((value) => value === "license_review_required")
-      ? "license_review_required"
-      : states.some((value) => value === "prerequisites_required")
-      ? "prerequisites_required"
-      : "missing";
-    const downloadable = states.some((value) =>
-      !["ready", "queued", "downloading", "verifying", "license_review_required", "prerequisites_required"].includes(value)
-    );
-    const runtimeRequired = states.some((value) => value === "prerequisites_required")
-      && states.every((value) => ["ready", "prerequisites_required"].includes(value));
-    return { state, downloadable, runtimeRequired };
-  };
-
-  const renderMediaComponents = (panel, payload) => {
-    const group = payload.components;
-    panel.replaceChildren(text("h3", "安装声音与视频组件", "text-text-title text-title-m"),
-      text("p", "先按用途找到需要的包，再点击下方按钮选择 ZIP，无需解压。安装组件后，回信形式仍由你的档位设置和信件内容决定。", "text-text-secondary text-body-m font-regular"));
-    const list = document.createElement("div");
-    list.style.cssText="max-height:360px;overflow:auto;scrollbar-width:thin;scrollbar-color:#66686b transparent";
-    const guide = document.createElement("div");
-    guide.append(
-      text("p", "只收文字信：不用安装这里的组件。", "text-text-body text-body-m font-regular"),
-      text("p", "听说话：媒体工具 + 说话语音。听唱歌：媒体工具 + 唱歌；自动识别歌词另加歌词识别。", "text-text-body text-body-m font-regular"),
-      text("p", "AMD 用户：使用 Olivia-voice-amd 专用离线包，仍从下方选择 ZIP 导入。仅语音实验支持，需要 Windows 11 和兼容 ROCm 的显卡；尚未完成 AMD 实机验收。视频和唱歌组件仍需 NVIDIA。", "text-text-secondary text-body-m font-regular"),
-      text("p", "还要看视频：在相应声音组件上增加口型视频 + 视频场景；唱歌视频还需人声分离。", "text-text-body text-body-m font-regular")
-    );
-    const legacyProgress = payload.runtime_import || {};
-    const progress = ["queued", "extracting", "checking", "testing"].includes(legacyProgress.state) ? legacyProgress : group.progress || {};
-    const busy = ["queued", "extracting", "checking", "testing"].includes(progress.state);
-    const result = text("p", progress.state === "ready" ? "组件安装完成，请重启程序启用。" : progress.state === "failed" ? "组件安装未完成，原有组件已保留，请重试导入。" : "", "text-text-secondary text-body-m font-regular");
-    result.setAttribute("role", "status");
-    if (progress.state === "failed" && Array.isArray(progress.failed_components)) {
-      const failedNames = group.items.filter(x=>progress.failed_components.includes(x.id)).map(x=>x.label);
-      result.textContent = `未完成：${failedNames.join("、")}。其余组件已处理，原有组件保留；可以只重试失败的包。`;
-    }
-    if (progress.state === "failed") {
-      const failures = {
-        VIDEO_ARCHIVE_DISK_FULL: "解压写入时磁盘空间不足。请检查 Olivia 数据目录所在盘的可用空间；ZIP 解压后的体积可能远大于压缩包。",
-        VIDEO_ARCHIVE_ACCESS_DENIED: "解压时无法读写文件。请检查目录权限和安全软件的拦截记录。",
-        VIDEO_ARCHIVE_PATH_TOO_LONG: "解压后的文件路径过长。请使用较短的 Olivia 安装路径。",
-        VIDEO_ARCHIVE_IO_FAILED: "读取离线包或写入文件失败。请检查磁盘、外接设备和目录是否可访问。",
-        VIDEO_RUNTIME_ARCHIVE_CORRUPT: "ZIP 数据损坏或不完整，请重新下载失败的包。",
-        VIDEO_RUNTIME_ARCHIVE_INVALID: "离线包结构不符合要求，请保留诊断包核对版本。",
-        MEDIA_COMPONENT_CLEANUP_FAILED: "导入失败，且本次临时文件未能完全清理。请导出诊断包，不要反复重试。"
-      };
-      result.textContent += " " + (failures[progress.reason_code] || "请导出诊断包查看具体失败原因。");
-    }
-    if (busy) result.textContent = `正在${({queued:"等待安装",extracting:"解压",checking:"校验",testing:"检查运行环境"})[progress.state]}：${formatBytes(progress.checked_bytes || 0)} / ${formatBytes(progress.total_bytes || 0)}`;
-    const batch = button("选择离线包（可多选 ZIP）", async () => {
-      batch.disabled = true;
-      try {
-        const response=await requestCapability(VIDEO_CAPABILITY_ACTION_PATH,{action:"import_components",component_ids:group.items.map(x=>x.id)});
-        if(response.status==="CANCELLED") {result.textContent="未选择文件，组件没有变动。点击“选择离线包”可重新选择。";return;}
-        if(response.status==="REJECTED") {result.textContent="已有导入任务，请等待完成。";return;}
-        await renderVideoCapabilityPanel(panel);
-      } catch (_) {result.textContent="导入未能启动，请检查选择的组件 ZIP。";}
-      finally {batch.disabled=busy;}
-    }); batch.disabled=busy;
-    panel.append(guide,list,batch,text("p","在文件窗口中按住 Ctrl 可选择多个 ZIP，点击“打开”开始安装。文件名中的日期可以不同，程序按包内信息识别组件；已安装的无需重复选择。","text-text-secondary text-body-m font-regular"),result);
-    group.items.forEach(item=>{
-      const row=document.createElement("div");row.className="flex items-center justify-between py-3";row.style.cssText="gap:16px;flex-wrap:wrap;border-bottom:1px solid #343638";
-      const copy=document.createElement("div");copy.style.cssText="flex:1;min-width:180px";
-      copy.append(text("div",item.label,"text-text-body text-label-l"),text("div",item.description || "","text-text-secondary text-caption-m font-regular"));
-      const filename=text("div",`对应文件：Olivia-${item.id}-日期.zip`,"text-text-secondary text-caption-m font-regular");
-      filename.style.overflowWrap="anywhere";copy.append(filename);
-      row.append(copy,text("span",item.state==="installed"?"已安装，可复用":"未安装","text-text-body text-label-l"));list.append(row);
-    });
-    panel.append(text("p", "所有组件均通过离线 ZIP 导入，无需解压。歌词识别为可选；长期记忆仍在上方独立管理。", "text-text-secondary text-caption-m font-regular"));
-    if (busy) {
-      const update = async () => {
-        if (!panel.isConnected) return;
-        try {
-          const next = await requestJson(VIDEO_CAPABILITY_PATH);
-          const oldProgress = next.runtime_import || {};
-          const current = ["queued", "extracting", "checking", "testing"].includes(oldProgress.state) ? oldProgress : next.components.progress;
-          if (!["queued", "extracting", "checking", "testing"].includes(current.state)) { await renderVideoCapabilityPanel(panel); return; }
-          result.textContent = `正在${({queued:"等待安装",extracting:"解压",checking:"校验",testing:"检查运行环境"})[current.state]}：${formatBytes(current.checked_bytes || 0)} / ${formatBytes(current.total_bytes || 0)}`;
-        } catch (_) { result.textContent = "暂时无法读取进度，正在重新连接。"; }
-        panel.videoCapabilityProgressTimer = window.setTimeout(update, 1500);
-      };
-      panel.videoCapabilityProgressTimer = window.setTimeout(update, 1500);
-    }
-  };
-
-  const renderVideoCapabilityPanel = async (panel) => {
-    const renderGeneration = (Number(panel.videoCapabilityGeneration) || 0) + 1;
-    panel.videoCapabilityGeneration = renderGeneration;
-    if (panel.videoCapabilityProgressTimer) {
-      window.clearTimeout(panel.videoCapabilityProgressTimer);
-      panel.videoCapabilityProgressTimer = null;
-    }
-    if (!panel.childElementCount) {
-      panel.replaceChildren(
-        text("div", "正在检测本机视频运行环境……", "text-text-body text-label-l"),
-        text(
-          "div",
-          "第一次检测可能需要几分钟，设置页面仍可继续使用。",
-          "text-text-secondary text-body-m font-regular"
-        )
-      );
-    }
-    let payload = null;
-    try {
-      payload = await requestJson(VIDEO_CAPABILITY_PATH);
-    } catch (_error) {
-      payload = null;
-    }
-    if (panel.videoCapabilityGeneration !== renderGeneration) return;
-    if (payload && payload.components && Array.isArray(payload.components.items)) {
-      renderMediaComponents(panel, payload);
-      if (payload.components.progress?.state === "ready") void refreshVideoReplySetting();
-      return;
-    }
-    panel.replaceChildren(text("p", "组件管理服务暂不可用，请重试或更新程序。", "text-text-secondary text-body-m font-regular"),
-      button("重新检测", () => { void renderVideoCapabilityPanel(panel); }));
-  };
-
-  const renderCapabilityPanel = async (panel) => {
-    const heading = text("h3", "本地组件", "text-text-title text-title-m");
-    const summary = text(
-      "p",
-      "所有组件通过离线包安装。按需要分别导入，已安装组件可以复用。",
-      "text-text-secondary text-body-m font-regular"
-    );
-    const memory = card();
-    const video = card();
-    panel.replaceChildren(heading, summary, memory, video);
-    await Promise.allSettled([
-      renderMem0CapabilityPanel(memory),
-      renderVideoCapabilityPanel(video),
-    ]);
-  };
-
   const renderLocalUpdatePanel = (panel) => {
     const heading = text("h3", "本地补丁", "text-text-title text-title-m");
     const summary = text(
@@ -2415,10 +2261,13 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
     });
     const controls = actions();
-    controls.append(choose, rollback);
+    controls.append(choose);
     const manual = document.createElement("details");
-    manual.append(text("summary", "手动校验（自动校验不可用时）", "text-text-secondary text-body-m"),
-      digest.wrapper, install);
+    manual.className = "olivia-group-advanced";
+    const rollbackRow = actions();
+    rollbackRow.append(rollback);
+    manual.append(text("summary", "高级：手动校验补丁或回滚上一版本", "text-text-secondary text-body-m"),
+      digest.wrapper, install, rollbackRow);
     panel.replaceChildren(
       heading,
       summary,
@@ -2433,14 +2282,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     if (panels.memory) panels.memory.__oliviaCompanionStatusNode = statusNode;
     const tasks = [
       ...(panels.llm ? [renderLlmSetupPanel(panels.llm, initialMode)] : []),
-      initialMode ? renderMem0CapabilityPanel(panels.capability, true) : renderCapabilityPanel(panels.capability),
+      ...(initialMode ? [renderMem0CapabilityPanel(panels.capability, true)] : []),
     ];
     if (initialMode) {
       statusNode.textContent = "先导入记忆包，再连接回信服务，即可开始写信。已有配置会自动沿用；语音、图片和视频无需在这里安装。";
       await Promise.allSettled(tasks);
       return;
     }
-    tasks.push(Promise.resolve(renderLocalUpdatePanel(panels.update)));
+    if (panels.update) tasks.push(Promise.resolve(renderLocalUpdatePanel(panels.update)));
     statusNode.textContent = "正在连接本机陪伴服务……";
     try {
       const payload = await requestJson(STATUS_PATH);
@@ -2887,8 +2736,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     header.style.justifyContent = "space-between";
     header.style.gap = "24px";
 
-    const serviceMode = ["cloud", "gpu", "relay"].includes(initialPanel);
-    const heading = text("h2", serviceMode ? ({cloud:"云服务",gpu:"云端 GPU",relay:"回信服务"}[initialPanel]) : initialMode ? "欢迎使用 Olivia" : "本地陪伴", "text-text-title text-headline-m");
+    const serviceMode = initialPanel === "relay";
+    const heading = text("h2", serviceMode ? "账户" : initialMode ? "欢迎使用 Olivia" : "长期记忆", "text-text-title text-headline-m");
     heading.id = "olivia-companion-dialog-title";
     heading.style.margin = "0";
     const dismiss = () => {
@@ -2910,7 +2759,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     if (serviceMode) {
       const content = document.createElement("div");
       content.style.marginTop = "24px";
-      if (initialPanel === "relay") {
+      {
         dialog.setAttribute("data-olivia-relay-dialog", "");
         theme.textContent += `
           [data-olivia-companion-settings-dialog] [data-olivia-relay-dialog] p { margin:0; }
@@ -2939,42 +2788,31 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         dialog.style.flexDirection = "column";
         dialog.style.overflow = "hidden";
         header.style.flexShrink = "0";
-        content.style.cssText = "display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0;flex:1;margin-top:24px";
+        content.style.cssText = "display:grid;grid-template-rows:minmax(0,1fr);min-height:0;flex:1;margin-top:24px";
         const viewport = document.createElement("div");
         viewport.style.cssText = "min-height:0;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;padding-right:12px";
-        const connection = document.createElement("section");
-        connection.style.cssText = "display:grid;gap:14px;min-width:0";
+        // One account page: key, balance and the unified statement for replies and
+        // media. Connecting or replacing a key is folded underneath.
         const account = document.createElement("section");
-        const navigation = actions();
-        navigation.style.cssText = "display:flex;flex-wrap:wrap;gap:12px;margin-bottom:24px";
-        const show = name => {
-          viewport.scrollTop = 0;
-          connection.hidden = name !== "connection";
-          connection.style.display = connection.hidden ? "none" : "grid";
-          account.hidden = name !== "account";
-          account.style.display = account.hidden ? "none" : "grid";
-          connectionTab.setAttribute("aria-pressed", String(name === "connection"));
-          accountTab.setAttribute("aria-pressed", String(name === "account"));
-          connectionTab.style.background = name === "connection" ? "#374151" : "";
-          accountTab.style.background = name === "account" ? "#374151" : "";
-        };
-        const connectionTab = button("模型调用", () => show("connection"));
-        const accountTab = button("Olivia 账户", () => show("account"));
-        navigation.append(connectionTab, accountTab);
-        viewport.append(connection, account);
-        content.append(navigation, viewport);
-        void renderLlmSetupPanel(connection, false);
+        const connection = document.createElement("details");
+        connection.className = "olivia-account-connection";
+        connection.style.cssText = "margin-top:24px;padding-top:20px;border-top:1px solid #8884";
+        const connectionBody = document.createElement("section");
+        connectionBody.style.cssText = "display:grid;gap:14px;min-width:0;margin-top:16px";
+        const connectionTitle = text("summary", "已有 Key？在这里导入或更换");
+        connectionTitle.style.cssText = "cursor:pointer;color:#b9bcc4";
+        connection.append(connectionTitle, connectionBody);
+        viewport.append(account, connection);
+        content.append(viewport);
+        void renderLlmSetupPanel(connectionBody, false);
         mountRelayAccount(account);
-        show("connection");
-      } else {
-        (initialPanel === "gpu" ? mountGPUSettings : mountCloudService)(content);
       }
       dialog.append(header, content);
       backdrop.append(theme, dialog);
       const opener = document.activeElement;
-      close.addEventListener("click", () => opener?.focus());
+      close.addEventListener("click", () => { opener?.focus(); void refreshAccountEntry(); });
       backdrop.addEventListener("keydown", event => {
-        if (event.key === "Escape") { dismiss(); opener?.focus(); }
+        if (event.key === "Escape") { dismiss(); opener?.focus(); void refreshAccountEntry(); }
         if (event.key === "Tab") {
           const items = Array.from(dialog.querySelectorAll('button,input,select,textarea,a[href]')).filter(item => !item.disabled && !item.hidden && item.getClientRects().length);
           const first = items[0], last = items[items.length - 1];
@@ -3009,12 +2847,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           { id: "llm", label: "2 · 连接回信服务", key: "llm" },
         ]
       : [
-          { id: "llm", label: "大模型", key: "llm" },
-          { id: "capability", label: "本地组件", key: "capability" },
-          { id: "update", label: "补丁更新", key: "update" },
           { id: "memory", label: "长期记忆", key: "memory" },
         ];
 
+    // A single panel needs no tab row.
+    if (definitions.length === 1) tabs.hidden = true;
     const showPanel = (id) => {
       for (const tab of tabs.querySelectorAll('[role="tab"]')) {
         const active = tab.dataset.panelId === id;
@@ -3526,10 +3363,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       input.setAttribute("role", "switch");
       input.setAttribute("aria-label", label);
       input.checked = checked;
-      input.addEventListener("change", () => {
-        dirty = true;
-        status.textContent = "设置尚未保存，请点击保存后生效。";
-      });
+      input.addEventListener("change", () => { void persist(input); });
       const copy = document.createElement("span");
       copy.className = "olivia-proactive-copy";
       copy.append(text("span", label, "text-text-body text-body-m"),
@@ -3542,8 +3376,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const loginCheck = makeOption("登录后检查来信", proactiveState.login_check_enabled, "登录 Windows 后，在后台检查是否有适合寄出的主动来信。");
     const status = text("p", "正在读取主动写信设置…", "text-text-secondary text-caption-m");
     status.setAttribute("role", "status");
-    const save = button("保存", async () => {
-      setButtonsBusy([save], true);
+    // Each switch saves on change. A failed save puts that switch back.
+    const persist = async (changed) => {
+      const inputs = [enabled.input, allowVoice.input, loginCheck.input];
+      dirty = true;
+      inputs.forEach((input) => { input.disabled = true; });
       status.textContent = "正在保存主动写信设置…";
       try {
         await saveProactiveSettings({
@@ -3551,31 +3388,24 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           allow_voice: allowVoice.input.checked,
           login_check_enabled: loginCheck.input.checked,
         });
-        dirty = false;
         status.textContent = "主动写信设置已保存。";
       } catch (error) {
-        const failures = {PROACTIVE_LOGIN_UNAVAILABLE:"登录启动暂时不可用，可以先关闭登录检查后保存。",
-          PROACTIVE_STORAGE_UNAVAILABLE:"设置暂时无法保存，请检查磁盘空间后重试。"};
-        status.textContent = failures[error?.code] || "主动写信设置保存失败，请稍后重试。";
+        changed.checked = !changed.checked;
+        const failures = {PROACTIVE_LOGIN_UNAVAILABLE:"登录启动暂时不可用，已恢复原设置；可以先关闭登录检查。",
+          PROACTIVE_STORAGE_UNAVAILABLE:"设置没有保存，已恢复原设置。请检查磁盘空间后重试。"};
+        status.textContent = failures[error?.code] || "主动写信设置没有保存，已恢复原设置，请稍后重试。";
       } finally {
-        setButtonsBusy([save], false);
+        dirty = false;
+        inputs.forEach((input) => { input.disabled = false; });
+        reportGroupStatus(container, "proactive", enabled.input.checked ? "主动写信已开" : "主动写信已关");
       }
-    });
-    const refresh = button("重新读取", async () => {
-      setButtonsBusy([save, refresh], true);
-      dirty = false;
-      try {
-        await refreshProactiveStatus();
-        status.textContent = "主动写信设置已更新。";
-      } finally {
-        setButtonsBusy([save, refresh], false);
-      }
-    });
+    };
     const render = (payload) => {
       if (dirty) return;
       enabled.input.checked = payload.enabled === true;
       allowVoice.input.checked = payload.allow_voice !== false;
       loginCheck.input.checked = payload.login_check_enabled === true;
+      reportGroupStatus(container, "proactive", enabled.input.checked ? "主动写信已开" : "主动写信已关");
       if (payload.busy) {
         status.textContent = "林离正在写信。普通寄信暂时锁定。";
       } else if (payload.reason && payload.reason !== "PROACTIVE_STATUS_UNAVAILABLE") {
@@ -3585,10 +3415,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
     };
     proactiveStateListeners.add(render);
-    const controls = actions();
-    controls.append(save, refresh);
-    container.append(optionStyle, heading, description, enabled.row, allowVoice.row, loginCheck.row,
-      controls, status);
+    container.append(optionStyle, heading, description, enabled.row, allowVoice.row, loginCheck.row, status);
     section.append(container);
     status.textContent = proactiveState.busy ? "林离正在写信。普通寄信暂时锁定。" : "主动写信设置尚未读取。";
   };
@@ -3600,16 +3427,15 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     container.append(text("div", "回信能力", "text-text-body text-title-m"),
       text("p", "林离会在允许的范围内决定怎样回信，也会听取你的明确要求。开启声音或视频，不代表每封信都会使用。", "text-text-secondary text-body-m font-regular"));
     const choices = document.createElement("div"); choices.setAttribute("role", "radiogroup"); choices.setAttribute("aria-label", "回信能力档位");
-    choices.style.cssText = "display:flex;gap:8px;flex-wrap:wrap";
     const labels = {text:"纯文字",audio:"文字＋声音",video:"文字＋声音＋视频"};
     const descriptions = {text:"通过文字回信。",audio:"可回复文字，也可用说话、唱歌或两者组合的音频。",video:"文字、声音和视频都可使用，由本次内容决定。"};
     let selected = null, busy = false, imageEnabled = false, imageResolution = '1K';
     const imageControls = document.createElement('div'); imageControls.style.cssText='display:flex;gap:8px;align-items:center;flex-wrap:wrap';
-    const imageToggle = button('图片',()=>{imageEnabled=!imageEnabled;render();});
+    const imageToggle = button('图片',()=>{if(busy)return;imageEnabled=!imageEnabled;void persist();});
     imageToggle.setAttribute('aria-label','允许林离回复图片');
     const imageSizes = document.createElement('select'); imageSizes.setAttribute('aria-label','图片分辨率');
     for(const value of ['1K','2K','4K']){const option=document.createElement('option');option.value=value;option.textContent=value;imageSizes.append(option);}
-    imageSizes.addEventListener('change',()=>{imageResolution=imageSizes.value;});
+    imageSizes.addEventListener('change',()=>{imageResolution=imageSizes.value;void persist();});
     imageControls.append(imageToggle,imageSizes);
     const imageHelp=text('p','图片仅云端生成，可随文字或语音回信，也适用于 QQ，每次最多 1 张。1K／2K／4K 基准价为 ¥0.50／¥0.80／¥1.10，每单随机浮动 ±10%（¥0.45–0.55／¥0.72–0.88／¥0.99–1.21）。提交时锁定并预留本单价格，重试不变价，失败释放预留。不进行图片质检；用于记忆的图片识别仍按中转用量计费。实际像素随构图变化。','text-text-secondary text-caption-m');
     const nodes = {};
@@ -3617,38 +3443,35 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const status = text("p", "正在读取设置…", "text-text-secondary text-caption-m font-regular"); status.setAttribute("role", "status");
     const render = () => {
       imageToggle.disabled=busy || selected===null;imageToggle.setAttribute('aria-pressed',String(imageEnabled));
-      imageToggle.style.background=imageEnabled?'#ded7cb':'transparent';imageToggle.style.color=imageEnabled?'#18191b':'';
       imageSizes.hidden=!imageEnabled;imageSizes.disabled=busy;imageSizes.value=imageResolution;imageHelp.hidden=!imageEnabled;
       Object.entries(nodes).forEach(([key,node])=>{
         node.disabled=busy || selected===null; node.setAttribute("aria-checked",String(selected===key));
-        node.style.background=selected===key ? "#ded7cb" : "transparent";
-        node.style.color=selected===key ? "#18191b" : "";
       });
-      detail.textContent=descriptions[selected] || ""; save.disabled=busy || selected===null;
+      detail.textContent=descriptions[selected] || "";
+      reportGroupStatus(container, "reply-tier", labels[selected] ? labels[selected] + (imageEnabled ? " · 允许图片" : "") : "");
     };
     Object.entries(labels).forEach(([key,label])=>{
-      const choice=button(label,()=>{selected=key;status.textContent="点击保存应用此档位。";render();});
-      choice.setAttribute("role","radio"); choice.style.flex="1 1 160px"; nodes[key]=choice; choices.append(choice);
+      const choice=button(label,()=>{if(busy||selected===key)return;selected=key;void persist();});
+      choice.setAttribute("role","radio"); nodes[key]=choice; choices.append(choice);
     });
-    const save=button("保存",async()=>{
+    // Every choice saves immediately; a failed save restores what is stored.
+    const persist=async()=>{
       busy=true;render();
       try { await routeRequest("/toy/settings/reply-routes",{request_id:videoReplyRequestId(),tier:selected,image:{enabled:imageEnabled,resolution:imageResolution}});
-        status.textContent="已保存。已接收的信件继续按原设置处理。"; }
-      catch (_) { status.textContent="保存失败，请重试。"; }
-      finally {busy=false;render();}
-    });
+        status.textContent="已保存。已接收的信件继续按原设置处理。";busy=false;render(); }
+      catch (_) { busy=false;await hydrate();status.textContent="没有保存成功，已恢复为原来的设置，请重试。"; }
+    };
     const hydrate=async()=>{
       try {
         const result=await routeRequest("/toy/settings/reply-routes");
         selected=result.tier || (Object.values(result.routes||{}).some(Boolean) ? "video" : "text");
         imageEnabled=result.image?.enabled===true;imageResolution=result.image?.resolution||'1K';
         if(!labels[selected]) throw Error("invalid tier");
-        status.textContent=result.tier_configured===false ? "当前沿用旧设置，保存后统一按所选档位生效。" : "";
-      } catch (_) { selected=null;status.textContent="设置读取失败，请重新读取。"; }
+        status.textContent=result.tier_configured===false ? "当前沿用旧设置，点选一个档位即统一生效。" : "";
+      } catch (_) { selected=null;status.textContent="设置读取失败，请稍后重新打开设置页。"; }
       render();
     };
-    const controls=actions();controls.append(save,button("离线组件",()=>openDialog(false,"capability")),button("重新读取",()=>{if(!busy)void hydrate();}));
-    container.append(choices,detail,imageControls,imageHelp,controls,status);section.append(container);
+    container.append(choices,detail,imageControls,imageHelp,status);section.append(container);
     refreshVideoReplySetting=()=>container.isConnected ? hydrate() : Promise.resolve(); void hydrate();
   };
 
@@ -3706,153 +3529,13 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     return {read:()=>{if(busy||!defaults)throw Error('音乐参数尚未读取，请稍候或重新打开写信窗口。');if(!form.reportValidity())throw Error('请检查音乐参数。');const options={};for(const [name,input] of Object.entries(fields))options[name]=input.type==='checkbox'?input.checked:input.type==='number'?(input.value.trim()===""?null:Number(input.value)):input.value;return options;}};
   };
 
-  const mountGPUSettings = (section) => {
-    const box = document.createElement("div"); box.className = "flex flex-col gap-4 text-text-body text-body-m";
-    box.setAttribute("data-olivia-gpu-settings", "true");
-    box.append(text("div", "媒体生成服务", "text-text-body text-title-m"),
-      text("p", "语音、图片和视频统一由 Olivia 云端生成，使用你的 Olivia 账户 Key，无需另外配置。", "text-text-secondary text-body-m"));
-    const state = text("p", "正在读取…", "text-text-secondary text-body-m"); state.setAttribute("role","status");
-    let busy=false, hasKey=false;
-    const billing = document.createElement("div");
-    billing.setAttribute("data-olivia-gpu-billing", "true");
-    billing.setAttribute("aria-live", "polite");
-    billing.style.cssText="display:flex;flex-direction:column;gap:24px;line-height:1.6";
-    const hint = value => text("p", value, "text-text-secondary text-body-m");
-    const refreshBilling = async () => {
-      if (busy) return;
-      if (!hasKey) { billing.replaceChildren(hint("获取 Olivia Key 后可查看余额与消费记录。")); return; }
-      busy=true; billingRefresh.disabled=true;
-      billing.replaceChildren(text("p", "正在读取账单…"));
-      try {
-        const account = await requestSetup("/toy/generation/action", {action:"billing_statement"});
-        drawUnifiedStatement(billing,account);
-      } catch (_error) { billing.replaceChildren(hint("余额暂时无法读取，请稍后刷新。")); }
-      finally { busy=false; billingRefresh.disabled=false; }
-    };
-    const billingSection=document.createElement("section");billingSection.style.cssText="margin-top:16px;padding-top:24px;border-top:1px solid #8884";
-    const billingHeader=document.createElement("div");billingHeader.style.cssText="display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:24px";
-    const billingTitle=text("h3","账户余额");billingTitle.style.cssText="font-size:18px;font-weight:600;margin:0";
-    const billingRefresh=button("刷新账单",refreshBilling);
-    billingHeader.append(billingTitle,billingRefresh);billingSection.append(billingHeader,billing);
-    const load = async () => {
-      try {
-        if (!setupSessionToken) await requestSetup(SETUP_STATUS_PATH);
-        const data = await requestSetup("/toy/generation/action", {action:"settings_status"});
-        hasKey = data.has_key;
-        state.textContent = hasKey ? "已使用 Olivia 账户 Key 启用云端生成。" : "请先到回信服务的 Olivia 账户页获取或导入 Key。";
-      } catch (_error) {
-        state.textContent = "本机配置服务连接失败，请完全退出客户端后重启。";
-      }
-      await refreshBilling();
-    };
-    box.append(state, billingSection); section.append(box); void load();
-  };
-
-  const mountCloudService = (section) => {
-    const box = document.createElement("div");
-    box.className = "flex flex-col gap-4 text-text-body text-body-m";
-    box.setAttribute("data-olivia-cloud-service", "true");
-    const state = text("p", "读取云服务设置…", "text-text-secondary text-body-m");
-    state.setAttribute("role", "status");
-    const field = (label, type, placeholder) => {
-      const row = document.createElement("label"); row.className = "flex flex-col gap-2";
-      const input = document.createElement("input"); input.type = type; input.placeholder = placeholder;
-      input.className = "rounded-3 px-4 py-3";
-      input.style.cssText = "background:transparent;color:inherit;border:1px solid #8886;width:100%;box-sizing:border-box";
-      row.append(text("span", label), input); box.append(row); return input;
-    };
-    box.append(text("div", "云服务（可选）", "text-text-body text-title-m"),
-      text("p", "登录后每 15 分钟发送客户端版本和操作系统，用于连接状态与支持。信件、记忆及世界状态保留本地。", "text-text-secondary text-body-m"));
-    const url = field("服务地址", "url", "填写 HTTPS 服务地址"); url.autocomplete = "url";
-    const username = field("云服务账号", "text", "由服务管理员提供"); username.autocomplete = "username";
-    const password = field("密码", "password", "密码不保存在本地"); password.autocomplete = "current-password";
-    const consentLabel = document.createElement("label");
-    const consent = document.createElement("input"); consent.type = "checkbox";
-    consentLabel.append(consent, text("span", " 同意连接服务并发送上述版本信息")); box.append(consentLabel);
-    const reports = document.createElement("div"), releases = document.createElement("div");
-    let busy = false;
-    const controls = actions();
-    const request = async (body) => {
-      if (!setupSessionToken) await requestSetup(SETUP_STATUS_PATH);
-      return requestSetup("/toy/cloud/action", body);
-    };
-    const render = (data) => {
-      if (document.activeElement !== url) url.value = data.url || "";
-      if (document.activeElement !== username) username.value = data.username || "";
-      state.textContent = data.signed_in
-        ? `已登录 ${data.username}。${data.last_sync ? "最近连接：" + new Date(data.last_sync * 1000).toLocaleString() : "等待首次同步"}。待发送报告 ${data.pending_reports} 份。`
-        : "未登录云服务，本地功能可正常使用。";
-      if (data.error_code) state.textContent += ` ${data.error_code}`;
-      reports.replaceChildren(); releases.replaceChildren();
-      if (data.signed_in) {
-        reports.append(text("div", "待上报预览", "text-text-body text-label-l"));
-        const codes = data.report_preview || [];
-        reports.append(text("p", codes.length ? codes.map(r => `${r.error_code} · ${r.app_version} · ${r.os_family}`).join("\n") : "本次运行暂无可上报的错误代码。"));
-        const agree = document.createElement("input"); agree.type = "checkbox";
-        const label = document.createElement("label"); label.append(agree, text("span", " 同意上传以上错误代码、版本、操作系统及随机报告编号，不上传原始日志"));
-        const send = button("发送以上报告", () => perform({action:"report", consent:agree.checked, codes:codes.map(r=>r.error_code)}));
-        send.disabled = true; agree.addEventListener("change", () => {send.disabled = !agree.checked || !codes.length;});
-        reports.append(label, send);
-        for (const receipt of data.receipts || []) reports.append(text("p", `${receipt.error_code}：报告编号 ${receipt.id}`));
-      }
-      releases.append(text("div", "版本与公告", "text-text-body text-label-l"));
-      for (const item of data.publications || []) {
-        const card = document.createElement("div"); card.style.cssText = "padding:12px 0;border-bottom:1px solid #8884";
-        card.append(text("strong", item.title), text("p", item.body));
-        if (item.kind === "release") {
-          card.append(text("p", `版本 ${item.version} · 最低版本 ${item.minimum_version || "未指定"}`));
-          try {
-            const target = new URL(item.download_url);
-            if (target.protocol === "https:" && !target.username && !target.password) {
-              const link = document.createElement("a"); link.href = target.href; link.target = "_blank"; link.rel = "noopener noreferrer"; link.textContent = "下载补丁";
-              card.append(link, text("p", `SHA-256：${item.sha256}`), button("导入已下载的补丁", () => openDialog(false, "update")));
-            }
-          } catch (_) {}
-        }
-        releases.append(card);
-      }
-      if (!(data.publications || []).length) releases.append(text("p", data.signed_in ? "尚无已获取的版本或公告。" : "登录后查看。"));
-    };
-    const perform = async body => {
-      if (busy) return; busy = true; setButtonsBusy(Array.from(controls.querySelectorAll("button")), true);
-      state.textContent = "正在处理…";
-      try { render(await request(body)); }
-      catch (error) {state.textContent = `云服务暂不可用：${error.code || "CLOUD_UNAVAILABLE"}。本地功能不受影响。`;}
-      finally {password.value = ""; busy = false; setButtonsBusy(Array.from(controls.querySelectorAll("button")), false);}
-    };
-    const confirmDelete=document.createElement("input"); confirmDelete.type="checkbox";
-    const confirmLabel=document.createElement("label");
-    confirmLabel.append(confirmDelete,text("span", " 确认删除云端诊断或注销账号（注销需重新输入密码）"));
-    box.append(confirmLabel);
-    controls.append(button("登录", () => perform({action:"login", url:url.value.trim(), username:username.value.trim(), password:password.value, consent:consent.checked})),
-      button("退出云服务", () => perform({action:"logout"})), button("刷新状态", () => perform({action:"status"})),
-      button("删除云端诊断", () => {
-        if (confirmDelete.checked) {
-          confirmDelete.checked=false;
-          void perform({action:"delete_reports", confirm:true});
-        } else state.textContent="请先勾选删除确认。本地诊断不会删除。";
-      }),
-      button("注销云账号", () => {
-        if (confirmDelete.checked) {
-          confirmDelete.checked=false;
-          void perform({action:"delete_account", confirm:true, password:password.value});
-        } else state.textContent="请先勾选注销确认并重新输入密码。本地信件和记忆不会删除。";
-      }));
-    box.append(text("p", "退出仅停止后续同步，不删除服务器数据。诊断删除或注销后，备份副本按备份周期到期清除。", "text-text-secondary text-body-m"));
-    box.append(controls, state, reports, releases); section.append(box);
-    void perform({action:"status"});
-  };
-
   const mountDiagnosticExport = (section) => {
     const row = document.createElement("div");
     row.className = "flex items-center justify-between px-0 py-3 rounded-3";
     const copy = document.createElement("div");
     copy.className = "flex flex-col gap-0 flex-1 min-w-0";
     const state = text("div", "导出本机脱敏诊断包，文件仅保存到本地。", "text-text-secondary text-caption-m font-regular");
-    copy.append(
-      text("div", "诊断与反馈", "text-text-body text-label-l"),
-      state
-    );
+    copy.append(state);
     const exportButton = button("导出诊断包", async () => {
       setDiagnosticDetails(state, []);
       setButtonsBusy([exportButton], true);
@@ -3923,8 +3606,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           : result.status === "APPLIED" ? `历史关系已评估：${count}。重复信件不重复评估。`
           : "历史关系评估暂不可用。";
         setDiagnosticDetails(state, result.status === "FAILED" ? result.error_code : null);
+        // The evaluation runs by itself; the button is only for a paused or waiting run.
+        retry.hidden = !["FAILED", "PENDING"].includes(result.status);
+        reportGroupStatus(state, "relationship", result.status === "RUNNING" ? `正在评估历史关系 ${count}` : "");
+        reportGroupStatus(state, "relationship:problem", result.status === "FAILED" ? "历史关系评估暂停，需要重试" : "");
         if (result.status === "RUNNING" && state.isConnected) window.setTimeout(refresh, 2000);
-      } catch (_) { state.textContent = "暂时无法读取历史关系进度，可点击重试。"; }
+      } catch (_) { state.textContent = "暂时无法读取历史关系进度，可点击重试。"; retry.hidden = false; }
     };
     const retry = button("评估历史关系 / 重试", async () => {
       retry.disabled = true;
@@ -3934,6 +3621,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       } catch (_) { state.textContent = "暂时无法启动历史关系评估，请重试。"; }
       finally { retry.disabled = false; }
     });
+    retry.hidden = true;
     section.append(text("div", "历史关系", "text-text-body text-title-m"),
       text("p", "原文保存后会按顺序每五封往返信件评估关系，调用已配置的大模型并消耗额度。失败后暂停，重试会接着未完成的批次。"), state, retry);
     void refresh();
@@ -4101,29 +3789,103 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const section = document.createElement("div");
     section.setAttribute(ROOT_ATTR, "");
     section.className = "tp-settings-item";
+    section.append(groupStyle(), text("div", "Olivia", "text-text-body text-title-m"));
 
-    const title = text("div", "本地陪伴", "text-text-body text-title-m");
-    const row = document.createElement("div");
-    row.className = "flex items-center justify-between px-0 py-3 rounded-3";
+    const reply = settingsGroup("reply", "林离怎么回复", "回信方式、图片和主动写信");
+    mountVideoReplySetting(reply);
+    if (window.__oliviaNativeView) mountProactiveSetting(reply);
+    const chat = settingsGroup("chat", "QQ / 微信", "绑定后可以在 QQ 或微信里和林离聊天");
+    const letters = settingsGroup("letters", "信件与记忆", "导入、导出信件，查看长期记忆");
+    const memoryRow = document.createElement("div");
+    memoryRow.className = "olivia-group-row";
+    memoryRow.append(text("span", "长期记忆：查看、搜索和更正林离记住的事", "text-text-body text-body-m"),
+      button("打开", () => openDialog(false, "memory")));
+    letters.append(memoryRow);
+    mountLocalLetterImport(letters);
+    const help = settingsGroup("help", "更新与帮助", "补丁更新和诊断包");
+    const update = document.createElement("div");
+    update.className = "flex flex-col gap-3";
+    renderLocalUpdatePanel(update);
+    help.append(update);
+    mountDiagnosticExport(help);
+    requestJson("/toy/updates/local/status").then((value) => {
+      reportGroupStatus(help, "version", typeof value.version === "string" ? `当前 ${value.version}` : "基础安装版");
+    }).catch(() => {});
 
-    const copy = document.createElement("div");
-    copy.className = "flex flex-col gap-0 flex-1 min-w-0";
-    copy.append(
-      text("div", "记忆与林离世界", "text-text-body text-label-l"),
-      text(
-        "div",
-        "在 Olivia 客户端内查看并管理本地连续性。",
-        "text-text-secondary text-body-m font-regular"
-      )
-    );
-
-    row.append(copy, button("打开", () => openDialog(false)));
-    section.append(title, row);
-    if (window.__oliviaNativeView) mountProactiveSetting(section);
-    mountDiagnosticExport(section);
-    mountVideoReplySetting(section);
-    mountLocalLetterImport(section);
+    section.append(...[reply, chat, letters, help].map((body) => body.oliviaGroup));
     container.append(section);
+  };
+
+  // One collapsible block per topic. The summary line shows what the contents
+  // report through "olivia-group-status" events, so blocks stay independent.
+  const settingsGroup = (id, title, fallback) => {
+    const group = document.createElement("details");
+    group.name = "olivia-settings-group";
+    group.className = "olivia-group";
+    group.setAttribute("data-olivia-group", id);
+    const summary = document.createElement("summary");
+    const copy = document.createElement("span");
+    copy.className = "olivia-group-copy";
+    const line = text("span", fallback, "text-text-secondary text-body-m font-regular");
+    line.setAttribute("data-olivia-group-status", "");
+    copy.append(text("span", title, "text-text-body text-label-l"), line);
+    summary.append(copy, text("span", "›", "olivia-group-chevron"));
+    const body = document.createElement("div");
+    body.className = "olivia-group-body";
+    body.setAttribute("data-olivia-group-body", id);
+    const parts = new Map();
+    group.addEventListener("olivia-group-status", (event) => {
+      const {part, value} = event.detail || {};
+      if (!part) return;
+      if (value) parts.set(part, value); else parts.delete(part);
+      line.textContent = parts.size ? Array.from(parts.values()).join(" · ") : fallback;
+      line.setAttribute("data-state", Array.from(parts.keys()).some((key) => key.endsWith(":problem")) ? "problem" : "");
+    });
+    group.append(summary, body);
+    body.oliviaGroup = group;
+    return body;
+  };
+
+  const groupStyle = () => {
+    const style = document.createElement("style");
+    style.textContent = `
+      [${ROOT_ATTR}] .olivia-group{border-top:1px solid #343536}
+      [${ROOT_ATTR}] .olivia-group > summary{list-style:none;display:flex;align-items:center;gap:16px;padding:16px 0;cursor:pointer}
+      [${ROOT_ATTR}] .olivia-group > summary::-webkit-details-marker{display:none}
+      [${ROOT_ATTR}] .olivia-group-copy{display:flex;flex-direction:column;gap:4px;flex:1;min-width:0}
+      [${ROOT_ATTR}] .olivia-group-chevron{font-size:20px;color:#8b8d92;transition:transform 160ms ease-out}
+      [${ROOT_ATTR}] .olivia-group[open] .olivia-group-chevron{transform:rotate(90deg)}
+      [${ROOT_ATTR}] .olivia-group > summary:focus-visible{outline:2px solid #eee9dd;outline-offset:4px;border-radius:8px}
+      [${ROOT_ATTR}] [data-olivia-group-status][data-state="problem"]{color:#f0a19a}
+      [${ROOT_ATTR}] .olivia-group-body{display:flex;flex-direction:column;gap:24px;padding:4px 0 24px}
+      [${ROOT_ATTR}] .olivia-group-row{display:flex;align-items:center;justify-content:space-between;gap:16px}
+      [${ROOT_ATTR}] .olivia-group-advanced > summary{cursor:pointer;color:#acb0b4;font-size:13px}
+      [${ROOT_ATTR}] .olivia-group-advanced[open] > summary{margin-bottom:12px}
+      [${ROOT_ATTR}] .olivia-group-body button{appearance:none;display:inline-flex;align-items:center;justify-content:center;gap:6px;
+        width:auto;align-self:flex-start;min-height:36px;padding:0 18px;border:1px solid #4a4c51;border-radius:999px;background:#232427;color:#ece9e2;
+        font:inherit;font-size:14px;line-height:20px;cursor:pointer;transition:background-color 120ms ease-out,border-color 120ms ease-out}
+      [${ROOT_ATTR}] .olivia-group-body button:hover:not(:disabled){background:#2e2f33;border-color:#6b6d72}
+      [${ROOT_ATTR}] .olivia-group-body button:focus-visible{outline:2px solid #eee9dd;outline-offset:2px}
+      [${ROOT_ATTR}] .olivia-group-body button:disabled{opacity:.45;cursor:default}
+      [${ROOT_ATTR}] .olivia-group-body [role="radiogroup"]{display:flex;gap:0 !important;padding:3px;border:1px solid #4a4c51;border-radius:12px;background:#1d1e21}
+      [${ROOT_ATTR}] .olivia-group-body [role="radiogroup"] button{flex:1 1 0 !important;border:0;border-radius:9px;background:transparent;color:#c9c7c1}
+      [${ROOT_ATTR}] .olivia-group-body [role="radiogroup"] button[aria-checked="true"]{background:#ded7cb !important;color:#18191b !important}
+      [${ROOT_ATTR}] .olivia-group-body button[aria-pressed="true"]{background:#ded7cb !important;border-color:#ded7cb;color:#18191b !important}
+      [${ROOT_ATTR}] .olivia-group-body select{appearance:none;min-height:36px;padding:0 32px 0 14px;border:1px solid #4a4c51;border-radius:999px;
+        background:#232427 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23acb0b4' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 12px center;
+        color:#ece9e2;font:inherit;font-size:14px;cursor:pointer}
+      [${ROOT_ATTR}] .olivia-group-body details > summary{list-style:none;cursor:pointer;color:#acb0b4;font-size:13px}
+      [${ROOT_ATTR}] .olivia-group-body details > summary::-webkit-details-marker{display:none}
+      [${ROOT_ATTR}] .olivia-group-body details > summary::before{content:"›";display:inline-block;width:14px;transition:transform 160ms ease-out}
+      [${ROOT_ATTR}] .olivia-group-body details[open] > summary::before{transform:rotate(90deg)}
+      @media(prefers-reduced-motion:reduce){[${ROOT_ATTR}] .olivia-group-chevron,[${ROOT_ATTR}] .olivia-group-body button{transition:none}}
+    `;
+    return style;
+  };
+
+  const reportGroupStatus = (node, part, value) => {
+    if (typeof CustomEvent !== "function" || typeof node?.dispatchEvent !== "function") return;
+    node.dispatchEvent(new CustomEvent("olivia-group-status", {bubbles: true, detail: {part, value}}));
   };
 
   let setupCheckPending = false;
@@ -4151,6 +3913,23 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     }
   };
 
+  // Balance on the title-bar account button, once a key is connected. It is
+  // refreshed when the account dialog closes.
+  const refreshAccountEntry = async () => {
+    const entry = document.querySelector('[data-olivia-account-entry]');
+    if (!entry) return;
+    try {
+      if (!setupSessionToken) await requestSetup(SETUP_STATUS_PATH);
+      const data = await requestSetup("/toy/generation/action", {action: "settings_status"});
+      if (!data.has_key) { entry.textContent = '账户'; return; }
+      const account = await requestSetup("/toy/generation/action", {action: "billing_statement"});
+      const value = Number(account.remaining_yuan);
+      entry.textContent = Number.isFinite(value) ? `账户 ¥${value.toFixed(2)}` : '账户';
+    } catch (_error) {
+      entry.textContent = '账户';
+    }
+  };
+
   let scheduled = false;
   const mountServiceButtons = () => {
     if (document.querySelector('[data-olivia-service-buttons]')) return;
@@ -4159,20 +3938,34 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     if (!badge) return;
     const group = document.createElement('div');
     group.setAttribute('data-olivia-service-buttons', '');
-    group.setAttribute('aria-label', '云端服务设置');
+    group.setAttribute('aria-label', '账户与云服务');
     group.style.cssText = 'display:inline-flex;align-items:center;gap:8px;margin-right:8px;flex-shrink:0;-webkit-app-region:no-drag';
-    for (const [label, panel] of [['云服务','cloud'], ['云端 GPU','gpu'], ['回信服务','relay']]) {
-      const entry = button(label, () => openDialog(false, panel));
-      entry.style.cssText = 'font:inherit;font-size:14px;line-height:20px;padding:5px 12px;white-space:nowrap;border:1px solid #686a70;border-radius:8px;background:#242426;color:#f9fafb;cursor:pointer;-webkit-app-region:no-drag';
-      entry.setAttribute('aria-haspopup', 'dialog');
-      group.append(entry);
-    }
+    // Cloud sync is not connected yet; the icon only marks where it will live.
+    const cloud = document.createElement('span');
+    cloud.setAttribute('data-olivia-cloud-soon', '');
+    cloud.setAttribute('role', 'img');
+    cloud.setAttribute('aria-label', '云同步即将推出');
+    cloud.title = '云同步即将推出';
+    cloud.style.cssText = 'display:inline-flex;align-items:center;color:#8b8d92;-webkit-app-region:no-drag';
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    for (const [name, value] of Object.entries({width: '20', height: '20', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+      'stroke-width': '1.6', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true'})) svg.setAttribute(name, value);
+    const outline = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    outline.setAttribute('d', 'M7 18a4.5 4.5 0 0 1-.6-8.96A6 6 0 0 1 18 9.5a4 4 0 0 1-.5 7.97z');
+    svg.append(outline);
+    cloud.append(svg);
+    const entry = button('账户', () => openDialog(false, 'relay'));
+    entry.setAttribute('data-olivia-account-entry', '');
+    entry.style.cssText = 'font:inherit;font-size:14px;line-height:20px;padding:5px 12px;white-space:nowrap;border:1px solid #686a70;border-radius:8px;background:#242426;color:#f9fafb;cursor:pointer;-webkit-app-region:no-drag';
+    entry.setAttribute('aria-haspopup', 'dialog');
+    group.append(cloud, entry);
     badge.parentElement.style.display = 'flex';
     badge.parentElement.style.flexDirection = 'row';
     badge.parentElement.style.alignItems = 'center';
     badge.parentElement.style.flexWrap = 'nowrap';
     badge.style.flexShrink = '0';
     badge.before(group);
+    void refreshAccountEntry();
   };
   const constrainLetterInputs = () => {
     const matches = new Set(

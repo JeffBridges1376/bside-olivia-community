@@ -136,20 +136,20 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
 
   const mount = () => {
     if (document.querySelector("[data-olivia-personal-chat-setup]")) return true;
-    const anchor = document.querySelector("[data-olivia-proactive-settings]");
-    if (!anchor || !anchor.parentNode) return false;
+    // Lives in the "QQ / 微信" settings group, whose title line shows its state.
+    const anchor = document.querySelector('[data-olivia-group-body="chat"]');
+    if (!anchor) return false;
     ensureStyle();
 
     const root = document.createElement("section");
     root.dataset.oliviaPersonalChatSetup = "true";
-    const title = node("div", "QQ / 微信聊天", "olivia-chat-title");
     const copy = node("div", "在这里选择并绑定聊天方式。微信直接扫码；QQ 可以由 Olivia 一键准备本地 QQ 组件，不需要手填 OneBot 参数。", "olivia-chat-copy");
     const content = document.createElement("div");
     let qqOwnerDraft = "";
     let qqSaving = false;
     let renderedStatus = null;
-    root.append(title, copy, content);
-    anchor.after(root);
+    root.append(copy, content);
+    anchor.append(root);
 
     const renderError = (parent, error) => {
       let target = parent.querySelector(".olivia-chat-error");
@@ -431,7 +431,23 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
         pollTimer = setTimeout(() => refresh(true), wechatBusy || napcatBusy || transportBusy ? 2000 : 10000);
     };
 
+    const reportGroup = (status) => {
+      if (typeof CustomEvent !== "function" || typeof root.dispatchEvent !== "function") return;
+      const names = {qq: "QQ", wechat: "微信"};
+      const selected = Array.isArray(status.selected_channels) ? status.selected_channels : [];
+      const live = (name) => ["CONNECTED", "LISTENING"].includes(status.listeners?.[name]);
+      for (const name of ["qq", "wechat"]) {
+        const problem = selected.includes(name) && status.reply_errors?.[name];
+        const value = !selected.includes(name) ? "" : problem ? `${names[name]} 需要处理`
+          : live(name) ? `${names[name]} 正常` : `${names[name]} 未连接`;
+        root.dispatchEvent(new CustomEvent("olivia-group-status", {bubbles: true, detail: {part: name, value: problem ? "" : value}}));
+        root.dispatchEvent(new CustomEvent("olivia-group-status", {bubbles: true, detail: {part: name + ":problem", value: problem ? value : ""}}));
+      }
+      root.dispatchEvent(new CustomEvent("olivia-group-status", {bubbles: true, detail: {part: "none", value: selected.length ? "" : "还没有绑定"}}));
+    };
+
     const updateReplyHealth = (status) => {
+      reportGroup(status);
       const state = content.querySelector("[data-qq-live-state]");
       if (state) state.textContent = stateLabel(["FAILED", "READY_RESTART"].includes(status.qq?.state)
         ? status.qq.state : status.listeners?.qq || status.qq?.state);

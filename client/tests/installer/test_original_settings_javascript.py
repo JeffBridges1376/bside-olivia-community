@@ -281,8 +281,6 @@ def test_original_settings_reuses_llm_setup_after_login() -> None:
     assert "innerHTML" not in source
 
 
-
-
 def test_memory_capability_offers_direct_offline_zip_import() -> None:
     source = BOOTSTRAP_JAVASCRIPT
     memory_panel = source.split(
@@ -292,8 +290,6 @@ def test_memory_capability_offers_direct_offline_zip_import() -> None:
     assert 'button("导入记忆离线包（ZIP）"' in memory_panel
     assert '{ action: "import_offline" }' in memory_panel
     assert "无需解压" in memory_panel
-
-
 
 
 def test_memory_offline_import_progress_is_not_described_as_a_download() -> None:
@@ -325,37 +321,6 @@ def test_memory_runtime_preparation_shows_live_elapsed_time() -> None:
     assert "let mem0RuntimeProgressStartedAt = null;" in source
     assert "const runtimeElapsedSeconds =" in memory_panel
     assert "mem0RuntimeProgressStartedAt = Date.now();" in memory_panel
-
-
-
-
-
-
-
-
-
-
-def test_video_capability_first_probe_has_truthful_progress_and_timeout() -> None:
-    source = BOOTSTRAP_JAVASCRIPT
-    video_panel = source.split(
-        "const renderVideoCapabilityPanel = async (panel) => {", 1
-    )[1].split("const renderCapabilityPanel = async (panel) => {", 1)[0]
-
-    assert "path === VIDEO_CAPABILITY_PATH || path === VIDEO_REPLY_SETTINGS_PATH" in source
-    assert "正在检测本机视频运行环境" in video_panel
-    assert "第一次检测可能需要几分钟，设置页面仍可继续使用" in video_panel
-    assert video_panel.index("正在检测本机视频运行环境") < video_panel.index(
-        "await requestJson(VIDEO_CAPABILITY_PATH)"
-    )
-    initial_request = video_panel.index("await requestJson(VIDEO_CAPABILITY_PATH)")
-    initial_guard = video_panel.index(
-        "if (panel.videoCapabilityGeneration !== renderGeneration) return;"
-    )
-    assert initial_request < initial_guard < video_panel.index("renderMediaComponents(panel, payload)")
-
-
-
-
 
 
 def test_video_reply_setting_hydrate_waits_for_the_real_dependency_probe() -> None:
@@ -396,61 +361,10 @@ def test_reply_route_settings_show_individual_readiness_without_claiming_private
         "const mountOfficialLetterImport", 1
     )[0]
 
-    assert '["voice_reference", "受管林离音色"]' in source
     assert '文字＋声音＋视频' in setting
     assert '不代表每封信都会使用' in setting
-    assert 'button("离线组件"' in setting
+    assert "离线组件" not in setting  # replies are generated in the cloud; no local components
     assert "随 Olivia 安装包提供" not in source
-
-
-
-
-
-
-
-
-def test_partial_video_install_still_offers_missing_bundle_download() -> None:
-    node = shutil.which("node")
-    if node is None:
-        pytest.skip("Node.js is unavailable for video capability state validation")
-    harness = r'''
-const fs = require("fs");
-const vm = require("vm");
-let source = fs.readFileSync(0, "utf8");
-source = source.replace(/\s*schedule\(\);\s*\}\)\(\);\s*$/, `
-  globalThis.videoCapabilityViewState = videoCapabilityViewState;
-})();\n`);
-const context = {
-  URL,
-  document: {
-    currentScript: { dataset: { apiBase: "http://127.0.0.1:8899/" } },
-    documentElement: {},
-  },
-  MutationObserver: class { observe() {} },
-  window: { addEventListener: () => {} },
-};
-vm.runInNewContext(source, context);
-process.stdout.write(JSON.stringify(context.videoCapabilityViewState([
-  { id: "ordinary_video", state: "prerequisites_required" },
-  { id: "music_video", state: "missing" },
-])));
-'''
-    completed = subprocess.run(
-        [node, "-e", harness],
-        input=BOOTSTRAP_JAVASCRIPT.encode("utf-8"),
-        capture_output=True,
-        timeout=20,
-        check=False,
-    )
-    output = (completed.stderr or completed.stdout).decode("utf-8", errors="replace")
-    assert completed.returncode == 0, output
-    assert json.loads(completed.stdout) == {
-        "state": "prerequisites_required",
-        "downloadable": True,
-        "runtimeRequired": False,
-    }
-
-
 
 
 def test_initial_setup_dialog_survives_mailbox_route_cleanup() -> None:
@@ -497,33 +411,6 @@ process.stdout.write(JSON.stringify({ dialogRemoved }));
     output = (completed.stderr or completed.stdout).decode("utf-8", errors="replace")
     assert completed.returncode == 0, output
     assert json.loads(completed.stdout)["dialogRemoved"] is False
-
-
-def test_components_are_offline_scoped_and_shared_between_setup_and_settings():
-    source = BOOTSTRAP_JAVASCRIPT
-    assert "renderCapabilityPanel(panels.capability)" in source
-    assert "renderMediaComponents(panel, payload)" in source
-    assert 'action:"import_components",component_ids:group.items.map(x=>x.id)' in source
-    assert 'button("导入旧版离线整包"' not in source
-    assert 'button("卸载旧版视频组件"' not in source
-    assert 'button("选择离线包（可多选 ZIP）"' in source
-    assert '对应文件：Olivia-${item.id}-日期.zip' in source
-    assert 'item.description' in source
-    assert '查看组件状态' not in source
-    assert 'batch.disabled=busy' in source
-    assert 'const onlineInstallAvailable' not in source
-    assert '仅官方源' not in source
-    assert '下载并启用' not in source
-
-
-def test_component_progress_preserves_controls_until_terminal_state():
-    source = BOOTSTRAP_JAVASCRIPT.split('const renderMediaComponents =', 1)[1].split('const renderVideoCapabilityPanel =', 1)[0]
-    poll = source.split('const update = async () => {', 1)[1]
-    assert 'result.textContent' in poll
-    assert 'panel.replaceChildren' not in poll
-    assert 'if (!panel.isConnected) return' in poll
-    assert 'if (!["queued", "extracting", "checking", "testing"].includes(current.state))' in poll
-    assert '歌词识别为可选' in source
 
 
 def test_statement_states_the_published_minimum_charge():

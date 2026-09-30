@@ -37,7 +37,7 @@ assert.equal(completed,false); assert.equal(window.location.hash,'');})().catch(
 
 
 def test_cancelled_memory_package_picker_can_be_opened_again() -> None:
-    source = BOOTSTRAP_JAVASCRIPT.split('  const renderMem0CapabilityPanel =', 1)[1].split('  const videoCapabilityViewState =', 1)[0]
+    source = BOOTSTRAP_JAVASCRIPT.split('  const renderMem0CapabilityPanel =', 1)[1].split('  const renderLocalUpdatePanel =', 1)[0]
     run_js('''const assert=require('assert');
 class Element {constructor(){this.children=[];} append(...x){this.children.push(...x)}
 replaceChildren(...x){this.children=x} setAttribute(){} }

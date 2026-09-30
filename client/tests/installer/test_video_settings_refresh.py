@@ -9,6 +9,7 @@ def test_installed_video_refresh_enables_existing_settings_row(tmp_path):
     harness = r'''
 const assert = require("node:assert/strict");
 let refreshVideoReplySetting = async () => {};
+const reportGroupStatus = () => {};
 let ready = false, calls = 0;
 const buttons=[];
 const node=()=>({isConnected:true,style:{},append(){},addEventListener(){},setAttribute(k,v){this[k]=v}});
@@ -16,7 +17,6 @@ const document={createElement:node};
 const text=node, actions=node;
 const button=(label,fn)=>{const n=node();n.textContent=label;n.click=fn;buttons.push(n);return n;};
 const VIDEO_REPLY_SETTINGS_PATH="/toy/settings/video-reply";
-const VIDEO_REPLY_DEPENDENCY_LABELS=new Map();
 const routeRequest=async()=>{calls++;return {tier:ready?'audio':'text',routes:{}};};
 '''
     harness += mount + r'''
@@ -44,5 +44,3 @@ def test_capability_completion_and_all_dialog_dismissals_refresh_setting():
     assert "void refreshVideoReplySetting();" in dialog
     assert dialog.count("dismiss();") == 3  # Close plus Escape in settings and service dialogs.
     assert 'if (event.target === backdrop) event.preventDefault();' in dialog
-    capability = source[source.index("  const renderVideoCapabilityPanel ="):source.index("  const openDialog =")]
-    assert 'if (payload.components.progress?.state === "ready") void refreshVideoReplySetting();' in capability

@@ -6,7 +6,7 @@ from runtime.gpu_settings import GPUSettings
 from original_client_settings_ui import BOOTSTRAP_JAVASCRIPT
 
 
-def test_gpu_panel_uses_account_key_and_shows_billing(tmp_path):
+def test_account_entry_shows_balance_and_unified_statement(tmp_path):
     service = GPUSettings(tmp_path, environment={}, account_key=lambda: 'olivia-synthetic-account')
     responses = {'settings_status': service.status()}
     responses.update(billing_prices={'status': 'OK', 'pricing': None}, billing_statement={
@@ -18,7 +18,7 @@ def test_gpu_panel_uses_account_key_and_shows_billing(tmp_path):
     node=shutil.which('node')
     if not node: pytest.skip('Node unavailable')
     source=('const drawUnifiedStatement ='+BOOTSTRAP_JAVASCRIPT.split('const drawUnifiedStatement =',1)[1].split('const mountRelayAccount =',1)[0]
-        +'const mountGPUSettings ='+BOOTSTRAP_JAVASCRIPT.split('const mountGPUSettings =',1)[1].split('const mountCloudService =',1)[0])
+        +'const refreshAccountEntry ='+BOOTSTRAP_JAVASCRIPT.split('const refreshAccountEntry =',1)[1].split('let scheduled = false;',1)[0])
     harness=r'''
 const assert=require('node:assert/strict');
 class Element {
@@ -29,7 +29,8 @@ class Element {
   addEventListener(k,v){this.events[k]=v;}
   querySelectorAll(tag){return this.children.flatMap(c=>[...(c.tag===tag?[c]:[]),...c.querySelectorAll(tag)]);}
 }
-const document={createElement:t=>new Element(t)};
+const entry=Object.assign(new Element('button'),{textContent:'账户'});
+const document={createElement:t=>new Element(t),querySelector:()=>entry};
 const text=(t,v)=>Object.assign(new Element(t),{textContent:v});
 const button=(label,fn)=>Object.assign(text('button',label),{click:fn});
 const actions=()=>new Element('div');
@@ -45,15 +46,11 @@ const fetch=async(path,options)=>{
 };
 '''+ 'const responses='+json.dumps(responses)+';\n'+ 'const requestSetup ='+BOOTSTRAP_JAVASCRIPT.split('const requestSetup =',1)[1].split('const requestCapability =',1)[0]+source+r'''
 (async()=>{
- const root=new Element('root');mountGPUSettings(root);
- await new Promise(r=>setImmediate(r));
- assert.equal(root.querySelectorAll('input').length,0);
- assert.equal(root.querySelectorAll('select').length,0);
+ await refreshAccountEntry();
  assert.deepEqual(requests.map(r=>r.action),['settings_status','billing_statement']);
- assert.ok(root.querySelectorAll('p').some(p=>p.textContent.startsWith('已使用 Olivia 账户 Key')));
- const buttons=root.querySelectorAll('button');
- const click=label=>buttons.find(b=>b.textContent===label).click();
- assert.deepEqual(buttons.map(b=>b.textContent),['刷新账单']);
+ assert.equal(entry.textContent,'账户 ¥99.85');
+ const root=new Element('root');
+ drawUnifiedStatement(root,responses.billing_statement);
  assert.ok(root.querySelectorAll('p').some(p=>p.textContent.includes('¥99.85')));
  assert.ok(root.querySelectorAll('span').some(p=>p.textContent==='语音生成 · 已结算'));
  assert.ok(root.querySelectorAll('span').some(p=>p.textContent==='−¥0.15'));
@@ -61,9 +58,11 @@ const fetch=async(path,options)=>{
  const visible=root.querySelectorAll('p').map(p=>p.textContent).join(' ');
  for(const internal of ['synthetic-task','test-v1','0.75','倍率','CPU','local-gpu-active'])assert.ok(!visible.includes(internal));
  responses.billing_statement=null;
- await click('刷新账单');
- assert.ok(root.querySelectorAll('p').some(p=>p.textContent.includes('余额暂时无法读取')));
- assert.ok(!root.querySelectorAll('p').some(p=>p.textContent.includes('¥99.85')));
+ await refreshAccountEntry();
+ assert.equal(entry.textContent,'账户');
+ responses.settings_status={...responses.settings_status,has_key:false};
+ await refreshAccountEntry();
+ assert.equal(entry.textContent,'账户');
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''
     result=subprocess.run([node,'-e',harness],capture_output=True,timeout=20)
