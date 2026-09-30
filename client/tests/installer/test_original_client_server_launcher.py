@@ -21,6 +21,13 @@ from original_client_setup_api import LLMSetupService, _dpapi_protect
 from patch_companion_settings import CompanionSettingsPatchError
 
 
+@pytest.fixture(autouse=True)
+def no_real_startup_animation(tmp_path: Path, monkeypatch) -> None:
+    # Backend contract tests must not spawn the repository's real WPF player.
+    # Animation ordering and cleanup are exercised in test_startup_latency.py.
+    monkeypatch.setenv("OLIVIA_STARTUP_VIDEO", str(tmp_path / "no-animation.mp4"))
+
+
 def _installation(
     tmp_path: Path,
     *,
@@ -792,7 +799,7 @@ def _run_launcher_with_client_results(
         encoding="utf-8"
     )
     client_events = [
-        record
+        {key: value for key, value in record.items() if key not in ("timestamp", "preparation_seconds")}
         for line in launcher_log.splitlines()
         if (record := json.loads(line))["event"].startswith("client_")
     ]
@@ -2077,6 +2084,9 @@ def test_start_refreshes_an_outdated_stable_launcher(tmp_path: Path, monkeypatch
     stable.write_bytes(b"# launcher from an older release\n")
     start_local._refresh_stable_launcher(root, data_root)
     assert calls == [root] and stable.read_bytes() == current
+    assert ' //I //Nologo ' in (root / "START.vbs").read_text(encoding="utf-16")
+    assert (stable.with_name("start_hidden.vbs.txt")).read_text(encoding="utf-8") == (
+        root / "START.vbs").read_text(encoding="utf-16")
     assert events() == ["stable_launcher_refreshed"]
 
     start_local._refresh_stable_launcher(root, data_root)  # already current: no copy

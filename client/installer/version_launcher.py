@@ -10,6 +10,7 @@ import os
 import re
 import runpy
 import sys
+import time
 from pathlib import Path, PurePosixPath
 
 STATE_NAME = ".olivia-update-state.json"
@@ -187,14 +188,14 @@ def _replace_running_start(
     return None
 
 
-def _append_launcher_event(installation: Path, event: str) -> None:
+def _append_launcher_event(installation: Path, event: str, **fields: object) -> None:
     """Persist a path-free stable-launcher event."""
 
     try:
         log_root = installation / "data" / "logs"
         log_root.mkdir(parents=True, exist_ok=True)
         with (log_root / "launcher.jsonl").open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps({"event": event}, sort_keys=True) + "\n")
+            handle.write(json.dumps({"event": event, **fields}, sort_keys=True) + "\n")
     except OSError:
         pass
 
@@ -436,10 +437,32 @@ def _run_action(args: argparse.Namespace) -> int:
             sys.path[:] = previous_path
         return 0
     except VersionLauncherError as exc:
+        if args.action == "start":
+            _append_launcher_event(args.install_root, "startup_failed", code=str(exc), timestamp=time.time())
         print(json.dumps({"status": "ERROR", "code": str(exc)}))
         return 2
     except SystemExit as exc:
-        return int(exc.code or 0)
+        exit_code = int(exc.code or 0)
+        if args.action == "start" and exit_code:
+            _append_launcher_event(args.install_root, "startup_failed", code="START_EXIT_NONZERO",
+                                   exit_code=exit_code, timestamp=time.time())
+        return exit_code
+    except Exception as exc:
+        if args.action != "start":
+            raise
+        _append_launcher_event(args.install_root, "startup_failed", code="START_ACTION_FAILED",
+                               timestamp=time.time(), **_startup_exception_fields(exc))
+        print(json.dumps({"status": "ERROR", "code": "START_ACTION_FAILED"}))
+        return 2
+
+
+def _startup_exception_fields(error: BaseException) -> dict[str, str]:
+    """Keep useful startup causes without exception text, paths or credentials."""
+
+    fields = {"exception_type": type(error).__name__}
+    if isinstance(error, ModuleNotFoundError) and error.name and re.fullmatch(r"[A-Za-z0-9_.]{1,150}", error.name):
+        fields["missing_module"] = error.name
+    return fields
 
 
 def _parse_arguments(argv: list[str] | None) -> argparse.Namespace:
