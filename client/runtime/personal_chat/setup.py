@@ -486,6 +486,11 @@ def install_setup_routes(app: web.Application, server) -> None:
                 runtime["napcat_error"] = _failure_code(exc)
 
     async def start_managed_napcat(_application: web.Application) -> None:
+        # aiohttp only serves after every startup hook returns; launching QQ and
+        # probing OneBot must not delay the client window.
+        runtime["napcat_start_task"] = asyncio.create_task(launch_managed_napcat())
+
+    async def launch_managed_napcat() -> None:
         try:
             config = _read_config(server)
             qq = config.get("qq")

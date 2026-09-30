@@ -468,3 +468,19 @@ def test_pending_error_counts_reject_private_or_unbounded_values(counts):
     source["health"]["checks"]["memory_worker"] = {"state": "degraded", "pending_error_counts": counts}
     with pytest.raises(DiagnosticBundleError):
         build_diagnostic_bundle(source)
+
+
+def test_launcher_tail_keeps_startup_timings_but_not_paths():
+    from runtime.diagnostics.support_bundle import _project_tail_record
+    record = _project_tail_record({"event": "backend_phase", "phase": "startup_hook:_start_reply_tasks",
+                                   "elapsed_seconds": 8.4217, "timestamp": 1790787742.2}, runtime=False)
+    assert record == {"event": "backend_phase", "phase": "startup_hook:_start_reply_tasks", "elapsed_seconds": 8.422}
+    record = _project_tail_record({"event": "backend_phase", "phase": "C:/Users/someone", "elapsed_seconds": -1,
+                                   "preparation_seconds": 16.5}, runtime=False)
+    assert record == {"event": "backend_phase", "preparation_seconds": 16.5}
+
+
+def test_startup_animation_does_not_cover_other_windows():
+    from pathlib import Path
+    script = (Path(__file__).resolve().parents[2] / "installer" / "startup_animation.ps1").read_text(encoding="utf-8")
+    assert "$window.Topmost = $false" in script and "$window.Topmost = $true" not in script

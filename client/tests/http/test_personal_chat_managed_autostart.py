@@ -66,6 +66,8 @@ def test_managed_qq_component_starts_with_olivia(
 
     async def scenario() -> None:
         async with TestClient(TestServer(app)):
+            # QQ starts in the background; the server is already serving.
+            await runtime["napcat_start_task"]
             assert calls == [tmp_path]
             assert runtime["napcat_shell_process"] is process
             assert runtime["napcat_state"] == "ONEBOT_READY"
@@ -131,6 +133,7 @@ def test_managed_qq_watchdog_restarts_dead_napcat(
 
     async def scenario() -> None:
         async with TestClient(TestServer(app)):
+            await runtime["napcat_start_task"]
             assert runtime["napcat_shell_process"] is first
             first.alive = False
             availability["value"] = False

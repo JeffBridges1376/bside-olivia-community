@@ -1327,15 +1327,48 @@ def create_configured_original_client_server_runtime(
     return runtime
 
 
+def _startup_phase(phase: str, started: float) -> None:
+    """Record how long one backend startup step took; no paths or content."""
+    root = os.environ.get("OLIVIA_LOCAL_DATA_ROOT")
+    if not root:
+        return
+    try:
+        from installer.version_launcher import _append_launcher_event
+        _append_launcher_event(Path(root).parent, "backend_phase", phase=phase,
+                               elapsed_seconds=round(time.monotonic() - started, 3), timestamp=time.time())
+    except Exception:
+        pass  # Timing is diagnostic only.
+
+
+def _time_startup_hooks(app: web.Application) -> None:
+    """The server listens only after every on_startup hook returns; time each one."""
+    def timed(hook):
+        async def run(application):
+            started = time.monotonic()
+            try:
+                await hook(application)
+            finally:
+                _startup_phase("startup_hook:" + getattr(hook, "__name__", "hook"), started)
+        return run
+    for index, hook in enumerate(list(app.on_startup)):
+        app.on_startup[index] = timed(hook)
+
+
 def main() -> int:
     """Launch one loopback process for the original client and companion APIs."""
 
+    started = time.monotonic()
     import local_server
-
+    _startup_phase("import", started)
+    phase = time.monotonic()
     local_server.recover_pending_private_world()
+    _startup_phase("recover_private_world", phase)
+    phase = time.monotonic()
     runtime = create_configured_original_client_server_runtime(
         server_module=local_server,
     )
+    _startup_phase("create_runtime", phase)
+    _time_startup_hooks(runtime.app)
     local_server._safe_log(
         "server_start",
         host="127.0.0.1",
