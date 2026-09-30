@@ -399,7 +399,8 @@ def test_reply_route_settings_show_individual_readiness_without_claiming_private
     assert '["voice_reference", "受管林离音色"]' in source
     assert '文字＋声音＋视频' in setting
     assert '不代表每封信都会使用' in setting
-    assert 'button("离线组件"' in setting
+    assert 'button("离线组件"' not in setting  # component status lives under 更新与帮助 > 高级
+    assert '"高级：离线组件状态"' in source
     assert "随 Olivia 安装包提供" not in source
 
 

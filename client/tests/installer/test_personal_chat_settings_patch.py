@@ -59,7 +59,7 @@ def test_personal_chat_ui_is_separate_from_legacy_settings_bootstrap(tmp_path: P
     assert "/toy/personal-chat/setup/status" in index
     assert "/toy/personal-chat/setup/wechat/start" in index
     assert "/toy/personal-chat/setup/qq/configure" in index
-    assert "QQ / 微信聊天" in index
+    assert 'data-olivia-group-body="chat"' in index
 
     second = patch_companion_settings(
         path,

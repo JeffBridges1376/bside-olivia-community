@@ -297,7 +297,7 @@ def test_original_settings_can_apply_a_downloaded_patch_and_roll_back() -> None:
     assert 'action: "apply_verified"' in source
     assert "手动校验并安装" in source
     assert "回滚上一版本" in source
-    assert "controls.append(choose, rollback);" in source
+    assert "rollbackRow.append(rollback);" in source  # rollback sits under the advanced fold
     assert "关闭并重新打开 Olivia 后生效" in source
 
 
@@ -949,11 +949,13 @@ vm.runInNewContext(source, context);
   if (!open) throw new Error(`open button missing: ${body.querySelectorAll("button").map((item) => item.textContent).join("|")}`);
       await open.click();
       await flush();
-      await findButton("保存").click();
-      await flush();
-      await findButton("保存").click();
-      await flush();
-      if (!body.querySelectorAll("p").some((item) => item.textContent.includes("保存失败"))) throw new Error("route mutation error was hidden");
+      // Choosing a tier saves at once; a failed save re-reads the stored tier.
+      await findButton("纯文字").click();
+      await flush(); await flush();
+      await findButton("文字＋声音").click();
+      await flush(); await flush();
+      const shown = body.querySelectorAll("p").map((item) => item.textContent).filter((t) => t.includes("保存") || t.includes("设置"));
+      if (!shown.some((t) => t.includes("没有保存成功"))) throw new Error("route mutation error was hidden: " + JSON.stringify(shown) + JSON.stringify(videoMethods));
           await clickConfirmed(findButton("暂停长期记忆"));
   await flush();
   const resume = findButton("恢复长期记忆");
@@ -988,7 +990,7 @@ vm.runInNewContext(source, context);
             "/toy/companion/memory/pause",
             "/toy/companion/memory/clear",
         ],
-          "videoMethods": ["GET", "POST", "POST"],
+          "videoMethods": ["GET", "POST", "POST", "GET"],
         "statusIndex": 3,
     }
 

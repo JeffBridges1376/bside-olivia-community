@@ -479,7 +479,7 @@ def test_personal_chat_setup_ui_stays_inside_existing_settings_surface() -> None
 
     script = PERSONAL_CHAT_SETUP_JAVASCRIPT
     for required in (
-        'document.querySelector("[data-olivia-proactive-settings]")',
+        "document.querySelector('[data-olivia-group-body=\"chat\"]')",
         'root.dataset.oliviaPersonalChatSetup = "true"',
         '"/toy/personal-chat/setup/status"',
         '"/toy/personal-chat/setup/channel-choice"',
@@ -489,7 +489,6 @@ def test_personal_chat_setup_ui_stays_inside_existing_settings_surface() -> None
         '"/toy/personal-chat/setup/qq/napcat/install"',
         '"/toy/personal-chat/setup/qq/napcat/start"',
         'status.wechat?.qr_data',
-        '"QQ / 微信聊天"',
         '"QQ（实验功能）"',
         '"一键安装"',
         '"X-Olivia-Companion-Action"',

@@ -9,7 +9,7 @@ def test_qq_save_keeps_draft_and_reports_actual_outcome(outcome, tmp_path):
     with pw.sync_playwright() as p:
         browser = p.chromium.launch(channel="chrome")
         page = browser.new_page(viewport={"width": 1100, "height": 900})
-        page.set_content('<style>body{background:#111;color:#eee;font:15px sans-serif;padding:25px}</style><main><div data-olivia-proactive-settings></div></main>')
+        page.set_content('<style>body{background:#111;color:#eee;font:15px sans-serif;padding:25px}</style><main><div data-olivia-group-body="chat"></div></main>')
         page.evaluate('''() => {
           window.saved = false;
           window.fetch = async (url, options) => {

@@ -9,6 +9,7 @@ def test_installed_video_refresh_enables_existing_settings_row(tmp_path):
     harness = r'''
 const assert = require("node:assert/strict");
 let refreshVideoReplySetting = async () => {};
+const reportGroupStatus = () => {};
 let ready = false, calls = 0;
 const buttons=[];
 const node=()=>({isConnected:true,style:{},append(){},addEventListener(){},setAttribute(k,v){this[k]=v}});
