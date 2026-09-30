@@ -3632,7 +3632,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     state.setAttribute("aria-live", "polite");
     const controls = actions();
     const file = document.createElement("input");
-    file.type = "file"; file.accept = ".json,application/json"; file.hidden = true;
+    file.type = "file"; file.accept = ".json,.soul,application/json"; file.hidden = true;
     file.addEventListener("cancel", event => event.stopPropagation());
     const save = button("导出信件备份", async () => {
       setButtonsBusy([save, restore], true);
@@ -3654,20 +3654,37 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const selected = file.files?.[0]; if (!selected) return;
       setButtonsBusy([save, restore], true);
       try {
-        if (selected.size > 16 * 1024 * 1024) throw Error("backup too large");
-        const backup = (await selected.text()).replace(/^\uFEFF/, "");
-        if (!await confirmAction("导入所选文件中的信件？支持原版 letter_pairs.json 和 Olivia 导出的信件备份，自动识别格式。双方原文进入信箱并可检索，重复信件跳过；随后按顺序每五封调用模型评估关系并消耗额度，已有进度保留。")) return;
+        let backup;
+        if (/\.soul$/i.test(selected.name || "")) {
+          const head = await selected.slice(0, 16).arrayBuffer();
+          if (head.byteLength !== 16 || new TextDecoder().decode(head.slice(0, 8)) !== "SOUL0001") throw Error("invalid soul");
+          const view = new DataView(head);
+          const length = view.getUint32(8, true);
+          if (view.getUint32(12, true) !== 0 || !length || length > 16 * 1024 * 1024 || length + 16 > selected.size) throw Error("invalid soul size");
+          const manifest = JSON.parse(new TextDecoder("utf-8", {fatal:true}).decode(await selected.slice(16, 16 + length).arrayBuffer()));
+          if (!Array.isArray(manifest?.memory?.exchanges)) throw Error("invalid soul exchanges");
+          backup = {format:"soul", manifest:{memory:{exchanges:manifest.memory.exchanges.map(row => {
+            if (!row || typeof row !== "object" || Array.isArray(row)) throw Error("invalid soul exchange");
+            const {incoming, reply, date, time} = row;
+            return {incoming, reply, date, time};
+          })}}};
+        } else {
+          if (selected.size > 16 * 1024 * 1024) throw Error("backup too large");
+          backup = (await selected.text()).replace(/^\uFEFF/, "");
+        }
+        if (new TextEncoder().encode(JSON.stringify({backup})).length > 16 * 1024 * 1024 + 1024) throw Error("backup too large");
+        if (!await confirmAction("导入所选文件中的信件？支持灵离 .soul、原版 letter_pairs.json 和 Olivia 信件备份。只导入双方文字，.soul 内的音视频不会上传或导入；重复信件跳过，已有信件不覆盖。随后按顺序每五封调用模型评估关系并消耗额度，已有进度保留。")) return;
         state.textContent = "正在保存信件原文，无需等待大模型……";
         const result = await requestMutation("/toy/letter/backup/import", {backup});
         if (result.status !== "APPLIED") throw Error("import failed");
         state.textContent = `已导入 ${result.inserted} 封，重复 ${result.duplicates} 封。正在刷新信箱。`;
         window.setTimeout(() => window.location.reload(), 800);
-      } catch (_) { state.textContent = "导入未完成。请选择完整的 letter_pairs.json 或 Olivia 导出的信件备份（最大 16 MB）；可再次导入，重复信件会跳过。"; }
+      } catch (_) { state.textContent = "导入未完成。请选择完整的 .soul、letter_pairs.json 或 Olivia 信件备份（文字清单最大 16 MB）；可再次导入，重复信件会跳过。"; }
       finally { file.value = ""; setButtonsBusy([save, restore], false); }
     });
     controls.append(save, restore, file);
     section.append(text("div", "导入与导出信件", "text-text-body text-title-m"),
-      text("p", "已有 JSON 文件或换电脑恢复：点“选择文件导入”。没有单独保存文件：可在下方从原版目录读取。两种方式导入到同一个信箱，无需各导入一次。"), state, controls);
+      text("p", "已有灵离 .soul 或 JSON 备份、换电脑恢复：点“选择文件导入”。.soul 只读取文字，不导入音视频。没有单独保存文件：可在下方从原版目录读取。"), state, controls);
   };
 
   const mountLocalLetterImport = (section) => {
