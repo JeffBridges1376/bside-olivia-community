@@ -453,6 +453,15 @@ async def _generate_billed(server, event, row):
         if decision['skip']:
             return '[[skip]]'
         text, mode = decision['text'].strip(), decision['delivery']
+        from .decision import repeats_recent
+        if repeats_recent(text, [r for r in server.store.personal_chats if r is not row],
+                          channel=event.channel, binding_id=event.binding_id):
+            # Saying her last message again is a copying slip, not an answer; regenerate.
+            row['decision_rejection_reason'] = 'REPEATED_REPLY'
+            server._safe_log('personal_chat_decision_rejected', reason='REPEATED_REPLY', missing_fields=[], extra_field_count=0)
+            error = ValueError('PERSONAL_CHAT_DECISION_INVALID')
+            error.reason = 'REPEATED_REPLY'
+            raise error
         if companion is not None:
             delivery = row['companion_delivery']
             if delivery not in semantic_kinds:

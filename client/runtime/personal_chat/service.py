@@ -571,7 +571,8 @@ class PersonalChatService:
         key = row['letter_id']
         from runtime.image_reply import is_companion_image
         primary_image = is_companion_image(row)
-        if (row.get('companion_decision') is not None and not primary_image or row.get('proactive_decision') is not None
+        from runtime.image_reply import secondary_photo_allowed
+        if (not secondary_photo_allowed(row) or row.get('proactive_decision') is not None
                 or not callable(self.photo) or row.get('channel') != 'qq' or not callable(getattr(send, 'image', None))
                 or key in self.photo_tasks or row.get('image_delivery_status') in {'SENDING', 'UNKNOWN', 'DELIVERED'}
                 or row.get('image_status') in {'FAILED', 'SKIPPED'}):
