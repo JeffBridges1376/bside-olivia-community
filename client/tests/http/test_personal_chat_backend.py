@@ -151,8 +151,10 @@ def test_backend_generate_uses_real_pipeline_persona_memory_and_world(monkeypatc
     system = calls[0][0]["content"]
     assert "constitution" in system and "future_im" in system
     assert "即时聊天" in system
-    assert "synthetic-memory-keeps-piano" in system
-    assert "synthetic-world-evening-piano" in system
+    # Per-turn memory and world follow the dialogue, outside the cached prefix.
+    turn_state = "".join(m["content"] for m in calls[0][1:] if m["role"] == "system")
+    assert "synthetic-memory-keeps-piano" in turn_state and "synthetic-memory-keeps-piano" not in system
+    assert "synthetic-world-evening-piano" in turn_state
     assert calls[0][-1]["content"].split('\n', 1)[0] == event.text
     assert json.loads(calls[0][-1]['content'].split('\n', 2)[2])['current_turn_has_images'] is False
 
