@@ -131,7 +131,7 @@ assert len(row['companion_decision']['plan']['proposal']['steps']) == 2
 ''')
 
 
-def test_jev_text_is_published_even_when_optional_photo_setting_is_enabled(tmp_path):
+def test_jev_text_is_published_and_the_photo_planner_still_decides(tmp_path):
     run_isolated(tmp_path, r'''
 import asyncio
 import local_server as server
@@ -155,7 +155,19 @@ image_reply.schedule = lambda *a: scheduled.append('photo')
 server.reply_pipeline = ReplyPipeline(Engine('醒啦。'), reviewer=NullReviewer(), rewriter=UnavailableRewriter(),
     discover_runtime_ports=False, companion_decision_port=Port())
 assert asyncio.run(server.generate_reply(row['letter_id'], row['content']))
+# A plain JEV text turn still lets the photo planner decide, as before 2.0. The
+# written reply is kept while that decision runs, then shown with or without a photo.
+assert row['letter_status'] == 'COMPLETED' and row['reply_text'] == '醒啦。'
+assert 'image_status' not in row and scheduled == ['photo']
+row['image_status'] = 'SKIPPED'
 detail = serialize_letter_detail(row)
 assert detail['letterStatus'] == 4 and detail.get('replyBody', detail['replyText']) == '醒啦。'
-assert row['image_status'] == 'SKIPPED' and not scheduled
 ''')
+
+
+def test_secondary_photo_only_on_plain_turns():
+    from runtime.image_reply import secondary_photo_allowed
+    plain = {'companion_decision': {'plan': {'understanding': {'requirements': []}}}, 'companion_delivery': 'text'}
+    asked = {'companion_decision': {'plan': {'understanding': {'requirements': [{'id': 'r1'}]}}}, 'companion_delivery': 'audio_speech'}
+    assert secondary_photo_allowed({}) and secondary_photo_allowed(plain)
+    assert not secondary_photo_allowed(asked)

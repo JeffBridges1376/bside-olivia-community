@@ -63,9 +63,22 @@ def _check_receipt(path, fingerprint, payload, required=False):
         raise ValueError('IMAGE_RECEIPT_INVALID') from exc
 
 
+def secondary_photo_allowed(row):
+    """Whether the reply may still get a photo that nobody asked for.
+
+    When JEV planned the medium the user asked for, that plan owns delivery. On a
+    plain turn (no media requested) the photo planner decides, as before 2.0.
+    """
+    record = row.get('companion_decision')
+    if not record or is_companion_image(row):
+        return True
+    from runtime.reply.companion_runtime import media_requested
+    return not media_requested(record.get('plan') if isinstance(record, dict) else None)
+
+
 def schedule(server, row):
-    if row.get('companion_decision') and not is_companion_image(row):
-        return  # Jev's development consumer owns delivery; do not append another plan.
+    if not secondary_photo_allowed(row):
+        return  # The user asked for a medium; JEV's plan owns this delivery.
     if not row.get('image_reply_settings', {}).get('enabled') or row.get('reply_mode') not in ('text', 'text_letter', 'voice_reply', 'spoken_video'):
         return
     if row.get('image_status') in ('COMPLETED', 'SKIPPED', 'FAILED'):

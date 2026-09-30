@@ -6114,7 +6114,13 @@ async def _generate_reply_billed(letter_id, content, *, idempotency_key=None):
         letter['companion_delivery'] = result.companion_delivery
         image_requested = (result.companion_delivery == 'image'
                            and letter.get('image_reply_settings', {}).get('enabled') is True)
-        letter['image_status'] = 'PENDING' if image_requested else 'SKIPPED'
+        from runtime.image_reply import secondary_photo_allowed
+        if image_requested:
+            letter['image_status'] = 'PENDING'
+        elif not secondary_photo_allowed(letter):
+            letter['image_status'] = 'SKIPPED'
+        else:
+            letter.pop('image_status', None)  # The photo planner decides after the reply.
         if result.companion_timing in {'wait_user', 'defer', 'no_reply'}:
             letter['letter_status'] = 'SKIPPED'
             letter.pop('reply_text', None)
@@ -6168,8 +6174,7 @@ async def _generate_reply_billed(letter_id, content, *, idempotency_key=None):
     letters_adapter.remember_conversation(content, result.text)
     from runtime.image_reply import schedule as schedule_image
     import sys
-    if not letter.get('companion_decision') or letter.get('companion_delivery') == 'image':
-        schedule_image(sys.modules[__name__], letter)
+    schedule_image(sys.modules[__name__], letter)  # It applies the plain-turn and requested-media rules.
     _safe_log("letter_completed", reply_mode=exact_mode)
     return True
 
