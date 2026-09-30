@@ -84,17 +84,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   let mem0RuntimeProgressStartedAt = null;
   const LETTER_COMPOSER_TITLE = "写下你的感受";
   const LETTER_SUBMIT_LABEL = "寄出信件";
-  const VIDEO_CAPABILITY_BUNDLES = ["ordinary_video", "music_video"];
-  const VIDEO_REPLY_DEPENDENCY_LABELS = new Map([
-    ["voice_reference", "受管林离音色"],
-    ["livetalking", "实时驱动（LiveTalking，可选）"],
-    ["latentsync", "口型视频（LatentSync）"],
-    ["minimax_music3", "音乐生成（MiniMax Music 3）"],
-    ["roformer", "人声分离（RoFormer）"],
-    ["official_video_assets", "Olivia 场景与转场素材"],
-    ["ffmpeg", "媒体工具（FFmpeg）"],
-    ["media_workspace", "媒体工作目录"],
-  ]);
   const parseApiBase = (value) => {
     let url;
     try {
@@ -2183,149 +2172,6 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     if (payload.reason_code) setDiagnosticDetails(result, payload.reason_code);
   };
 
-  const videoCapabilityViewState = (bundles) => {
-    const states = bundles.map((item) => typeof item.state === "string" ? item.state : "missing");
-    const state = states.every((value) => value === "ready")
-      ? "ready"
-      : states.some((value) => ["queued", "downloading", "verifying"].includes(value))
-      ? "downloading"
-      : states.some((value) => value === "failed")
-      ? "failed"
-      : states.some((value) => value === "paused")
-      ? "paused"
-      : states.some((value) => value === "license_review_required")
-      ? "license_review_required"
-      : states.some((value) => value === "prerequisites_required")
-      ? "prerequisites_required"
-      : "missing";
-    const downloadable = states.some((value) =>
-      !["ready", "queued", "downloading", "verifying", "license_review_required", "prerequisites_required"].includes(value)
-    );
-    const runtimeRequired = states.some((value) => value === "prerequisites_required")
-      && states.every((value) => ["ready", "prerequisites_required"].includes(value));
-    return { state, downloadable, runtimeRequired };
-  };
-
-  const renderMediaComponents = (panel, payload) => {
-    const group = payload.components;
-    panel.replaceChildren(text("h3", "安装声音与视频组件", "text-text-title text-title-m"),
-      text("p", "先按用途找到需要的包，再点击下方按钮选择 ZIP，无需解压。安装组件后，回信形式仍由你的档位设置和信件内容决定。", "text-text-secondary text-body-m font-regular"));
-    const list = document.createElement("div");
-    list.style.cssText="max-height:360px;overflow:auto;scrollbar-width:thin;scrollbar-color:#66686b transparent";
-    const guide = document.createElement("div");
-    guide.append(
-      text("p", "只收文字信：不用安装这里的组件。", "text-text-body text-body-m font-regular"),
-      text("p", "听说话：媒体工具 + 说话语音。听唱歌：媒体工具 + 唱歌；自动识别歌词另加歌词识别。", "text-text-body text-body-m font-regular"),
-      text("p", "AMD 用户：使用 Olivia-voice-amd 专用离线包，仍从下方选择 ZIP 导入。仅语音实验支持，需要 Windows 11 和兼容 ROCm 的显卡；尚未完成 AMD 实机验收。视频和唱歌组件仍需 NVIDIA。", "text-text-secondary text-body-m font-regular"),
-      text("p", "还要看视频：在相应声音组件上增加口型视频 + 视频场景；唱歌视频还需人声分离。", "text-text-body text-body-m font-regular")
-    );
-    const legacyProgress = payload.runtime_import || {};
-    const progress = ["queued", "extracting", "checking", "testing"].includes(legacyProgress.state) ? legacyProgress : group.progress || {};
-    const busy = ["queued", "extracting", "checking", "testing"].includes(progress.state);
-    const result = text("p", progress.state === "ready" ? "组件安装完成，请重启程序启用。" : progress.state === "failed" ? "组件安装未完成，原有组件已保留，请重试导入。" : "", "text-text-secondary text-body-m font-regular");
-    result.setAttribute("role", "status");
-    if (progress.state === "failed" && Array.isArray(progress.failed_components)) {
-      const failedNames = group.items.filter(x=>progress.failed_components.includes(x.id)).map(x=>x.label);
-      result.textContent = `未完成：${failedNames.join("、")}。其余组件已处理，原有组件保留；可以只重试失败的包。`;
-    }
-    if (progress.state === "failed") {
-      const failures = {
-        VIDEO_ARCHIVE_DISK_FULL: "解压写入时磁盘空间不足。请检查 Olivia 数据目录所在盘的可用空间；ZIP 解压后的体积可能远大于压缩包。",
-        VIDEO_ARCHIVE_ACCESS_DENIED: "解压时无法读写文件。请检查目录权限和安全软件的拦截记录。",
-        VIDEO_ARCHIVE_PATH_TOO_LONG: "解压后的文件路径过长。请使用较短的 Olivia 安装路径。",
-        VIDEO_ARCHIVE_IO_FAILED: "读取离线包或写入文件失败。请检查磁盘、外接设备和目录是否可访问。",
-        VIDEO_RUNTIME_ARCHIVE_CORRUPT: "ZIP 数据损坏或不完整，请重新下载失败的包。",
-        VIDEO_RUNTIME_ARCHIVE_INVALID: "离线包结构不符合要求，请保留诊断包核对版本。",
-        MEDIA_COMPONENT_CLEANUP_FAILED: "导入失败，且本次临时文件未能完全清理。请导出诊断包，不要反复重试。"
-      };
-      result.textContent += " " + (failures[progress.reason_code] || "请导出诊断包查看具体失败原因。");
-    }
-    if (busy) result.textContent = `正在${({queued:"等待安装",extracting:"解压",checking:"校验",testing:"检查运行环境"})[progress.state]}：${formatBytes(progress.checked_bytes || 0)} / ${formatBytes(progress.total_bytes || 0)}`;
-    const batch = button("选择离线包（可多选 ZIP）", async () => {
-      batch.disabled = true;
-      try {
-        const response=await requestCapability(VIDEO_CAPABILITY_ACTION_PATH,{action:"import_components",component_ids:group.items.map(x=>x.id)});
-        if(response.status==="CANCELLED") {result.textContent="未选择文件，组件没有变动。点击“选择离线包”可重新选择。";return;}
-        if(response.status==="REJECTED") {result.textContent="已有导入任务，请等待完成。";return;}
-        await renderVideoCapabilityPanel(panel);
-      } catch (_) {result.textContent="导入未能启动，请检查选择的组件 ZIP。";}
-      finally {batch.disabled=busy;}
-    }); batch.disabled=busy;
-    panel.append(guide,list,batch,text("p","在文件窗口中按住 Ctrl 可选择多个 ZIP，点击“打开”开始安装。文件名中的日期可以不同，程序按包内信息识别组件；已安装的无需重复选择。","text-text-secondary text-body-m font-regular"),result);
-    group.items.forEach(item=>{
-      const row=document.createElement("div");row.className="flex items-center justify-between py-3";row.style.cssText="gap:16px;flex-wrap:wrap;border-bottom:1px solid #343638";
-      const copy=document.createElement("div");copy.style.cssText="flex:1;min-width:180px";
-      copy.append(text("div",item.label,"text-text-body text-label-l"),text("div",item.description || "","text-text-secondary text-caption-m font-regular"));
-      const filename=text("div",`对应文件：Olivia-${item.id}-日期.zip`,"text-text-secondary text-caption-m font-regular");
-      filename.style.overflowWrap="anywhere";copy.append(filename);
-      row.append(copy,text("span",item.state==="installed"?"已安装，可复用":"未安装","text-text-body text-label-l"));list.append(row);
-    });
-    panel.append(text("p", "所有组件均通过离线 ZIP 导入，无需解压。歌词识别为可选；长期记忆仍在上方独立管理。", "text-text-secondary text-caption-m font-regular"));
-    if (busy) {
-      const update = async () => {
-        if (!panel.isConnected) return;
-        try {
-          const next = await requestJson(VIDEO_CAPABILITY_PATH);
-          const oldProgress = next.runtime_import || {};
-          const current = ["queued", "extracting", "checking", "testing"].includes(oldProgress.state) ? oldProgress : next.components.progress;
-          if (!["queued", "extracting", "checking", "testing"].includes(current.state)) { await renderVideoCapabilityPanel(panel); return; }
-          result.textContent = `正在${({queued:"等待安装",extracting:"解压",checking:"校验",testing:"检查运行环境"})[current.state]}：${formatBytes(current.checked_bytes || 0)} / ${formatBytes(current.total_bytes || 0)}`;
-        } catch (_) { result.textContent = "暂时无法读取进度，正在重新连接。"; }
-        panel.videoCapabilityProgressTimer = window.setTimeout(update, 1500);
-      };
-      panel.videoCapabilityProgressTimer = window.setTimeout(update, 1500);
-    }
-  };
-
-  const renderVideoCapabilityPanel = async (panel) => {
-    const renderGeneration = (Number(panel.videoCapabilityGeneration) || 0) + 1;
-    panel.videoCapabilityGeneration = renderGeneration;
-    if (panel.videoCapabilityProgressTimer) {
-      window.clearTimeout(panel.videoCapabilityProgressTimer);
-      panel.videoCapabilityProgressTimer = null;
-    }
-    if (!panel.childElementCount) {
-      panel.replaceChildren(
-        text("div", "正在检测本机视频运行环境……", "text-text-body text-label-l"),
-        text(
-          "div",
-          "第一次检测可能需要几分钟，设置页面仍可继续使用。",
-          "text-text-secondary text-body-m font-regular"
-        )
-      );
-    }
-    let payload = null;
-    try {
-      payload = await requestJson(VIDEO_CAPABILITY_PATH);
-    } catch (_error) {
-      payload = null;
-    }
-    if (panel.videoCapabilityGeneration !== renderGeneration) return;
-    if (payload && payload.components && Array.isArray(payload.components.items)) {
-      renderMediaComponents(panel, payload);
-      if (payload.components.progress?.state === "ready") void refreshVideoReplySetting();
-      return;
-    }
-    panel.replaceChildren(text("p", "组件管理服务暂不可用，请重试或更新程序。", "text-text-secondary text-body-m font-regular"),
-      button("重新检测", () => { void renderVideoCapabilityPanel(panel); }));
-  };
-
-  const renderCapabilityPanel = async (panel) => {
-    const heading = text("h3", "本地组件", "text-text-title text-title-m");
-    const summary = text(
-      "p",
-      "所有组件通过离线包安装。按需要分别导入，已安装组件可以复用。",
-      "text-text-secondary text-body-m font-regular"
-    );
-    const memory = card();
-    const video = card();
-    panel.replaceChildren(heading, summary, memory, video);
-    await Promise.allSettled([
-      renderMem0CapabilityPanel(memory),
-      renderVideoCapabilityPanel(video),
-    ]);
-  };
-
   const renderLocalUpdatePanel = (panel) => {
     const heading = text("h3", "本地补丁", "text-text-title text-title-m");
     const summary = text(
@@ -2436,7 +2282,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     if (panels.memory) panels.memory.__oliviaCompanionStatusNode = statusNode;
     const tasks = [
       ...(panels.llm ? [renderLlmSetupPanel(panels.llm, initialMode)] : []),
-      initialMode ? renderMem0CapabilityPanel(panels.capability, true) : renderCapabilityPanel(panels.capability),
+      ...(initialMode ? [renderMem0CapabilityPanel(panels.capability, true)] : []),
     ];
     if (initialMode) {
       statusNode.textContent = "先导入记忆包，再连接回信服务，即可开始写信。已有配置会自动沿用；语音、图片和视频无需在这里安装。";
@@ -2891,7 +2737,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     header.style.gap = "24px";
 
     const serviceMode = initialPanel === "relay";
-    const heading = text("h2", serviceMode ? "账户" : initialMode ? "欢迎使用 Olivia" : "本地陪伴", "text-text-title text-headline-m");
+    const heading = text("h2", serviceMode ? "账户" : initialMode ? "欢迎使用 Olivia" : "长期记忆", "text-text-title text-headline-m");
     heading.id = "olivia-companion-dialog-title";
     heading.style.margin = "0";
     const dismiss = () => {
@@ -3002,9 +2848,10 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         ]
       : [
           { id: "memory", label: "长期记忆", key: "memory" },
-          { id: "capability", label: "离线组件", key: "capability" },
         ];
 
+    // A single panel needs no tab row.
+    if (definitions.length === 1) tabs.hidden = true;
     const showPanel = (id) => {
       for (const tab of tabs.querySelectorAll('[role="tab"]')) {
         const active = tab.dataset.panelId === id;
@@ -3959,17 +3806,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const update = document.createElement("div");
     update.className = "flex flex-col gap-3";
     renderLocalUpdatePanel(update);
-    const components = document.createElement("details");
-    components.className = "olivia-group-advanced";
-    components.append(text("summary", "高级：离线组件状态"));
-    const componentsRow = document.createElement("div");
-    componentsRow.className = "olivia-group-row";
-    componentsRow.append(text("span", "长期记忆和视频等离线组件的安装状态。", "text-text-secondary text-body-m"),
-      button("查看", () => openDialog(false, "capability")));
-    components.append(componentsRow);
     help.append(update);
     mountDiagnosticExport(help);
-    help.append(components);
     requestJson("/toy/updates/local/status").then((value) => {
       reportGroupStatus(help, "version", typeof value.version === "string" ? `当前 ${value.version}` : "基础安装版");
     }).catch(() => {});
