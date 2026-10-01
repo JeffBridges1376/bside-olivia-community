@@ -143,6 +143,24 @@ def _tool_module():
     return module
 
 
+@pytest.mark.parametrize('host_offset', [0, 8, 9, -5])
+def test_backup_timestamp_uses_beijing_not_host_timezone(monkeypatch, host_offset):
+    from datetime import datetime, timedelta, timezone
+    tool = _tool_module()
+    class HostDatetime(datetime):
+        def timestamp(self):
+            value = self if self.tzinfo is not None else self.replace(
+                tzinfo=timezone(timedelta(hours=host_offset)))
+            return datetime.timestamp(value)
+    monkeypatch.setattr(tool, 'datetime', HostDatetime)
+    expected = int(datetime(2026, 9, 30, 12, 34, tzinfo=timezone(timedelta(hours=8))).timestamp())
+    for value in ('2026-09-30T12:34:00', '2026-09-30 12:34:00',
+                  '2026-09-30T12:34:00+08:00', '2026-09-30T04:34:00Z',
+                  '2026-09-30T13:34:00+09:00', expected, str(expected), expected * 1000):
+        assert tool.to_epoch(value) == expected
+    assert tool.epoch_of('2026-09-30', '12:34') == expected
+
+
 def _empty_install(tmp_path):
     """The smallest directory ``find_install`` accepts: the markers it looks
     for plus a state.json the tool can read."""

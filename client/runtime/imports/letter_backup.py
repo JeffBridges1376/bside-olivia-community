@@ -38,8 +38,11 @@ def _time(value):
             raise ValueError('LETTER_BACKUP_INVALID')
         return datetime.fromtimestamp(value, timezone.utc).isoformat()
     parsed = datetime.fromisoformat(_text(value, 64).replace('Z', '+00:00'))
-    # Older archive timestamps may have no timezone. Preserve that uncertainty.
-    return parsed.isoformat()
+    # Legacy PR #508 wall-clock strings are Beijing time. Canonicalize the
+    # instant before hashing so epoch, UTC and +08:00 imports share an identity.
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone(timedelta(hours=8)))
+    return parsed.astimezone(timezone.utc).isoformat()
 
 
 def _record(value):

@@ -1,5 +1,11 @@
 # Letter backups
 
+For timestamp comparison and duplicate detection, epoch values and ISO timestamps
+are normalized to UTC. Legacy timestamps without an explicit offset are interpreted
+as Beijing time (UTC+8), matching PR #508's source format. An absent timestamp stays
+unknown. This normalization does not rewrite existing archive records or remove
+duplicates that were already imported.
+
 Settings provides a text-only JSON backup (`olivia.letters.v1`) containing both sides of each mailbox letter, titles, source identities, recorded timestamps, original reply modes and statuses. Audio/video files, private-world controls, credentials and arbitrary internal metadata are not exported. Unknown timestamps remain unknown; numeric legacy timestamps are converted to ISO form. Imported voice/video letters are displayed as read-only text, retaining the original mode in the backup. This is a mailbox backup, not a full installation or personal-chat backup.
 
 Import validates the complete document before atomic archive insertion. A stable hash of the normalized individual record makes repeat import and export/import roundtrips idempotent without relying on the file hash or current export date. Existing live letters are compared too. Imports never queue replies, change relation scores, or require model extraction. Original text is searchable through the read-only Archive prompt path and is automatically indexed by the memory worker when enabled and ready, including previously imported records. Extracted Mem0 facts and their management list remain separate; background original indexing does not call the extraction model.
