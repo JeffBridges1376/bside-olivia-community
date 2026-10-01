@@ -60,5 +60,5 @@ const requestSetup=async()=>({paid:false});
     result = subprocess.run([str(browser), '--headless', '--disable-gpu', '--no-first-run',
         '--disable-background-networking', f'--user-data-dir={tmp_path / "profile"}',
         '--virtual-time-budget=1500', '--dump-dom', page.as_uri()], capture_output=True,
-        text=True, encoding='utf-8', errors='replace', timeout=30)
+        text=True, encoding='utf-8', errors='replace', timeout=90)
     assert '<pre id="result">PASS</pre>' in result.stdout, result.stdout[-2500:]

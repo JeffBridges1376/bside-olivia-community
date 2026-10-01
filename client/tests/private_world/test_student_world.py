@@ -3,7 +3,9 @@ import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-import httpx
+import aiohttp
+from aiohttp import web
+from aiohttp.test_utils import TestServer
 import pytest
 from runtime.private_world.daily_life import DailyLifeStore
 from runtime.private_world.daily_life_runtime import DailyLifeRuntime
@@ -61,22 +63,55 @@ def test_meals_persist_and_cannot_be_rewritten_atomically(tmp_path):
 
 def test_real_observations_are_checked_and_network_failure_is_unknown(monkeypatch):
     records = [{'icaoId':'ZSSS', 'obsTime': NOW.timestamp(), 'temp':25, 'cover':'BKN', 'wxString':'-RA'}]
-    def handle(request):
-        assert request.url.params['ids'] == 'ZSSS'
-        return httpx.Response(200, json=records)
-    client_class = httpx.AsyncClient
-    monkeypatch.setattr(student_world.httpx, 'AsyncClient', lambda **kw: client_class(transport=httpx.MockTransport(handle), **kw))
-    value = asyncio.run(student_world.shanghai_weather(NOW))
-    assert value['temperature_c'] == 25
-    assert student_world.weather_view(value, NOW)['status'] == 'fresh'
-    assert student_world.weather_view(value, NOW+timedelta(hours=3))['status'] == 'stale'
-    records[0]['obsTime'] += 60
-    assert asyncio.run(student_world.shanghai_weather(NOW)) is None
-    records.clear()
-    assert asyncio.run(student_world.shanghai_weather(NOW)) is None
-    def fail(request):
-        raise httpx.ConnectError('offline')
-    monkeypatch.setattr(student_world.httpx, 'AsyncClient', lambda **kw: client_class(transport=httpx.MockTransport(fail), **kw))
+    status = 200
+    malformed = False
+
+    async def handle(request):
+        assert request.method == 'GET'
+        assert dict(request.query) == {'ids': 'ZSSS', 'format': 'json'}
+        assert request.headers['User-Agent'] == 'Olivia-World/1.0'
+        if malformed:
+            return web.Response(text='{broken', content_type='application/json')
+        return web.json_response(records, status=status)
+
+    async def scenario():
+        nonlocal status, malformed
+        app = web.Application()
+        app.router.add_get('/api/data/metar', handle)
+        server = TestServer(app)
+        await server.start_server()
+        url = server.make_url('/api/data/metar')
+        real_get = aiohttp.ClientSession.get
+
+        def local_get(client, target, **kwargs):
+            assert target == 'https://aviationweather.gov/api/data/metar'
+            return real_get(client, url, **kwargs)
+
+        monkeypatch.setattr(aiohttp.ClientSession, 'get', local_get)
+        try:
+            value = await student_world.shanghai_weather(NOW)
+            assert value['temperature_c'] == 25
+            assert student_world.weather_view(value, NOW)['status'] == 'fresh'
+            assert student_world.weather_view(value, NOW+timedelta(hours=3))['status'] == 'stale'
+            records[0]['obsTime'] += 60
+            assert await student_world.shanghai_weather(NOW) is None
+            records.clear()
+            assert await student_world.shanghai_weather(NOW) is None
+            status = 503
+            assert await student_world.shanghai_weather(NOW) is None
+            malformed = True
+            assert await student_world.shanghai_weather(NOW) is None
+        finally:
+            await server.close()
+        assert await student_world.shanghai_weather(NOW) is None
+
+    asyncio.run(scenario())
+
+
+def test_weather_timeout_is_unknown(monkeypatch):
+    def timeout(*args, **kwargs):
+        raise TimeoutError('offline')
+    monkeypatch.setattr(aiohttp.ClientSession, 'get', timeout)
     assert asyncio.run(student_world.shanghai_weather(NOW)) is None
 
 
@@ -125,11 +160,12 @@ def test_weather_refresh_does_not_wait_for_life_or_depend_on_llm_success(tmp_pat
     assert store.snapshot(NOW-timedelta(seconds=1))['world']['weather']['status'] == 'unknown'
 
 
-def test_weather_failure_does_not_block_daily_life_or_retry_every_minute(tmp_path):
+@pytest.mark.parametrize('error', [aiohttp.ClientConnectionError('offline'), TimeoutError('offline')])
+def test_weather_failure_does_not_block_daily_life_or_retry_every_minute(tmp_path, error):
     calls = []
     async def provider(now):
         calls.append(now)
-        raise httpx.ConnectError('offline')
+        raise error
     class Gateway:
         async def complete(self, *args, **kwargs):
             return SimpleNamespace(text=json.dumps(life_decision(args[0])))
