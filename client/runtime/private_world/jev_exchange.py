@@ -71,20 +71,33 @@ async def _ask(port, state, questions, purpose):
     return answers
 
 
-def _quotes(text, prefix):
+def _quotes(text, prefix, level=0):
+    """Quote windows by granularity: 0 adds clause and multi-sentence spans, 1 adds
+    multi-sentence spans only, 2 offers whole sentences. Coarser levels fit long letters."""
     sentences = [m.group().strip() for m in re.finditer(r'[^。！？!?\n]+[。！？!?]?|[。！？!?]', text)]
-    sentences = [s for s in sentences if s]
-    if any(len(s) > 240 for s in sentences):
-        raise ValueError('JEV_EXCHANGE_QUOTE_CAPACITY')
+    pieces = []
+    for sentence in (s for s in sentences if s):
+        # A run-on sentence is cut only at a clause mark. Without one, cutting could
+        # separate a condition from its consequence, so the exchange still fails.
+        while len(sentence) > 240:
+            cut = max(sentence.rfind(mark, 0, 240) for mark in '，,；;')
+            if cut <= 0:
+                raise ValueError('JEV_EXCHANGE_QUOTE_CAPACITY')
+            cut += 1
+            pieces.append(sentence[:cut].strip())
+            sentence = sentence[cut:].strip()
+        if sentence:
+            pieces.append(sentence)
+    sentences = pieces
     candidates = list(sentences)
     # Offer contiguous windows, including complete conditional statements. The
     # classifier, not punctuation, decides whether an action exists in a span.
-    for sentence in sentences:
+    for sentence in (sentences if level == 0 else ()):
         clauses = [m.group() for m in re.finditer(r'[^，,；;]+[，,；;]?', sentence)]
         for start in range(len(clauses)):
             for end in range(start + 1, len(clauses) + 1):
                 candidates.append(''.join(clauses[start:end]).strip())
-    for start in range(len(sentences)):
+    for start in range(len(sentences) if level < 2 else 0):
         for end in range(start + 2, len(sentences) + 1):
             candidate = ''.join(sentences[start:end])
             if len(candidate) > 240:
@@ -98,9 +111,19 @@ def _quotes(text, prefix):
 
 
 async def extract(port, data, instructions, request_id):
+    """Coarsen quote windows until the request fits; the size check precedes the paid call."""
+    for level in (0, 1, 2):
+        try:
+            return await _extract(port, data, instructions, request_id, level)
+        except ValueError as exc:
+            if level == 2 or str(exc) not in {'JEV_EXCHANGE_QUOTE_CAPACITY', 'JEV_INPUT_TOO_LARGE'}:
+                raise
+
+
+async def _extract(port, data, instructions, request_id, level):
     from .daily_life import MAX_EXCHANGE_UPDATES
-    user = _quotes(data.get('user_letter', ''), 'u')
-    reply = _quotes(data.get('linli_reply', ''), 'r')
+    user = _quotes(data.get('user_letter', ''), 'u', level)
+    reply = _quotes(data.get('linli_reply', ''), 'r', level)
     quotes = {**user, **reply}
     sources = {key: data.get(key, '') for key in ('user_letter', 'linli_reply')}
     proactive = data.get('origin') == 'proactive'
@@ -295,7 +318,16 @@ async def extract(port, data, instructions, request_id):
     return payload
 
 async def conduct(port, data, instructions, request_id, *, conflict):
-    user = _quotes(data['user_letter'], 'u')
+    for level in (0, 1, 2):
+        try:
+            return await _conduct(port, data, instructions, request_id, conflict=conflict, level=level)
+        except ValueError as exc:
+            if level == 2 or str(exc) not in {'JEV_EXCHANGE_QUOTE_CAPACITY', 'JEV_INPUT_TOO_LARGE'}:
+                raise
+
+
+async def _conduct(port, data, instructions, request_id, *, conflict, level):
+    user = _quotes(data['user_letter'], 'u', level)
     boundaries = data.get('active_boundaries') or []
     # Construct rather than forward input: generated reproaches never enter this proof.
     sources = {'user_letter': data['user_letter']}
