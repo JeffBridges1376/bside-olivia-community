@@ -1,4 +1,5 @@
 import asyncio
+import json
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
@@ -61,14 +62,14 @@ def test_status_transient_failure_does_not_resubmit(tmp_path, monkeypatch, failu
             output=tmp_path/'reply.wav'
             if failure in (401,404,'persistent'):
                 with pytest.raises(CloudError): await api.generate('tts',{'text':'synthetic'},output)
-                assert len(polled)==(5 if failure=='persistent' else 1)
+                assert len(polled)==(24 if failure=='persistent' else 1)
                 assert not output.exists()
             else:
                 await api.generate('tts',{'text':'synthetic'},output)
                 assert output.read_bytes()==b'synthetic-output'
                 assert len(polled)==2
             assert len(submitted)==1
-            assert delays == ([1, 2, 4, 8, 16] if failure == 'persistent'
+            assert delays == ([1, 2, 4, 8, 16] + [30] * 19 if failure == 'persistent'
                               else [1] if failure in (401, 404) else [1, 2])
     asyncio.run(scenario())
 
@@ -206,6 +207,9 @@ def test_material_download_retry_keeps_same_order_and_upload(tmp_path):
             if request.path == '/v1/assets':
                 uploads.append(await request.read())
                 return web.json_response({'asset_id': 'source-one'}, status=201)
+            if request.path == '/v1/tasks/same-order':
+                return web.json_response({'task_id': 'same-order', 'status': 'succeeded',
+                    'outputs': [{'url': str(server.make_url('/result'))}]})
             if request.path == '/v1/tasks':
                 submissions.append(await request.json())
                 return web.json_response({'task_id': 'same-order', 'status': 'succeeded',
@@ -220,11 +224,83 @@ def test_material_download_retry_keeps_same_order_and_upload(tmp_path):
                 await api.generate('cover_video', {}, tmp_path / 'out.zip', assets={'source_asset': source}, receipt_path=receipt)
             fail_download = False
             await api.generate('cover_video', {}, tmp_path / 'out.zip', assets={'source_asset': source}, receipt_path=receipt)
-            assert submissions[0] == submissions[1]
+            assert len(submissions) == 1
             assert uploads == [b'synthetic']
             assert (tmp_path / 'out.zip').read_bytes() == b'materials'
             assert 'synthetic' not in receipt.read_text()
     asyncio.run(scenario())
+
+
+def test_service_switch_recovers_after_old_retry_window(tmp_path, monkeypatch):
+    calls, delays = [], []
+    async def sleep(seconds): delays.append(seconds)
+    async def request(self, action, data):
+        calls.append(action)
+        if action == 'capabilities': return {'kinds': ['cover_video'], 'shared_assets': []}
+        if action == 'submit': return {'task_id': 'existing', 'status': 'running'}
+        assert action == 'status'
+        if calls.count('status') <= 6: raise CloudError('GPU_REQUEST_FAILED', 502)
+        return {'task_id': 'existing', 'status': 'succeeded'}
+    async def download(self, task, output, **kwargs): return task
+    monkeypatch.setattr(RemoteGeneration, 'request', request)
+    monkeypatch.setattr(RemoteGeneration, '_download', download)
+    monkeypatch.setattr('runtime.remote_generation.asyncio.sleep', sleep)
+    result = asyncio.run(RemoteGeneration().generate('cover_video', {}, tmp_path / 'out'))
+    assert result['status'] == 'succeeded'
+    assert calls.count('submit') == 1
+    assert sum(delays) > 60
+
+
+@pytest.mark.parametrize('restart_status', ['succeeded', 'missing', 'auth'])
+def test_restart_resumes_receipt_without_submission(tmp_path, monkeypatch, restart_status):
+    calls = []
+    restarting = False
+    async def request(self, action, data):
+        calls.append(action)
+        if action == 'capabilities': return {'kinds': ['cover_video'], 'shared_assets': []}
+        if action == 'submit': return {'task_id': 'existing', 'status': 'running'}
+        assert action == 'status' and data == {'task_id': 'existing'}
+        if not restarting: raise asyncio.CancelledError()
+        if restart_status == 'missing': raise CloudError('GPU_REQUEST_FAILED', 404)
+        if restart_status == 'auth': raise CloudError('GPU_AUTH_FAILED', 502)
+        return {'task_id': 'existing', 'status': 'succeeded'}
+    async def sleep(seconds): pass
+    async def download(self, task, output, **kwargs): return task
+    monkeypatch.setattr(RemoteGeneration, 'request', request)
+    monkeypatch.setattr(RemoteGeneration, '_download', download)
+    monkeypatch.setattr('runtime.remote_generation.asyncio.sleep', sleep)
+    receipt = tmp_path / 'receipt.json'
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(RemoteGeneration().generate('cover_video', {}, tmp_path / 'out', receipt_path=receipt))
+    assert json.loads(receipt.read_text())['task_id'] == 'existing'
+    restarting = True
+    if restart_status == 'succeeded':
+        assert asyncio.run(RemoteGeneration().generate('cover_video', {}, tmp_path / 'out', receipt_path=receipt))['status'] == 'succeeded'
+    else:
+        with pytest.raises(CloudError):
+            asyncio.run(RemoteGeneration().generate('cover_video', {}, tmp_path / 'out', receipt_path=receipt))
+    assert calls.count('submit') == 1
+    assert receipt.exists()
+
+
+def test_legacy_receipt_reuses_idempotency_key_after_lost_submit_response(tmp_path, monkeypatch):
+    submissions = []
+    async def request(self, action, data):
+        if action == 'capabilities': return {'kinds': ['cover_video'], 'shared_assets': []}
+        assert action == 'submit'
+        submissions.append(dict(data))
+        if len(submissions) == 1: raise CloudError('GPU_CONNECTION_FAILED')
+        return {'task_id': 'existing', 'status': 'succeeded'}
+    async def download(self, task, output, **kwargs): return task
+    monkeypatch.setattr(RemoteGeneration, 'request', request)
+    monkeypatch.setattr(RemoteGeneration, '_download', download)
+    receipt = tmp_path / 'receipt.json'
+    with pytest.raises(CloudError):
+        asyncio.run(RemoteGeneration().generate('cover_video', {}, tmp_path / 'out', receipt_path=receipt))
+    assert 'task_id' not in json.loads(receipt.read_text())
+    asyncio.run(RemoteGeneration().generate('cover_video', {}, tmp_path / 'out', receipt_path=receipt))
+    assert submissions[0] == submissions[1]
+    assert json.loads(receipt.read_text())['task_id'] == 'existing'
 
 
 def test_stalled_result_download_is_fetched_again_without_resubmitting(monkeypatch, tmp_path):
