@@ -198,7 +198,12 @@ def to_epoch(value):
             v = float(s)
         else:
             try:
-                v = datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+                parsed = datetime.fromisoformat(s.replace("Z", "+00:00"))
+                # Legacy wall-clock strings use Beijing time, just like .soul.
+                # Never let the importing computer's timezone change the instant.
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=TZ)
+                v = parsed.timestamp()
             except ValueError:
                 return None
     if v > 1e11:        # 秒级 epoch ~1.8e9，比这大得多的一律当毫秒

@@ -40,3 +40,51 @@ def test_unknown_dates_stay_unknown_and_invalid_schema_is_rejected():
     assert validate_backup(payload)[0]['created_at'] is None
     with pytest.raises(ValueError):
         validate_backup({'schema_version':'other','letters':[]})
+
+
+@pytest.mark.parametrize('value', [1790742840, '1790742840',
+    '2026-09-30T12:34:00+08:00', '2026-09-30T04:34:00Z',
+    '2026-09-30T13:34:00+09:00', '2026-09-30T12:34:00'])
+@pytest.mark.parametrize('reverse', [False, True])
+def test_soul_json_same_instant_deduplicates_in_both_orders(tmp_path, value, reverse):
+    soul = {'format': 'soul', 'manifest': {'memory': {'exchanges': [
+        {'incoming': 'synthetic', 'reply': 'reply', 'date': '2026-09-30', 'time': '12:34'}]}}}
+    backup = {'schema_version': 'olivia.letters.v1', 'letters': [
+        {'content': 'synthetic', 'reply_text': 'reply', 'created_at': value,
+         'origin': 'user', 'reply_mode': 'text', 'letter_status': 'COMPLETED'}]}
+    first, second = (backup, soul) if reverse else (soul, backup)
+    with LocalMemoryAdapter(tmp_path / 'memory.sqlite3') as adapter:
+        assert import_letters(first, adapter=adapter)['inserted'] == 1
+        result = import_letters(second, adapter=adapter, existing=adapter.list_legacy())
+        assert (result['inserted'], result['duplicates']) == (0, 1)
+        assert len(adapter.list_legacy()) == 1
+
+
+def test_existing_offset_backup_deduplicates_without_rewriting_archive(tmp_path):
+    import json
+    from runtime.memory.memory_port import LegacyLetter
+    from runtime.imports.letter_backup import KIND, _record, identity
+    old = _record({'content': 'synthetic', 'reply_text': 'reply',
+                   'created_at': '2026-09-30T12:34:00+08:00',
+                   'replied_at': '2026-09-30T12:35:00+08:00'})
+    # Preserve the serialized representation emitted by earlier releases.
+    old.update(created_at='2026-09-30T12:34:00+08:00', replied_at='2026-09-30T12:35:00+08:00')
+    with LocalMemoryAdapter(tmp_path / 'memory.sqlite3') as adapter:
+        adapter.import_legacy_records([LegacyLetter(content=json.dumps(old),
+            source_record_id='letter-backup:' + identity(old), source='letter-backup',
+            occurred_at=old['created_at'], metadata={'import_kind': KIND, 'backup_record': old,
+            'user_content': old['content'], 'reply_text': old['reply_text']})], atomic=True)
+        before = adapter.list_legacy()
+        incoming = {**old, 'created_at': 1790742840, 'replied_at': 1790742900}
+        result = import_letters({'schema_version': 'olivia.letters.v1', 'letters': [incoming]},
+                                adapter=adapter, existing=before)
+        assert (result['inserted'], result['duplicates']) == (0, 1)
+        assert adapter.list_legacy() == before
+
+
+def test_time_normalization_does_not_merge_different_instants(tmp_path):
+    rows = [{'content': 'synthetic', 'reply_text': 'reply', 'created_at': value}
+            for value in ('2026-09-30T12:34:00+08:00', '2026-09-30T12:34:00Z', None)]
+    with LocalMemoryAdapter(tmp_path / 'memory.sqlite3') as adapter:
+        result = import_letters({'schema_version': 'olivia.letters.v1', 'letters': rows}, adapter=adapter)
+        assert result['inserted'] == 3
