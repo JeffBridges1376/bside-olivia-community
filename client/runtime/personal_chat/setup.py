@@ -447,6 +447,7 @@ def install_setup_routes(app: web.Application, server) -> None:
             runtime["napcat_state"] = "ONEBOT_READY" if ready else "ONEBOT_CONFIG_PENDING"
             if ready:
                 runtime.pop("napcat_error", None)
+                await asyncio.to_thread(napcat_installer.remember_account, root, account)
             return str(runtime["napcat_state"])
         runtime["napcat_account"] = None
         if await asyncio.to_thread(napcat_installer.webui_available, root):
@@ -670,6 +671,7 @@ def install_setup_routes(app: web.Application, server) -> None:
                 runtime["napcat_account"] = account
                 runtime["napcat_state"] = "ONEBOT_READY"
                 runtime.pop("napcat_error", None)
+                await asyncio.to_thread(napcat_installer.remember_account, _root(server), account)
             else:
                 account = str(body.get("account", "")).strip()
                 token = str(body.get("token", ""))
