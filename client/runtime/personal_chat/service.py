@@ -538,7 +538,10 @@ class PersonalChatService:
                         row['sticker_delivery_status'] = 'UNKNOWN'
                 await persist_state(self.persist)
             self._schedule_photo(row, send)
-            if event.channel == 'qq' and row.get('image_status') == 'FAILED':
+            from runtime.image_reply import is_companion_image
+            # Only a photo the user asked for gets a failure notice; a casual
+            # picture that did not come out is simply not sent.
+            if event.channel == 'qq' and row.get('image_status') == 'FAILED' and is_companion_image(row):
                 await photo_notice(row, send, self.persist, 'failure', '照片这次没生成成功，没能发给你。稍后再试一下。')
             self._schedule_commit(row)
             await asyncio.sleep(0)
@@ -589,7 +592,7 @@ class PersonalChatService:
                     row.update(delivery_status='FAILED', letter_status='FAILED',
                                error_code='PERSONAL_CHAT_IMAGE_UNAVAILABLE')
                     await persist_state(self.persist)
-                if row.get('image_status') == 'FAILED' or primary_image and row.get('image_status') == 'SKIPPED':
+                if primary_image and row.get('image_status') in {'FAILED', 'SKIPPED'}:
                     await photo_notice(row, send, self.persist, 'failure',
                         '照片这次没生成成功，没能发给你。稍后再试一下。')
             except asyncio.CancelledError:
@@ -609,7 +612,7 @@ class PersonalChatService:
                     row.update(delivery_status=('SENDING' if row.get('image_delivery_status') in {'SENDING', 'UNKNOWN'} else 'FAILED'),
                                letter_status='FAILED', error_code='PERSONAL_CHAT_IMAGE_UNAVAILABLE')
                 await persist_state(self.persist)
-                if row.get('image_delivery_status') != 'DELIVERED':
+                if primary_image and row.get('image_delivery_status') != 'DELIVERED':
                     await photo_notice(row, send, self.persist, 'failure',
                         '照片没能确认发送成功，先告诉你一声。')
             finally:
