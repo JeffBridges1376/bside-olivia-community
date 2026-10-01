@@ -7,7 +7,7 @@ import hashlib
 import json
 from pathlib import Path
 import sqlite3
-import httpx
+import aiohttp
 from typing import Callable
 from llm_gateway import GatewayRequestScope, ProviderProtocolError
 
@@ -363,7 +363,7 @@ class DailyLifeRuntime:
                         weather = await self.weather_provider(now)
                         if weather:
                             self.store.record_weather(weather, now)
-                    except (httpx.HTTPError, OSError, ValueError, TypeError, KeyError):
+                    except (aiohttp.ClientError, OSError, ValueError, TypeError, KeyError):
                         pass  # Keep the last timestamped observation; life can continue offline.
                 state = self.store.snapshot(now)
                 from runtime.reply.jev_questions import configured_questions

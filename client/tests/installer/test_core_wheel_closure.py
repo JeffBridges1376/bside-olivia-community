@@ -4,10 +4,34 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
+import textwrap
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_backend_imports_without_development_only_httpx(tmp_path):
+    script = textwrap.dedent(f"""
+        import importlib.abc
+        import sys
+
+        class CoreOnly(importlib.abc.MetaPathFinder):
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname.split('.')[0] == 'httpx':
+                    raise ModuleNotFoundError('httpx is not in the core runtime', name=fullname)
+
+        sys.meta_path.insert(0, CoreOnly())
+        sys.path.insert(0, {str(ROOT)!r})
+        import local_server
+        import original_client_server
+        print('CORE_BACKEND_IMPORT_READY')
+    """)
+    result = subprocess.run([sys.executable, '-I', '-B', '-c', script], cwd=tmp_path,
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'CORE_BACKEND_IMPORT_READY' in result.stdout
 
 
 def test_offline_schema_matches_pinned_closure_and_requires_photo_decoder():

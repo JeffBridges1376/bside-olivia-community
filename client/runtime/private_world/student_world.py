@@ -1,7 +1,7 @@
 """Stable character timetable and timestamped Shanghai observations."""
 from datetime import datetime, timedelta, timezone
 import math
-import httpx
+import aiohttp
 
 LOCAL = timezone(timedelta(hours=8))
 # Character-world timetable, not the university's published timetable.
@@ -62,11 +62,12 @@ def weather_view(value, now):
 async def shanghai_weather(now):
     """Public station observation; no model inference or private data sent."""
     try:
-        async with httpx.AsyncClient(timeout=8) as client:
-            response = await client.get('https://aviationweather.gov/api/data/metar',
-                params={'ids': 'ZSSS', 'format': 'json'}, headers={'User-Agent': 'Olivia-World/1.0'})
-            response.raise_for_status()
-            rows = response.json()
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8)) as client:
+            async with client.get('https://aviationweather.gov/api/data/metar',
+                params={'ids': 'ZSSS', 'format': 'json'}, headers={'User-Agent': 'Olivia-World/1.0'},
+                allow_redirects=False) as response:
+                response.raise_for_status()
+                rows = await response.json()
         if not isinstance(rows, list):
             return None
         row = max((r for r in rows if isinstance(r, dict) and r.get('icaoId') == 'ZSSS'), key=lambda r: r['obsTime'])
@@ -78,5 +79,5 @@ async def shanghai_weather(now):
                 'observed_at': observed.isoformat(), 'temperature_c': temp,
                 'cloud_cover': str(row.get('cover') or '')[:16],
                 'weather_codes': str(row.get('wxString') or '')[:64]}
-    except (httpx.HTTPError, ValueError, TypeError, KeyError, OverflowError):
+    except (aiohttp.ClientError, TimeoutError, ValueError, TypeError, KeyError, OverflowError):
         return None
