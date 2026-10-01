@@ -410,6 +410,24 @@ def webui_available(data_root: Path) -> bool:
         return False
 
 
+def remember_account(data_root: Path, account: str) -> bool:
+    """Let NapCat quick-login this QQ account on its next start instead of asking for a new QR scan."""
+    if not isinstance(account, str) or not account.isascii() or not account.isdigit():
+        return False
+    path = _config_dir(data_root) / "webui.json"
+    try:
+        current = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(current, dict):
+        return False
+    if current.get("autoLoginAccount") == account:
+        return True
+    current["autoLoginAccount"] = account
+    _atomic_text(path, json.dumps(current, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+    return True
+
+
 def account_config_ready(data_root: Path, account: str) -> bool:
     """NapCat materializes onebot11_<uin>.json after loading the default template."""
     if not isinstance(account, str) or not account.isascii() or not account.isdigit():

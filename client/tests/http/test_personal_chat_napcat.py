@@ -162,3 +162,20 @@ def test_account_specific_onebot_config_is_required_after_login(tmp_path: Path) 
     assert module.account_config_ready(tmp_path, "123456789") is False
     (config / "onebot11_123456789.json").write_text("{}", encoding="utf-8")
     assert module.account_config_ready(tmp_path, "123456789") is True
+
+
+def test_logged_in_account_is_kept_for_napcat_quick_login(tmp_path: Path) -> None:
+    from runtime.personal_chat import napcat_installer as module
+
+    _shell(tmp_path)
+    assert module.remember_account(tmp_path, "123456789") is False  # no WebUI config yet
+    module._prepare_webui(tmp_path)
+    assert module.remember_account(tmp_path, "12345abc") is False
+    assert module.remember_account(tmp_path, "123456789") is True
+    path = tmp_path / "personal-chat" / "napcat" / "workdir" / "config" / "webui.json"
+    first = json.loads(path.read_text(encoding="utf-8"))
+    assert first["autoLoginAccount"] == "123456789"
+    # Rewriting the managed WebUI settings on the next start keeps the account.
+    module._prepare_webui(tmp_path)
+    again = json.loads(path.read_text(encoding="utf-8"))
+    assert again["autoLoginAccount"] == "123456789" and again["token"] == first["token"]
