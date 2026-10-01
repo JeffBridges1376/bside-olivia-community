@@ -3,7 +3,7 @@ import hashlib
 import json
 import re
 
-SEMANTIC_REQUEST_MAX_BYTES = 32 * 1024
+from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES as SEMANTIC_REQUEST_MAX_BYTES
 
 
 def decide(client, packet):

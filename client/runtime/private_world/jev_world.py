@@ -3,6 +3,7 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 
 from .world_decision import compile_decision
+from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES as SEMANTIC_REQUEST_MAX_BYTES
 
 
 # These are available everyday actions/foods, not fixed personality preferences.
@@ -276,7 +277,7 @@ async def decide(port, data, instructions):
     digit_fields = []
     from runtime.reply.companion_decision import _json
     packet_size = lambda: len(_json(dict(state=state, questions=questions, purpose='world-decision')).encode())
-    if packet_size() > 32768:
+    if packet_size() > SEMANTIC_REQUEST_MAX_BYTES:
         from .world_decision import LIFE_PROMPT
         if instructions.startswith(LIFE_PROMPT):
             state['world_contract'] = _COMPACT_WORLD_CONTRACT
@@ -312,7 +313,8 @@ async def decide(port, data, instructions):
     pending = sorted(project_timing.pending(data['projects']), key=lambda pair: (
         not pair[1].get('deadline_expired', False), pair[1]['updated_at'], pair[1]['id']))
     deferred = []
-    while packet_size() > 30000 and pending:
+    # Leave room under the hard bound, in the same proportion as before (30000/32768).
+    while packet_size() > SEMANTIC_REQUEST_MAX_BYTES * 30000 // 32768 and pending:
         index, _ = pending.pop()
         deferred.append(index)
         prefix = f'project_time_{index}_'
@@ -326,7 +328,7 @@ async def decide(port, data, instructions):
         state['project_timing_coverage'] = {'deferred_project_indices': sorted(deferred),
             'pending_count': len(deferred), 'meaning': '这些原项目完整保留，时限尚待后续正常世界tick解释，本次禁止推进或判完成；不是已取消。'}
     if (any(not q['criteria'] or len(q['criteria']) > 255 for q in questions.values())
-            or packet_size() > 32768):
+            or packet_size() > SEMANTIC_REQUEST_MAX_BYTES):
         raise ValueError('JEV_INPUT_TOO_LARGE')
     answers = await port.ask(state, questions, purpose='world-decision')
     if (not isinstance(answers, dict) or set(answers) != set(questions)

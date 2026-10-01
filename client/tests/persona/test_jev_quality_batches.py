@@ -1,3 +1,4 @@
+from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES
 import asyncio
 import pytest
 
@@ -11,7 +12,7 @@ def questions(count):
 
 
 def test_utf8_batches_preserve_complete_state_and_all_questions():
-    state = {'frozen_world': '课程与来源' * 1600, 'recent_dialogue': ['原始记录']}
+    state = {'frozen_world': '课程与来源' * 4200, 'recent_dialogue': ['原始记录']}
     calls = []
     class Port:
         async def ask(self, actual, batch, *, purpose):
@@ -32,7 +33,7 @@ def test_oversized_single_question_fails_before_any_partial_calls():
         async def ask(self, *args, **kwargs):
             calls.append(1)
     source = questions(1)
-    source['too_big'] = {'instructions': '中' * 11000, 'criteria': {'yes': '是'}}
+    source['too_big'] = {'instructions': '中' * 27500, 'criteria': {'yes': '是'}}
     with pytest.raises(ValueError, match='JEV_INPUT_TOO_LARGE'):
         asyncio.run(_ask(Port(), {'complete': 'unchanged'}, source, 'quality_test'))
     assert calls == []
@@ -40,7 +41,7 @@ def test_oversized_single_question_fails_before_any_partial_calls():
 
 def test_oversized_evidence_is_not_silently_trimmed():
     with pytest.raises(ValueError, match='JEV_INPUT_TOO_LARGE'):
-        _question_batches({'evidence': '中' * 11000}, questions(1), 'quality_test')
+        _question_batches({'evidence': '中' * 27500}, questions(1), 'quality_test')
 
 
 def test_question_count_limit_still_applies_with_tiny_payload():
@@ -49,11 +50,11 @@ def test_question_count_limit_still_applies_with_tiny_payload():
 
 
 def test_near_limit_full_evidence_splits_even_only_five_questions():
-    state = {'full_recent_dialogue_and_authority': 'x' * 31000}
+    state = {'full_recent_dialogue_and_authority': 'x' * 80000}
     source = questions(5)
     full = _json({'state': state, 'questions': source, 'purpose': 'quality_autonomy_life'}).encode()
-    assert len(full) > 32768
+    assert len(full) > JEV_MAX_INPUT_BYTES
     batches = _question_batches(state, source, 'quality_autonomy_life')
     assert len(batches) > 1
     assert [key for batch in batches for key in batch] == list(source)
-    assert all(len(_json({'state': state, 'questions': batch, 'purpose': 'quality_autonomy_life'}).encode()) <= 32768 for batch in batches)
+    assert all(len(_json({'state': state, 'questions': batch, 'purpose': 'quality_autonomy_life'}).encode()) <= JEV_MAX_INPUT_BYTES for batch in batches)
