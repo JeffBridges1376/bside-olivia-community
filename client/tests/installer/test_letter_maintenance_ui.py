@@ -71,7 +71,7 @@ def test_real_mutation_helper_accepts_maintenance_envelopes_and_errors():
     harness = r'''
 const assert=require('node:assert/strict');
 const apiBase='http://127.0.0.1:12345';
-const VIDEO_REPLY_SETTINGS_PATH='/video',LOCAL_LETTER_IMPORT_PATH='/import',MEMORY_RETRY_PATH='/memory';
+const VIDEO_REPLY_SETTINGS_PATH='/video',LOCAL_LETTER_IMPORT_PATH='/import',MEMORY_RETRY_PATH='/memory',MEMORY_CLEAR_PATH='/memory/clear';
 const CONFIRM_HEADER='X-Olivia-Companion-Action',CONFIRM_VALUE='confirmed';
 let timeoutMs=0,fail=false;
 const window={setTimeout(callback,ms){timeoutMs=ms;return 1},clearTimeout(){}};
