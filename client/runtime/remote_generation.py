@@ -199,7 +199,16 @@ class RemoteGeneration:
             temporary_receipt.replace(receipt)
         progress = getattr(self, 'progress', lambda phase, task: None)
         progress('submission', {})
-        task = await self.request('submit', submission)
+        # A known order must never go through admission/billing again. Older
+        # receipts retain their idempotency key for ambiguous submission failures.
+        task_id = saved.get('task_id')
+        task = (await self._status(task_id) if task_id is not None
+                else await self.request('submit', submission))
+        if receipt:
+            temporary_receipt = receipt.with_suffix('.tmp')
+            temporary_receipt.write_text(json.dumps({'fingerprint': fingerprint,
+                'submission': submission, 'task_id': task['task_id']}), encoding='utf-8')
+            temporary_receipt.replace(receipt)
         progress('generation', task)
         if task.get('stage') == 'skipped':
             return task
@@ -222,15 +231,17 @@ class RemoteGeneration:
         return result
 
     async def _status(self, task_id):
-        for attempt in range(5):
+        # Ten minutes of bounded backoff lets the API survive a service switch.
+        # Only reads are retried; authentication/contract errors fail immediately.
+        for attempt in range(24):
             try:
                 return await self.request('status', {'task_id': task_id})
             except CloudError as exc:
                 transient = exc.code in ('GPU_CONNECT_FAILED', 'GPU_CONNECTION_TIMEOUT', 'GPU_CONNECTION_FAILED')
                 transient |= exc.code == 'GPU_REQUEST_FAILED' and exc.status in (502, 503, 504)
-                if not transient or attempt == 4:
+                if not transient or attempt == 23:
                     raise
-                await asyncio.sleep(2 ** (attempt + 1))
+                await asyncio.sleep(min(2 ** (attempt + 1), 30))
 
     async def download_task(self, task_id, output, *, validate=None):
         """Recover an existing result without submitting or charging another job."""
