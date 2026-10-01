@@ -147,6 +147,7 @@ client/docs/reviews/*
 !client/docs/PERSONA_DISTILLATION_TASK.md
 !client/docs/B01_VISUAL_BASELINE.md
 !client/docs/B02_HTTP_CONTRACT.md
+!client/docs/LETTER_MAINTENANCE.md
 !client/docs/B02_ERROR_CODES.md
 !client/docs/B02_COVERAGE.md
 !client/docs/B09_MEDIA_STATE.md

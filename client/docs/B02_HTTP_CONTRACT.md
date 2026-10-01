@@ -34,6 +34,16 @@ B01 的私有 manifest/state matrix 只允许存在于 ignored `.evidence/`。�
 - `contracts/http_contract.schema.json`：版本化 schema。
 - `contracts/http_contract.example.json`：脱敏最小示例。
 
+### 信箱对比与整理
+
+三个端点均为 POST，要求 `X-Olivia-Companion-Action: confirmed`，使用记忆管理互斥锁。请求上限为 16 MiB + 1024 字节；`backup` 可选，沿用信件文件导入格式。所有操作只在本地完成，无模型调用。
+
+- `/toy/letter/maintenance/preview`：接收 `{backup?, page?: 0}`，返回 `READY/token/counts/total/items/near_limited`。每页 30 项，`items` 包含对比摘要、处理选项 ID，不返回可任意写入的内部计划。近似比较达到上限时 `near_limited=true`，完全重复检查不受影响。
+- `/toy/letter/maintenance/detail`：接收 `{backup?, key}`，返回所选信件的完整 `content/reply_text`；不会返回文件路径、其他媒体或凭据。
+- `/toy/letter/maintenance/apply`：接收 `{backup?, token, selected: [操作ID]}`。重新核对预览与当前状态，冲突或过期不写入；成功返回 `APPLIED/changed/provider_calls:0`。写入可恢复的信箱覆盖项，不修改原始档案。
+
+错误：`LETTER_MAINTENANCE_STALE`（409，重新预览）、`MEMORY_ADMIN_BUSY`（409）、`LETTER_MAINTENANCE_INVALID`（400）、`LETTER_BACKUP_STORAGE_UNAVAILABLE`（503）。详见 [信件整理说明](LETTER_MAINTENANCE.md)。
+
 ## 路由状态
 
 | 路由组 | 路径 | 状态 | 说明 |
