@@ -29,3 +29,19 @@ def test_snapshot_prioritizes_active_tasks_then_newest_completed(reverse):
 def test_snapshot_ignores_malformed_entries():
     assert _recent_diagnostic_tasks(None) == ()
     assert _recent_diagnostic_tasks([None, 'private', {'created_at': None}]) == ({'created_at': None},)
+
+
+def test_letters_stay_visible_behind_stuck_chats_and_recent_chat_failures():
+    day = 86_400
+    now = 30 * day
+    stuck = [dict(channel='wechat', letter_status='PROCESSING', delivery_status='DELIVERY_UNCONFIRMED',
+                  created_at=now - 7 * day + i) for i in range(13)]
+    failures = [dict(channel='qq', letter_status='FAILED', delivery_status='FAILED',
+                     created_at=now - 3600 + i) for i in range(15)]
+    letters = [dict(letter_id=f'l{i}', letter_status='COMPLETED', created_at=now - 600 + i) for i in range(10)]
+    snapshot = _recent_diagnostic_tasks([*stuck, *failures, *letters])
+    assert len(snapshot) == 20
+    assert not any(item in stuck for item in snapshot)
+    kept = [item for item in snapshot if item.get('letter_id')]
+    assert [item['letter_id'] for item in kept] == [f'l{i}' for i in range(9, 1, -1)]
+    assert sum(item in failures for item in snapshot) == 12

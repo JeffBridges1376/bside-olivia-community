@@ -335,8 +335,13 @@ async def _jev_photo_plan(server, row, content, text, reference, photo_id, port)
 
 async def prepare(server, row, content, text, *, channel='letter', on_ready=None):
     """Recover the saved request through bounded transient failures, never a new job."""
-    if row.get('companion_decision') and not is_companion_image(row):
-        return  # No implicit photo may bypass the frozen single-body decision.
+    if not secondary_photo_allowed(row):
+        # No implicit photo may bypass the frozen decision. Record that, or the
+        # finished letter waits for a photo that will never come.
+        if row.get('image_status') not in ('COMPLETED', 'SKIPPED', 'FAILED'):
+            row['image_status'] = 'SKIPPED'
+            server._persist_store_state()
+        return
     while True:
         if row.get('image_status') == 'RETRY_PENDING':
             remaining = row.get('image_retry_at', 0) - datetime.now().timestamp()
