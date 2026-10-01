@@ -176,9 +176,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         this.setOpen(false);
         if(['SKIPPED','NOT_REQUESTED'].includes(data?.imageStatus)){this.replaceChildren();return;}
         if(data?.imageStatus==='FAILED'){
-          const reasons={GPU_NOT_CONFIGURED:'请先在云端 GPU 设置中连接照片服务。',GPU_AUTH_FAILED:'照片服务验证失败，请检查云端 GPU 设置。',GPU_INSUFFICIENT_BALANCE:'云端余额不足，请检查云服务余额。',GPU_BILLING_CONSENT_REQUIRED:'请先在云端 GPU 设置中确认使用服务。',IMAGE_DEPENDENCY_MISSING:'照片组件不完整，请更新或修复客户端。'};
+          const reasons={GPU_NOT_CONFIGURED:'请先连接 Olivia 账户。',GPU_AUTH_FAILED:'照片服务验证失败，请检查 Olivia 账户。',GPU_INSUFFICIENT_BALANCE:'云端余额不足，请检查云服务余额。',GPU_BILLING_CONSENT_REQUIRED:'请先在设置中确认使用云端服务。',IMAGE_DEPENDENCY_MISSING:'照片组件不完整，请更新或修复客户端。'};
           const code=/^[A-Z][A-Z0-9_]{0,95}$/.test(data.imageErrorCode||'')?data.imageErrorCode:'';
-          this.textContent='照片未能附上。'+(reasons[code]||'请导出诊断包以便排查。')+(code?'（'+code+'）':'');return;
+          this.textContent='照片这次没能附上。'+(reasons[code]||'');this.title=code;return;
         }
         this.textContent=data.imageStatus==='RETRY_PENDING'?'照片连接暂时中断，正在自动重试…':data.imagePhase==='waiting'||data.imageCloudStatus==='queued'?'照片正在排队，完成后会附在正文后…':'照片正在准备…';
       } catch(_){if(controller.signal.aborted)return;if(this.isConnected&&id===this.getAttribute('letter-id'))this.textContent='暂时无法获取照片状态，正在重试…';}
@@ -3170,12 +3170,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const confirmReplyRoute = (route, ready, video = false, readiness = {}) => new Promise((resolve) => {
     const cloudUnavailable = !ready && readiness.backend === 'remote';
     const cloudMessages = {
-      GPU_NOT_CONFIGURED: '请在“云端 GPU”中配置连接。',
+      GPU_NOT_CONFIGURED: '请先连接 Olivia 账户。',
       GPU_TLS_FAILED: '无法验证云端证书，请检查系统时间和网络。',
       GPU_CONNECTION_TIMEOUT: '云端检查超时，请稍后重试。',
       GPU_CONNECT_FAILED: '无法连接云端服务，请检查网络后重试。',
       GPU_CONNECTION_FAILED: '云端连接中断，请重试。',
-      GPU_AUTH_FAILED: '云端认证失败，请检查“云端 GPU”中的账户配置。',
+      GPU_AUTH_FAILED: '云端认证失败，请检查 Olivia 账户。',
       GPU_RESPONSE_INVALID: '云端返回异常，请重试。',
       GPU_QUEUE_FULL: '云端繁忙，请稍后重试。',
       GPU_CAPABILITY_UNAVAILABLE: '云端当前未提供所需生成能力，请稍后重试。',
@@ -4546,7 +4546,7 @@ BOOTSTRAP_JAVASCRIPT = r'''
         const data=(await response.json()).data;const status=this.querySelector('.voice-status');if(!status||!data)return;
         const labels={loading:'正在准备翻唱…',transcribing:'正在识别原曲歌词…',loading_model:'正在加载翻唱模型…',generating:'林离正在翻唱…',decoding:'正在保存歌曲音频…',completed:'歌曲已完成，正在准备回信…'};
         const errors={COVER_LYRICS_REQUIRED:'未能识别歌词，请补充原曲歌词后重新寄信。',COVER_RUNTIME_UNAVAILABLE:'翻唱组件尚未准备完整，请检查本地组件。',COVER_GENERATION_TIMEOUT:'这次翻唱等待超时，可以手动重试。',COVER_SOURCE_REQUIRED:'这封信缺少原曲音频，请重新选择后寄信。'};
-        const cloudErrors={GPU_TLS_FAILED:'云端证书校验失败，请更新补丁并检查电脑时间。',GPU_CONNECTION_TIMEOUT:'云端连接超时，本次生成已停止等待。',GPU_CONNECT_FAILED:'无法连接云端，本次生成未完成。',GPU_CONNECTION_FAILED:'云端连接中断，本次生成未完成。',GPU_AUTH_FAILED:'云端 Key 验证失败，请检查云端 GPU 设置。',GPU_QUEUE_FULL:'云端队列已满，本次任务未进入队列。',GPU_TASK_TIMEOUT:'云端任务等待超时，已停止等待。',GPU_TASK_FAILED:'云端生成失败。',GPU_DOWNLOAD_FAILED:'生成结果下载失败。',GPU_SHARED_SCENE_MISSING:'视频素材与云端不匹配，请联系管理员。',MEDIA_JOB_INTERRUPTED:'上次生成已中断，未自动重复提交。'};
+        const cloudErrors={GPU_TLS_FAILED:'云端证书校验失败，请更新补丁并检查电脑时间。',GPU_CONNECTION_TIMEOUT:'云端连接超时，本次生成已停止等待。',GPU_CONNECT_FAILED:'无法连接云端，本次生成未完成。',GPU_CONNECTION_FAILED:'云端连接中断，本次生成未完成。',GPU_AUTH_FAILED:'云端 Key 验证失败，请检查 Olivia 账户。',GPU_QUEUE_FULL:'云端队列已满，本次任务未进入队列。',GPU_TASK_TIMEOUT:'云端任务等待超时，已停止等待。',GPU_TASK_FAILED:'云端生成失败。',GPU_DOWNLOAD_FAILED:'生成结果下载失败。',GPU_SHARED_SCENE_MISSING:'视频素材与云端不匹配，请联系管理员。',MEDIA_JOB_INTERRUPTED:'上次生成已中断，未自动重复提交。'};
         cloudErrors.GPU_INSUFFICIENT_BALANCE='Olivia 可用余额不足，本次媒体任务未入队。请充值后重试。';
         cloudErrors.GPU_BILLING_CONSENT_REQUIRED='请更新收费版客户端，确认费用上限后再生成。';
         if(['FAILED','UNAVAILABLE'].includes(data.status)) {
