@@ -1,3 +1,4 @@
+from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES
 """Local-only contract tests; no vendor, credentials or character ledger access."""
 import asyncio
 from copy import deepcopy
@@ -163,7 +164,7 @@ def test_invalid_input_has_no_http_or_silent_repair(sidecar, kind, mutate):
 def test_input_limit_counts_entire_utf8_request_without_truncating(sidecar):
     value = packet('persona')
     value['current_message'] = '汉' * 8000
-    value['recent_dialogue'] = [dict(role='user', content='字' * 4000)]
+    value['recent_dialogue'] = [dict(role='user', content='字' * 4000) for _ in range(6)]
     result = evaluate(sidecar, value=value)
     assert result.error_code == 'JEV_INPUT_TOO_LARGE' and not sidecar['calls']
     assert len(value['current_message']) == 8000
@@ -174,9 +175,9 @@ def test_exact_body_byte_limit_preserves_complete_world_including_extra_fields(s
     source = value['basis']['sources'][0]
     source['world']['extra_product_data'] = ''
     source['source_hash'] = digest(source['world'])
-    source['world']['extra_product_data'] = 'x' * (32768 - len(canonical(value).encode()))
+    source['world']['extra_product_data'] = 'x' * (JEV_MAX_INPUT_BYTES - len(canonical(value).encode()))
     source['source_hash'] = digest(source['world'])
-    assert len(canonical(value).encode()) == 32768
+    assert len(canonical(value).encode()) == JEV_MAX_INPUT_BYTES
     assert evaluate(sidecar, 'world', value).error_code is None
     source['world']['extra_product_data'] += 'x'
     source['source_hash'] = digest(source['world'])

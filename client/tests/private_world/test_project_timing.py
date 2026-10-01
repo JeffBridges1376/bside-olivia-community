@@ -1,3 +1,4 @@
+from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES
 import asyncio
 from datetime import datetime, timedelta, timezone
 import json
@@ -57,10 +58,13 @@ def test_source_clock_expiry_preserves_status_and_cache_survives_restart(tmp_pat
     assert 'existing_0' not in port.calls[0][1]['project']['criteria']
 
 
+PROJECTS = 40
+
+
 def test_thirteen_pending_projects_keep_catalog_and_advance_next_tick(tmp_path):
     store = DailyLifeStore(tmp_path / 'world.db')
     quote = '明天晚上继续练习片段。'
-    for index in range(13):
+    for index in range(PROJECTS):
         store.record_exchange(f'reply:synthetic-{index}:1', '记得练习。', quote,
             [dict(id=f'p{index}', title=f'片段{index}', detail=quote, quote=quote,
                   status='planned', kind='linli', actor='linli')], occurred_at=SOURCE + timedelta(minutes=index))
@@ -70,12 +74,12 @@ def test_thirteen_pending_projects_keep_catalog_and_advance_next_tick(tmp_path):
     port = Choices(activity='rest_0_home', project='none')
     result = asyncio.run(decide(port, data, LIFE_PROMPT))
     state, questions, purpose = port.calls[0]
-    assert len(port.calls) == 1 and len(state['context']['projects']) == 13
+    assert len(port.calls) == 1 and len(state['context']['projects']) == PROJECTS
     deferred = state['project_timing_coverage']['deferred_project_indices']
-    assert deferred and 0 < len(result['project_timing']) < 13
+    assert deferred and 0 < len(result['project_timing']) < PROJECTS
     assert all(f'existing_{index}' not in questions['project']['criteria'] for index in deferred)
     assert len(json.dumps(dict(state=state, questions=questions, purpose=purpose), ensure_ascii=False,
-                          separators=(',', ':')).encode()) <= 30000
+                          separators=(',', ':')).encode()) <= JEV_MAX_INPUT_BYTES * 30000 // 32768
     current, projects, meals = compile_decision(result, data)
     store.publish_day('day:budget-first', current, projects, occurred_at=NOW, activity_kind='rest',
                       meals=meals, project_timing=result['project_timing'])
@@ -86,7 +90,7 @@ def test_thirteen_pending_projects_keep_catalog_and_advance_next_tick(tmp_path):
     assert len(next_port.calls) == 1
     assert {item['id'] for item in next_result['project_timing']} - first
     assert all(item['id'] not in first for item in next_result['project_timing'])
-    assert len(store.exchange_state(now=NOW + timedelta(minutes=31))['projects']) == 13
+    assert len(store.exchange_state(now=NOW + timedelta(minutes=31))['projects']) == PROJECTS
 
 
 @pytest.mark.parametrize('old_scope', ['unclear', 'bounded', 'open'])

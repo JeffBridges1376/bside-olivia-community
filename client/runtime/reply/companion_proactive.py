@@ -22,7 +22,7 @@ _SCHEMA = json.loads(_SCHEMA_BYTES)
 SCHEMA_DIGEST = hashlib.sha256(_SCHEMA_BYTES).hexdigest()
 _INPUT = Draft202012Validator(_SCHEMA['request'])
 _OUTPUT = Draft202012Validator(_SCHEMA['response'])
-_MAX_INPUT_BYTES = 32768
+from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES as _MAX_INPUT_BYTES
 
 
 def _validate_input(value):

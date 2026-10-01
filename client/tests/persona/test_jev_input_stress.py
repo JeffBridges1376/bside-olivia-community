@@ -1,3 +1,4 @@
+from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES
 """Every paid JEV step must degrade to a smaller request, never fail the reply.
 
 Each case feeds one judgment the inputs that broke 2.0.x in production (hundreds
@@ -11,7 +12,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-CAP = 32768
+CAP = JEV_MAX_INPUT_BYTES
 
 
 def size(state, questions, purpose):

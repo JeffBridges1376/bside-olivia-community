@@ -1,3 +1,4 @@
+from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES
 import asyncio
 from datetime import datetime, timezone
 
@@ -174,5 +175,5 @@ def test_selected_project_stages_keep_original_scope_conditions_and_world(tmp_pa
     assert purpose == 'world-decision'
     assert 'completed' in questions['project_outcome']['criteria']
     actual = size(dict(state=state, questions=questions, purpose=purpose))
-    assert actual < 32768
+    assert actual < JEV_MAX_INPUT_BYTES
     print('world one-request bytes:', actual)

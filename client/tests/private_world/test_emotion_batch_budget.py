@@ -1,3 +1,4 @@
+from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES
 import asyncio
 import json
 from datetime import datetime, timezone, timedelta
@@ -47,7 +48,7 @@ def test_eight_sources_with_concerns_and_current_affect_fit_one_packet(tmp_path)
     wire = json.dumps(dict(state=state, questions=questions, purpose=purpose),
                       ensure_ascii=False, separators=(',', ':')).encode()
     print('eight-source-emotion-wire-bytes', len(wire))
-    assert len(wire) <= 32768
+    assert len(wire) <= JEV_MAX_INPUT_BYTES
     assert [s['source']['text'] for s in state['sources'].values()] == [s['text'] for s in sources]
     assert all(c in state['shared_context'].values() for c in concerns)
 
@@ -81,7 +82,7 @@ def test_large_batch_sends_one_full_evidence_prefix_and_keeps_rest_pending(tmp_p
     from runtime.private_world.character_emotion_runtime import CharacterEmotionRuntime
     from runtime.reply import jev_questions
     from tests.private_world.test_character_emotion_runtime import receipt, NOW
-    records = [receipt(f'long-{i}', f'第{i}次练习遇到困难，需要休息。' * 45,
+    records = [receipt(f'long-{i}', f'第{i}次练习遇到困难，需要休息。' * 120,
                        NOW - timedelta(minutes=8-i)) for i in range(8)]
     class DelayedDecisions(Decisions):
         async def ask(self, state, questions, *, purpose):
@@ -106,7 +107,7 @@ def test_large_batch_sends_one_full_evidence_prefix_and_keeps_rest_pending(tmp_p
     pending = runtime.store.pending_source_ids(before=NOW, limit=32)
     assert len(pending) == 8-len(chosen)
     assert len(json.dumps(dict(state=state, questions=questions, purpose=purpose),
-                          ensure_ascii=False, separators=(',', ':')).encode()) <= 32768
+                          ensure_ascii=False, separators=(',', ':')).encode()) <= JEV_MAX_INPUT_BYTES
     print('oversize-prefix-sources', len(chosen), 'pending', len(pending))
     reopened = CharacterEmotionRuntime(DailyLifeStore(store.path), lambda: object(), lambda: '音乐专业学生')
     assert reopened.store.pending_source_ids(before=NOW, limit=32) == pending

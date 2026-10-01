@@ -1,3 +1,4 @@
+from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES
 import asyncio
 from copy import deepcopy
 from datetime import timedelta
@@ -156,7 +157,7 @@ def test_failed_meal_episode_publishes_nothing_and_uses_meal_retry(tmp_path):
 def test_all_activity_kinds_have_bounded_own_process_and_persist(tmp_path, kind):
     class First:
         async def ask(self, state, questions, **kwargs):
-            assert len(json.dumps({'state':state,'questions':questions},ensure_ascii=False).encode()) < 32768
+            assert len(json.dumps({'state':state,'questions':questions},ensure_ascii=False).encode()) < JEV_MAX_INPUT_BYTES
             assert len(questions['experience']['criteria']) <= 48
             return {key: next(iter(question['criteria'])) for key, question in questions.items()}
     value = asyncio.run(life_episode.create(First(), 'own:1', at(11), kind,

@@ -1,3 +1,4 @@
+from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES
 from pathlib import Path
 
 import pytest
@@ -284,7 +285,7 @@ def test_detection_size_does_not_grow_with_confirmations(monkeypatch):
     assert len(detect_state['spans']) == 20
     assert not any(key[0] == 'c' and key[1:2].isdigit() for key in detect)
     assert len(detect) < 40  # one question per code, not per code x sentence
-    assert len(_json(dict(state=detect_state, questions=detect, purpose='quality-review')).encode()) < 32768
+    assert len(_json(dict(state=detect_state, questions=detect, purpose='quality-review')).encode()) < JEV_MAX_INPUT_BYTES
     state, questions = confirm_call(port)
     for cid, spec in state['confirmation_rules'].items():
         assert spec['code'] in state['layers'][spec['layer']]['rules']

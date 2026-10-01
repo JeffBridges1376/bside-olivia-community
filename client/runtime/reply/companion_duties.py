@@ -31,7 +31,7 @@ SCHEMA_DIGEST = hashlib.sha256(_SCHEMA_BYTES).hexdigest()
 _KINDS = ('persona', 'exchange', 'world')
 _REQUESTS = {kind: Draft202012Validator(_SCHEMA[kind + '_request']) for kind in _KINDS}
 _RESPONSES = {kind: Draft202012Validator(_SCHEMA[kind + '_response']) for kind in _KINDS}
-_MAX_INPUT_BYTES = 32768
+from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES as _MAX_INPUT_BYTES
 _MAX_RESPONSE_BYTES = 262144
 
 
