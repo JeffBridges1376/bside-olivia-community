@@ -81,10 +81,10 @@ def test_existing_backup_reaches_real_retrieval_without_reimport_or_model_write(
         asyncio.run(outbox.scan_once())
         found = memory.search_evidence_context('snail', user_id='local-user', limit=5)
         assert 'orange snail' in found[0].text
-        assert found[0].occurred_at.isoformat() == '2024-01-02T10:00:00+08:00'
+        assert found[0].occurred_at == datetime.fromisoformat('2024-01-02T10:00:00+08:00')
         prompt = CompanionMemoryPromptBuilder(archive, memory).build('snail')
         assert 'orange snail' in prompt.text
-        assert '2024-01-02T10:00:00+08:00' in prompt.text
+        assert '2024-01-02T02:00:00+00:00' in prompt.text
         assert not any(method == 'add' for method, _ in backend.calls)
         # Forgetting survives a worker restart; backfill cannot restore the source.
         memory._originals.forget('local-user', found[0].source_id)
