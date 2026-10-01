@@ -3826,7 +3826,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     });
     retry.hidden = true;
     section.append(text("div", "历史关系", "text-text-body text-title-m"),
-      text("p", "原文保存后会按顺序每五封往返信件评估关系，调用已配置的大模型并消耗额度。失败后暂停，重试会接着未完成的批次。"), state, retry);
+      text("p", "原文保存后会按顺序每五封往返信件评估关系，调用已配置的大模型并消耗额度。失败后暂停，重试会接着未完成的批次。", "text-text-secondary text-body-m font-regular"), state, retry);
     void refresh();
   };
 
@@ -3891,7 +3891,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     });
     controls.append(save, restore, file);
     section.append(text("div", "导入与导出信件", "text-text-body text-title-m"),
-      text("p", "已有灵离 .soul 或 JSON 备份、换电脑恢复：点“选择文件导入”。.soul 只读取文字，不导入音视频。没有单独保存文件：可在下方从原版目录读取。"), state, controls);
+      text("p", "已有灵离 .soul 或 JSON 备份、换电脑恢复：点“选择文件导入”。.soul 只读取文字，不导入音视频。没有单独保存文件：可在下方从原版目录读取。", "text-text-secondary text-body-m font-regular"), state, controls);
   };
 
   const mountLetterMaintenance = (section) => {
