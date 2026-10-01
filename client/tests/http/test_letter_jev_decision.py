@@ -176,3 +176,31 @@ def test_secondary_photo_only_on_plain_turns():
     assert not secondary_photo_allowed(restricted)  # the user limited extra media
     assert secondary_photo_allowed({}) and secondary_photo_allowed(plain)
     assert not secondary_photo_allowed(asked)
+
+
+def test_plain_jev_letter_reaches_the_photo_planner_and_never_waits_forever(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from runtime import image_reply
+    from original_client_letter_contract import serialize_letter_detail
+    def plan(requirements):
+        return {'plan': {'understanding': {'requirements': requirements, 'extras_allowed': True},
+                         'resolution': {'uncertain_fields': []}}}
+    server = SimpleNamespace(_persist_store_state=lambda: None)
+    reached = []
+    async def planner(server, row, *a, **k):
+        reached.append(row['letter_id'])
+        row['image_status'] = 'SKIPPED'
+    monkeypatch.setattr(image_reply, '_prepare_once', planner)
+    base = dict(letter_status='COMPLETED', reply_mode='text_letter', reply_text='醒啦。',
+                image_reply_settings={'enabled': True})
+    plain = dict(base, letter_id='plain', companion_decision=plan([]), companion_delivery='text')
+    asked = dict(base, letter_id='asked', companion_decision=plan([{'id': 'r1', 'fulfillment': 'current'}]),
+                 companion_delivery='audio_speech')
+    for row in (plain, asked):
+        asyncio.run(image_reply.prepare(server, row, '我醒了', row['reply_text']))
+    assert reached == ['plain']
+    # A turn whose medium JEV owns gets a final photo state, so the written letter is shown.
+    assert asked['image_status'] == 'SKIPPED'
+    assert serialize_letter_detail(asked)['letterStatus'] == 4
+    assert serialize_letter_detail(plain)['letterStatus'] == 4

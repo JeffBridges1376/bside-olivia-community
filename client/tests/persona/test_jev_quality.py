@@ -267,7 +267,7 @@ def test_purpose_packets_keep_only_scoped_fields_and_two_turn_window():
             assert 'frozen_world' not in state['input']
             assert 'relationship_context' not in state['input']
             assert 'selected_persona_facts' not in state['input']
-            assert '纠正自己刚才的错误' in state['rules']['STYLE_DRIFT']
+            assert '纠正自己刚才的错误' in state['rules']['STYLE_DRIFT']['not_for']
         if name == 'continuity_memory':
             assert state['input']['frozen_world'] == world
         if name == 'identity_boundary':
@@ -302,6 +302,7 @@ def test_memory_fabrication_rule_covers_misattributed_speakers():
     """A reply said "你昨晚说的呀" about something Linli herself had agreed to."""
     from runtime.reply.jev_quality import _CODE_RULES
     from runtime.memory.history_selection import _SELECTED
-    rule = _CODE_RULES['MEMORY_FABRICATION']
+    import json
+    rule = json.dumps(_CODE_RULES['MEMORY_FABRICATION'], ensure_ascii=False)
     assert '安到错误的人身上' in rule and '你答应过' in rule
     assert 'speaker' in _SELECTED and '不得颠倒' in _SELECTED

@@ -1197,6 +1197,9 @@ def _configured_embedding_installer(
 def _recent_diagnostic_tasks(letters) -> tuple[Mapping[str, object], ...]:
     if not isinstance(letters, Sequence) or isinstance(letters, (str, bytes, bytearray)):
         return ()
+    stamps = [item.get("created_at") for item in letters if isinstance(item, Mapping)]
+    newest = max((s for s in stamps if type(s) in {int, float}), default=0)
+
     def priority(item):
         active = str(item.get("letter_status", "")).lower() in {"pending", "processing"} or str(item.get("media_status", "")).lower() in {"pending", "queued", "processing"}
         active = active or str(item.get('image_status', '')).upper() in {'PLANNING', 'GENERATING', 'RETRY_PENDING'}
@@ -1205,9 +1208,17 @@ def _recent_diagnostic_tasks(letters) -> tuple[Mapping[str, object], ...]:
         failed = any(str(item.get(key, '')).upper() == 'FAILED'
                      for key in ('letter_status', 'delivery_status', 'media_status', 'image_status'))
         created = item.get("created_at", 0)
-        return (active or failed, created if type(created) in {int, float} else 0)
-    return tuple(sorted((item for item in letters if isinstance(item, Mapping)),
-                        key=priority, reverse=True)[:20])
+        created = created if type(created) in {int, float} else 0
+        # Work stuck for days is a known state, not news; it must not hide current letters.
+        return ((active or failed) and created >= newest - 86_400, created)
+    rows = [item for item in letters if isinstance(item, Mapping)]
+    ranked = sorted(rows, key=priority, reverse=True)
+    # The newest letters always get slots: a busy chat channel must not hide them.
+    newest_letters = sorted((item for item in rows if item.get("letter_id")),
+                            key=lambda item: priority(item)[1], reverse=True)[:8]
+    chosen = [item for item in ranked if not any(item is kept for kept in newest_letters)]
+    chosen = chosen[:20 - len(newest_letters)] + newest_letters
+    return tuple(sorted(chosen, key=priority, reverse=True))
 
 
 def create_configured_original_client_server_runtime(
