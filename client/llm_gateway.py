@@ -961,6 +961,8 @@ class OpenAICompatibleAdapter(Gateway):
         timeout = aiohttp.ClientTimeout(
             total=self._request_timeout_seconds(max_reasoning=max_reasoning or background_reasoning)
         )
+        from runtime.model_policy import encode_chat
+        body = encode_chat(body, endpoint or self._url())
         for attempt in range(self.config.max_retries + 1):
             diagnostic_stage = "request"
             response = None
@@ -1339,6 +1341,8 @@ class OpenAICompatibleAdapter(Gateway):
         timeout = aiohttp.ClientTimeout(
             total=self._request_timeout_seconds(max_reasoning=max_reasoning)
         )
+        from runtime.model_policy import encode_chat
+        body = encode_chat(body, self._url())
         for attempt in range(self.config.max_retries + 1):
             usage = None
             response = None

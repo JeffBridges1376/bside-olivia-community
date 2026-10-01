@@ -390,6 +390,10 @@ async def _prepare_once(server, row, content, text, *, channel='letter', on_read
         identity = str(row.get('letter_id') or row.get('exchange_id') or row.get('id'))
         if identity == 'None': raise ValueError('IMAGE_ID_INVALID')
         photo_id = hashlib.sha256((channel+':'+identity).encode()).hexdigest()[:32]
+        caps = await api.request('capabilities', {})
+        if caps.get('server_media_planning') is True and ('image_plan' not in row or row.get('image_server_planned')):
+            await _server_photo(server, row, content, text, api, photo_id, settings, progress, channel, on_ready)
+            return
         if 'image_plan' not in row:
             reference = _photo_reference(row, text)
             reference['requested_image'] = is_companion_image(row)
@@ -492,3 +496,59 @@ async def _prepare_once(server, row, content, text, *, channel='letter', on_read
         if receipt is not None and receipt.is_file():
             row['image_receipt_required'] = True
         server._persist_store_state()
+
+
+async def _server_photo(server, row, content, text, api, photo_id, settings, progress, channel, on_ready):
+    """Submit frozen facts, download the photo, and commit only local delivery state."""
+    from PIL import Image
+    reference = _photo_reference(row,text)
+    reference['requested_image'] = is_companion_image(row)
+    request = {'incoming':content,'reply':text,'reference':reference}
+    row.setdefault('image_server_request', request)
+    if row['image_server_request']['incoming'] != content or row['image_server_request']['reply'] != text:
+        raise ValueError('IMAGE_GENERATION_BINDING_CHANGED')
+    payload = {'media_request':row['image_server_request'],'resolution':settings['resolution']}
+    name = 'photo-'+photo_id+'.png'
+    media_root = server._media_root() if callable(getattr(server,'_media_root',None)) else server._state_root()/'media'
+    if media_root is None:
+        raise ValueError('IMAGE_STORAGE_UNAVAILABLE')
+    path = media_root/name
+    receipt = path.with_suffix('.task.json')
+    row['image_server_planned'] = True
+    server._persist_store_state()
+    def validate(output):
+        minimum,maximum={'1K':(850,1300),'2K':(1450,2500),'4K':(3000,4100)}[settings['resolution']]
+        with Image.open(output) as image:
+            if image.format!='PNG' or not minimum<=image.height<=maximum or not .70<=image.width/image.height<=.80:
+                raise ValueError('IMAGE_OUTPUT_INVALID')
+            image.verify()
+    if on_ready is not None and not path.exists():
+        await on_ready()
+    row['image_status']='GENERATING'
+    server._persist_store_state()
+    from contextlib import nullcontext
+    try:
+        async with (nullcontext() if channel=='qq' else server.media_semaphore):
+            task=await api.generate('image',payload,path,receipt_path=receipt,validate=validate)
+    finally:
+        if receipt.is_file():
+            row['image_receipt_required']=True
+    if task.get('stage')=='skipped':
+        row['image_status']='SKIPPED'
+        return
+    plan=task.get('media_plan')
+    if (not isinstance(plan,dict) or plan['photo_type'] not in PHOTO_TYPES or plan['room'] not in ROOMS
+            or plan['time_of_day'] not in ('morning','noon','dusk','night')):
+        raise ValueError('IMAGE_PLAN_INVALID')
+    row['image_plan']={'attach':True,**plan}
+    from runtime.image_understanding import describe_image
+    try:
+        row['image_description']=await describe_image(server,path,source='generated')
+    except Exception:
+        row['image_description_status']='PENDING'
+        row['image_world_status']='PENDING'
+    row.update(image_status='COMPLETED',prepared_image=str(path),
+               reply_image_url=f'http://127.0.0.1:{server.PORT}/toy/media/{name}',
+               image_resolution=settings['resolution'],image_render_mode='native',image_phase='ready')
+    row.pop('image_error_code',None)
+    row.pop('image_retry_at',None)

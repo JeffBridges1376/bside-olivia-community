@@ -17,6 +17,8 @@ class JevQuestionsPort:
         self.transport = JevDecisionPort(endpoint, token=token, timeout_seconds=timeout_seconds)
 
     def _request(self, packet):
+        from runtime.model_policy import encode_decision
+        packet = encode_decision(packet, self.transport.endpoint)
         body = _json(packet).encode('utf-8')
         if len(body) > SEMANTIC_REQUEST_MAX_BYTES:
             raise ValueError('JEV_INPUT_TOO_LARGE')

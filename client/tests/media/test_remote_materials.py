@@ -49,6 +49,8 @@ def test_ack_only_after_final_local_assembly(tmp_path, monkeypatch, fail_assembl
                 for n in files:z.writestr(n,payload)
             return {'task_id':'task-1234'}
         async def request(self, action, data):
+            if action=='capabilities':
+                return {}
             assert final.read_bytes()==b'assembled'
             calls.append(action)
             return {'task_id':data['task_id'],'status':'acknowledged'}
@@ -113,3 +115,37 @@ def test_cloud_music_without_local_model_assets(tmp_path, monkeypatch, include_s
     assert submitted[0]['scene_asset'] == 'official-performance-lipsync-safe-2950f-v1'
     if include_spoken:
         assert submitted[0]['spoken_scene_asset'] == 'official-reply-action-base-v1'
+
+
+def test_server_final_artifact_never_runs_client_assembly(tmp_path, monkeypatch):
+    from pathlib import Path
+    from runtime.media.remote_materials import render_music_materials
+    calls=[]
+    final=tmp_path/'final.mp4'
+    class API:
+        url='https://gpu.example'
+        token='synthetic-key'
+        def __init__(self,*args):pass
+        async def request(self,action,data):
+            if action=='capabilities':
+                return {'server_music_assembly':True}
+            assert action=='ack' and final.read_bytes()==b'synthetic-final'
+            calls.append('ack')
+            return {'status':'acknowledged'}
+        async def generate(self,kind,data,output,**kwargs):
+            assert data['server_assembly'] is True and 'voice_plan' not in data
+            payloads={'final.mp4':b'synthetic-final','song.wav':b'synthetic-wave'}
+            files={name:{'sha256':hashlib.sha256(value).hexdigest(),'bytes':len(value)} for name,value in payloads.items()}
+            with zipfile.ZipFile(output,'w') as z:
+                z.writestr('manifest.json',json.dumps({'version':2,'assembly':'server','files':files}))
+                for name,value in payloads.items():z.writestr(name,value)
+            return {'task_id':'synthetic-task'}
+    monkeypatch.setattr('runtime.remote_generation.RemoteGeneration',API)
+    monkeypatch.setattr('runtime.media.latentsync_reply.resolve_ffmpeg_executable',lambda _:Path('ffmpeg'))
+    monkeypatch.setattr('runtime.media.music_reply._media_duration_seconds',lambda *a,**k:1)
+    def forbidden(*a,**k):raise AssertionError('client assembly must not run')
+    monkeypatch.setattr('runtime.media.music_reply._run',forbidden)
+    monkeypatch.setattr('runtime.media.music_reply.concat_videos',forbidden)
+    result=render_music_materials('original_video',{'media_request':{'incoming':'synthetic','reply':'synthetic'}},final,
+        environment={},include_spoken=True,reply_text='synthetic',performance_video_path=Path(),official_reply_reference_path=Path())
+    assert result['assembly']=='server' and calls==['ack']

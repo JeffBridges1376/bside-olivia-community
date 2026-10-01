@@ -110,7 +110,9 @@ def test_actual_photo_worker_uses_jev_path_and_preserves_error(monkeypatch):
             raise ValueError('JEV_RESPONSE_INVALID')
     monkeypatch.setattr(jev_questions, 'configured_questions', lambda: Port())
     monkeypatch.setattr(image_reply, '_photo_reference', lambda *args: reference.copy())
-    monkeypatch.setattr(remote_generation, 'RemoteGeneration', lambda *args: SimpleNamespace(url='synthetic', token='test'))
+    async def capabilities(*args):
+        return {}
+    monkeypatch.setattr(remote_generation, 'RemoteGeneration', lambda *args: SimpleNamespace(url='synthetic', token='test', request=capabilities))
     row = {'letter_id': 'synthetic'}
     asyncio.run(image_reply._prepare_once(server, row, 'photo', 'Okay'))
     assert row['image_status'] == 'FAILED'

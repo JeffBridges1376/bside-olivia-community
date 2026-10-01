@@ -59,7 +59,8 @@ class RemoteGeneration:
             raise CloudError('GPU_REQUEST_TOO_LARGE', 413)
         headers['Content-Type'] = 'application/json'
         try:
-            async with ClientSession(timeout=ClientTimeout(total=20), trust_env=False, connector=TCPConnector(ssl=gpu_tls_context())) as session:
+            planning = action == 'submit' and 'media_request' in data['input']
+            async with ClientSession(timeout=ClientTimeout(total=240 if planning else 20), trust_env=False, connector=TCPConnector(ssl=gpu_tls_context())) as session:
                 async with session.request(method, self.url + path, data=encoded, headers=headers, allow_redirects=False) as response:
                     if response.status in (401, 403): raise CloudError('GPU_AUTH_FAILED', 502)
                     if response.status == 402: raise CloudError('GPU_INSUFFICIENT_BALANCE', 402)
@@ -130,8 +131,12 @@ class RemoteGeneration:
                                    and url.netloc == urlsplit(self.url).netloc)
                 if (url.scheme != 'https' and not loopback_result) or not url.hostname or url.username or url.password: raise ValueError()
                 cleaned.append({'url': item['url']})
+            plan=result.get('media_plan')
+            if plan is not None and (not isinstance(plan,dict) or set(plan)!={'prompt','photo_type','room','time_of_day'}
+                    or any(not isinstance(value,str) or len(value)>4000 for value in plan.values())):
+                raise ValueError()
             return {'task_id': result['task_id'], 'status': result['status'], 'outputs': cleaned,
-                    'stage': result.get('stage', '')}
+                    'stage': result.get('stage', ''), **({'media_plan':plan} if plan is not None else {})}
         except (ClientError, TimeoutError) as exc:
             raise connection_error(exc) from None
         except (ValueError, TypeError, UnicodeError):
@@ -196,6 +201,8 @@ class RemoteGeneration:
         progress('submission', {})
         task = await self.request('submit', submission)
         progress('generation', task)
+        if task.get('stage') == 'skipped':
+            return task
         deadline = None if kind in {'video', 'lipsync', 'original_video', 'cover_video'} else time.monotonic() + timeout
         while task['status'] in ('queued', 'running') or task.get('stage') == 'uploading':
             if deadline is not None and time.monotonic() >= deadline:

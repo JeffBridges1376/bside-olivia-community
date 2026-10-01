@@ -1,4 +1,4 @@
-"""Download one music order's materials and assemble exclusively on the client."""
+"""Receive server media artifacts, retaining compatibility with legacy bundles."""
 import asyncio
 import hashlib
 import json
@@ -10,8 +10,10 @@ import zipfile
 from runtime.cloud_service import CloudError
 
 
-def extract_materials(bundle, destination, *, include_spoken):
+def extract_materials(bundle, destination, *, include_spoken, server_assembly=False):
     expected = {'song.wav', 'song.mp4'} | ({'speech.mp4'} if include_spoken else set())
+    if server_assembly:
+        expected = {'song.wav','final.mp4'}
     with zipfile.ZipFile(bundle) as archive:
         names = archive.namelist()
         if len(names) != len(expected) + 1 or set(names) != expected | {'manifest.json'}:
@@ -19,7 +21,8 @@ def extract_materials(bundle, destination, *, include_spoken):
         if archive.getinfo('manifest.json').file_size > 8192:
             raise CloudError('GPU_MATERIALS_INVALID', 502)
         manifest = json.loads(archive.read('manifest.json'))
-        if manifest.get('version') != 1 or manifest.get('assembly') != 'client' or set(manifest.get('files', {})) != expected:
+        if (manifest.get('version') != (2 if server_assembly else 1)
+                or manifest.get('assembly') != ('server' if server_assembly else 'client') or set(manifest.get('files', {})) != expected):
             raise CloudError('GPU_MATERIALS_INVALID', 502)
         total = sum(item.file_size for item in archive.infolist())
         if total > 2147483648:
@@ -49,6 +52,8 @@ def render_music_materials(kind, data, output, *, environment, include_spoken, r
     from runtime.media.latentsync_reply import resolve_ffmpeg_executable
     ffmpeg = resolve_ffmpeg_executable(environment)
     api = RemoteGeneration(environment.get('OLIVIA_GPU_API_URL', ''), environment.get('OLIVIA_GPU_API_KEY', ''))
+    caps = run_sync(lambda: asyncio.run(api.request('capabilities',{})))
+    server_assembly = caps.get('server_music_assembly') is True
     inputs = {**data, 'include_spoken': include_spoken,
               'scene_asset': 'official-performance-lipsync-safe-2950f-v1'}
     assets = {}
@@ -59,6 +64,9 @@ def render_music_materials(kind, data, output, *, environment, include_spoken, r
         if voice_performance_plan is not None:
             inputs['voice_plan'] = voice_performance_plan.to_dict()
         inputs['spoken_scene_asset'] = 'official-reply-action-base-v1'
+    if server_assembly:
+        inputs['server_assembly'] = True
+        inputs.pop('voice_plan',None)
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='olivia-materials-', dir=output.parent) as temporary:
@@ -67,13 +75,19 @@ def render_music_materials(kind, data, output, *, environment, include_spoken, r
         task = run_sync(lambda: asyncio.run(api.generate(kind, inputs, bundle, assets=assets,
             receipt_path=output.with_name(output.stem + '-remote-order.private.json'))))
         try:
-            names = extract_materials(bundle, work, include_spoken=include_spoken)
+            names = extract_materials(bundle, work, include_spoken=include_spoken, server_assembly=server_assembly)
         except (ValueError, KeyError, TypeError, zipfile.BadZipFile):
             raise CloudError('GPU_MATERIALS_INVALID', 502) from None
         for name in names:
             streams = ('0:a:0', '0:v:0') if name.endswith('.mp4') else ('0:a:0',)
             if not _media_duration_seconds(work / name, required_streams=streams, ffmpeg_path=ffmpeg):
                 raise CloudError('GPU_OUTPUT_INVALID', 502)
+        if server_assembly:
+            (work/'final.mp4').replace(output)
+            from runtime.gpu_cleanup import acknowledge_result
+            run_sync(lambda: asyncio.run(acknowledge_result(api,task['task_id'],output)))
+            return {'remote_task_id':task['task_id'],'assembly':'server',
+                    'reply_structure':'normal_video_then_official_transition_then_song_video' if include_spoken else 'singing_only'}
         song = work / 'assembled-song.mp4'
         _run([str(ffmpeg), '-hide_banner', '-loglevel', 'error', '-y', '-i', str(work / 'song.mp4'),
               '-i', str(work / 'song.wav'), '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy',

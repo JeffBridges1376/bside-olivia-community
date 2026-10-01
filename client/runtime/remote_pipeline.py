@@ -31,6 +31,10 @@ def generate(kind, data, output, *, environment=None, assets=None):
     if kind == 'tts' and env.get('OLIVIA_MEDIA_CHANNEL') == 'qq':
         data = {**data, 'channel': 'qq'}
     api = RemoteGeneration(env.get('OLIVIA_GPU_API_URL', ''), env.get('OLIVIA_GPU_API_KEY', ''))
+    caps = run_sync(lambda: asyncio.run(api.request('capabilities', {})))
+    if caps.get('server_media_planning') is True and kind in ('tts','video'):
+        # Speech content and selected output remain facts; rendering controls live on the server.
+        data={key:value for key,value in data.items() if key not in ('voice_plan','adaptive_delivery','enforce_content_gate')}
     progress = PROGRESS_CALLBACK.get()
     if progress is not None:
         api.progress = progress
