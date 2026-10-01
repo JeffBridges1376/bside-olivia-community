@@ -9,7 +9,7 @@ import urllib.request
 from .companion_decision import JevDecisionPort, _json, _pairs, _nonfinite, _http_error_code
 from .jev_billing import billing_headers, settle_receipt_sync
 
-SEMANTIC_REQUEST_MAX_BYTES = 32 * 1024
+from .jev_limits import JEV_MAX_INPUT_BYTES as SEMANTIC_REQUEST_MAX_BYTES
 
 
 class JevQuestionsPort:

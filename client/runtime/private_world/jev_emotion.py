@@ -217,7 +217,8 @@ def fits(plan):
     state, questions = plan[:2]
     wire = json.dumps(dict(state=state, questions=questions, purpose='character-emotion'),
                       ensure_ascii=False, separators=(',', ':')).encode()
-    return len(wire) <= 32768 and len(questions) <= 384
+    from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES as SEMANTIC_REQUEST_MAX_BYTES
+    return len(wire) <= SEMANTIC_REQUEST_MAX_BYTES and len(questions) <= 384
 
 
 async def appraise(port, packet, *, prepared_plan=None):

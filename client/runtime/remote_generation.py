@@ -248,7 +248,21 @@ class RemoteGeneration:
         task = await self._status(task_id)
         return await self._download(task, output, validate=validate)
 
-    async def _download(self, task, output, *, validate=None):
+    async def _download(self, task, output, *, validate=None, attempts=3):
+        """A stalled transfer of a finished, already paid result is fetched again."""
+        for attempt in range(attempts):
+            try:
+                return await self._download_once(task, output, validate=validate)
+            except CloudError as exc:
+                if exc.code not in ('GPU_CONNECTION_TIMEOUT', 'GPU_CONNECT_FAILED', 'GPU_CONNECTION_FAILED') or attempt == attempts - 1:
+                    raise
+                await asyncio.sleep(5 * (attempt + 1))
+                try:
+                    task = await self._status(task['task_id'])  # Signed links can expire.
+                except CloudError:
+                    pass
+
+    async def _download_once(self, task, output, *, validate=None):
         if task['status'] != 'succeeded' or len(task['outputs']) != 1:
             raise CloudError('GPU_TASK_FAILED', 502)
         output = Path(output); output.parent.mkdir(parents=True, exist_ok=True)

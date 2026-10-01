@@ -1,3 +1,4 @@
+from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES
 import asyncio
 import json
 from types import SimpleNamespace
@@ -172,7 +173,7 @@ def test_memory_semantic_questions_do_not_shard_at_forty_eight():
     asyncio.run(_ask(port, {}, questions, 'recall-check'))
     assert len(port.calls) == 1 and len(port.calls[0][1]) == 65
     with pytest.raises(ValueError, match='JEV_INPUT_TOO_LARGE'):
-        asyncio.run(_ask(port, {'original': 'x' * 32768}, questions, 'recall-check'))
+        asyncio.run(_ask(port, {'original': 'x' * JEV_MAX_INPUT_BYTES}, questions, 'recall-check'))
     assert len(port.calls) == 1
 
 

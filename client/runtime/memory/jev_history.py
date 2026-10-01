@@ -9,9 +9,10 @@ def _question(instructions, criteria):
 async def _ask(port, state, questions, purpose):
     # One module is one native request; never silently shard paid decisions.
     from runtime.reply.companion_decision import _json
+    from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES as SEMANTIC_REQUEST_MAX_BYTES
     if not questions:
         return {}
-    if len(_json(dict(state=state, questions=questions, purpose=purpose)).encode()) > 32768:
+    if len(_json(dict(state=state, questions=questions, purpose=purpose)).encode()) > SEMANTIC_REQUEST_MAX_BYTES:
         raise ValueError('JEV_INPUT_TOO_LARGE')
     return await port.ask(state, questions, purpose=purpose)
 

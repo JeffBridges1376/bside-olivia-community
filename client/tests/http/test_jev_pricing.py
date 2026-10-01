@@ -6,8 +6,8 @@ from runtime.diagnostics.jev_pricing import quote_input_cny
 
 
 @pytest.mark.parametrize('tokens,expected', [
-    (0, '0'), (1, '0.0000015'), (10000, '0.015'),
-    (67075, '0.1006125'), (1000000, '1.50'),
+    (0, '0'), (1, '0.00000135'), (10000, '0.0135'),
+    (67075, '0.09055125'), (1000000, '1.35'),
 ])
 def test_exact_turn_price_without_minimum_charge(tokens, expected):
     assert quote_input_cny(tokens) == Decimal(expected)

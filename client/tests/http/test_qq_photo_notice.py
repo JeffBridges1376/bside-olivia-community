@@ -69,3 +69,23 @@ def test_photo_unknown_ack_does_not_announce_failure_or_resend_image(monkeypatch
             assert row['delivery_status'] == 'DELIVERY_UNCONFIRMED'
             assert row['letter_status'] == 'PROCESSING'
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('primary', [False, True])
+def test_only_a_requested_photo_announces_that_it_failed(monkeypatch, primary):
+    monkeypatch.setattr('runtime.image_reply.is_companion_image', lambda row: primary)
+    async def scenario():
+        messages = []
+        async def photo(row, send):
+            row['image_status'] = 'FAILED'
+        async def send(text):
+            messages.append(text)
+            return 'ack'
+        send.image = lambda path: None
+        row = dict(letter_id='synthetic-fail', channel='qq', delivery_status='DELIVERED')
+        service = PersonalChatService([row], lambda: None, None, None, {}, photo=photo)
+        service._schedule_photo(row, send)
+        await asyncio.gather(*service.photo_tasks.values())
+        # A casual snapshot that did not come out is simply not sent.
+        assert messages == (['照片这次没生成成功，没能发给你。稍后再试一下。'] if primary else [])
+    asyncio.run(scenario())

@@ -1,3 +1,4 @@
+from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES
 """Proactive proposals remain frozen, bounded and subject to local hard gates."""
 import asyncio
 from copy import deepcopy
@@ -140,7 +141,7 @@ def test_pause_takes_priority_and_still_validates_complete_input(sidecar):
 def test_local_pause_cannot_skip_whole_request_size_check(sidecar):
     value = packet()
     value['hard_gates']['paused'] = True
-    value['world']['full_original'] = '汉' * 12000
+    value['world']['full_original'] = '汉' * 30000
     result = evaluate(sidecar, value)
     assert result.error_code == 'JEV_INPUT_TOO_LARGE' and result.decision is None
     assert not sidecar['calls']
@@ -191,8 +192,8 @@ def test_invalid_input_never_reaches_http(sidecar, mutate):
 def test_entire_projected_world_is_preserved_at_exact_byte_limit(sidecar):
     value = packet()
     value['world']['extra'] = ''
-    value['world']['extra'] = 'x' * (32768 - len(canonical(value).encode()))
-    assert len(canonical(value).encode()) == 32768
+    value['world']['extra'] = 'x' * (JEV_MAX_INPUT_BYTES - len(canonical(value).encode()))
+    assert len(canonical(value).encode()) == JEV_MAX_INPUT_BYTES
     assert evaluate(sidecar, value).error_code is None
     value['world']['extra'] += 'x'
     assert evaluate(sidecar, value).error_code == 'JEV_INPUT_TOO_LARGE'

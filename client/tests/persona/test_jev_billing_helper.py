@@ -212,3 +212,23 @@ def test_account_key_missing_only_when_billing_needs_a_key(monkeypatch):
         assert billing.account_key_missing() is True
     monkeypatch.setattr(billing, '_account_key', lambda: 'olivia-synthetic-account')
     assert billing.account_key_missing() is False
+
+
+@pytest.mark.parametrize('version,rate,ok', [
+    ('jev-input-cny-20261002-v2', 135, True),   # declared lower price
+    ('jev-input-cny-20260928-v1', 150, True),   # a server that has not applied it yet
+    ('jev-input-cny-20261002-v2', 150, False),  # price does not match its version
+    ('jev-input-cny-20991231-v9', 135, False),  # unknown price version
+])
+def test_settlement_is_verified_against_its_declared_price_version(configured, monkeypatch, version, rate, ok):
+    tokens = 17000
+    answer = result(signed(tokens))
+    answer.update(price_version=version, charged_units=tokens * rate, debited_units=tokens * rate)
+    monkeypatch.setattr(billing, '_post_settlement', lambda *a: answer)
+    assert billing.MINIMUM_HEADER['X-Olivia-JEV-Price'] == 'jev-input-cny-20261002-v2'
+    with billing.billing_scope('synthetic:turn'):
+        if ok:
+            assert billing.settle_receipt_sync(signed(tokens), DIGEST)['charged_units'] == tokens * rate
+        else:
+            with pytest.raises(ValueError, match='JEV_BILLING_RESPONSE_INVALID'):
+                billing.settle_receipt_sync(signed(tokens), DIGEST)

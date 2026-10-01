@@ -61,7 +61,7 @@ ERROR_CODES = frozenset({
     *(f'JEV_BILLING_HTTP_{status}' for status in (401, 402, 403, 409, 429, 502, 503, 504)),
     *(f'JEV_HTTP_{status}' for status in (400, 401, 404, 413, 429, 503)),
 })
-_MAX_INPUT_BYTES = 32768
+from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES as _MAX_INPUT_BYTES
 _MAX_RESPONSE_BYTES = 262144
 _SCHEMA = json.loads(Path(__file__).with_name('companion_decision_schema.json').read_text('utf-8'))
 _INPUT = Draft202012Validator(_SCHEMA['input'])

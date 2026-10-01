@@ -301,3 +301,33 @@ def test_legacy_receipt_reuses_idempotency_key_after_lost_submit_response(tmp_pa
     asyncio.run(RemoteGeneration().generate('cover_video', {}, tmp_path / 'out', receipt_path=receipt))
     assert submissions[0] == submissions[1]
     assert json.loads(receipt.read_text())['task_id'] == 'existing'
+
+
+def test_stalled_result_download_is_fetched_again_without_resubmitting(monkeypatch, tmp_path):
+    import asyncio
+    from runtime import remote_generation as module
+    from runtime.cloud_service import CloudError
+    api = module.RemoteGeneration('https://gpu.example', 'olivia-test-key')
+    calls, statuses = [], []
+    async def once(task, output, *, validate=None):
+        calls.append(task['outputs'][0]['url'])
+        if len(calls) < 3:
+            raise CloudError('GPU_CONNECTION_TIMEOUT')
+        return {'task_id': task['task_id']}
+    async def status(task_id):
+        statuses.append(task_id)
+        return {'task_id': task_id, 'status': 'succeeded', 'outputs': [{'url': f'https://r2.example/fresh{len(statuses)}'}]}
+    async def no_sleep(_):
+        return None
+    monkeypatch.setattr(api, '_download_once', once)
+    monkeypatch.setattr(api, '_status', status)
+    monkeypatch.setattr(module.asyncio, 'sleep', no_sleep)
+    task = {'task_id': 't1', 'status': 'succeeded', 'outputs': [{'url': 'https://r2.example/first'}]}
+    assert asyncio.run(api._download(task, tmp_path / 'out.mp4')) == {'task_id': 't1'}
+    # Retries read a fresh signed link; nothing is submitted or charged again.
+    assert calls == ['https://r2.example/first', 'https://r2.example/fresh1', 'https://r2.example/fresh2']
+    with __import__('pytest').raises(CloudError):
+        async def broken(task, output, *, validate=None):
+            raise CloudError('GPU_OUTPUT_EMPTY', 502)
+        monkeypatch.setattr(api, '_download_once', broken)
+        asyncio.run(api._download(task, tmp_path / 'out.mp4'))
