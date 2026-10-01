@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SOUL text manifest supplied as the letter backup import field",
+  "type": "object",
+  "required": ["format", "manifest"],
+  "properties": {
+    "format": {"const": "soul"},
+    "manifest": {
+      "type": "object",
+      "required": ["memory"],
+      "properties": {
+        "memory": {
+          "type": "object",
+          "required": ["exchanges"],
+          "properties": {
+            "exchanges": {
+              "type": "array", "maxItems": 10000,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "incoming": {"type": ["string", "null"], "maxLength": 50000},
+                  "reply": {"type": ["string", "null"], "maxLength": 50000},
+                  "date": {"type": ["string", "null"], "maxLength": 32},
+                  "time": {"type": ["string", "null"], "maxLength": 32}
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

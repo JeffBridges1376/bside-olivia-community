@@ -72,8 +72,8 @@ def secondary_photo_allowed(row):
     record = row.get('companion_decision')
     if not record or is_companion_image(row):
         return True
-    from runtime.reply.companion_runtime import media_requested
-    return not media_requested(record.get('plan') if isinstance(record, dict) else None)
+    from runtime.reply.companion_runtime import media_locked
+    return not media_locked(record.get('plan') if isinstance(record, dict) else None)
 
 
 def schedule(server, row):

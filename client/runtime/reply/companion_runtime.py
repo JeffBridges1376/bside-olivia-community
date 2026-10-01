@@ -166,10 +166,13 @@ def delivery_for(decision, *, kinds):
     return timing, kind
 
 
-def media_requested(plan):
-    """True when the user asked for any medium this turn or later."""
+def media_locked(plan):
+    """Respect JEV's current requirements; pending future media does not lock today."""
     try:
-        return bool(plan['understanding']['requirements'])
+        understanding = plan['understanding']
+        return (understanding['extras_allowed'] is not True
+                or 'media_requirement' in plan['resolution']['uncertain_fields']
+                or any(item['fulfillment'] != 'pending' for item in understanding['requirements']))
     except (KeyError, TypeError):
         return True  # Unknown shape: keep JEV's chosen medium.
 
@@ -187,13 +190,14 @@ def project_decision(messages, decision, *, max_input_chars, delivery):
         note += ('本轮交付已选定语音，结构化回复的 delivery 必须是 voice；只写将实际朗读的一份正文。'
                  '这条语音一定会发出：正文就是你此刻对用户说的话，不推辞、不说不想发、没空发、等下再发或不方便说话。')
         note += VOICE_PROSE
-    elif delivery == 'text_or_voice':
-        # JEV plans the minimum (text) when nothing was asked for; the chat's
-        # own voice rules choose how she says it.
+    elif delivery == 'voice_default':
+        # JEV owns requested media. The writer sees the character's current
+        # world and may name a concrete exception to the application's default.
         from runtime.personal_chat.presentation import VOICE_PROSE
-        note += ('本轮用户没有要求媒体：按聊天规则自行选择 delivery。voice_available 为 true 时，'
-                 '日常短聊、问候、安慰、撒娇、想念、晚安等适合开口说的一两句话优先 voice；'
-                 '信息量大、步骤、地址、数字等需要对方反复查看的内容用 text。选 voice 时正文就是要说出口的话。')
+        note += ('JEV未限制本轮聊天的载体，尚待以后交付的媒体要求继续保留。QQ本轮默认语音，'
+                 'delivery=voice，text_reason=null，正文就是要说出口的话。只有你自己当前确实不能开口，'
+                 '或必须原样复制的代码、链接、公式才用text，并填写对应text_reason。'
+                 'QQ语音能转文字；接收方不便听、内容较长、需要反复查看不构成例外。')
         note += VOICE_PROSE
     elif delivery == 'text':
         note += '本轮交付已选定文字，结构化回复的 delivery 必须是 text。'

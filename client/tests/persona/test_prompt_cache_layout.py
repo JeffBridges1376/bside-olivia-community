@@ -146,13 +146,14 @@ def test_chat_window_start_moves_in_steps_so_the_dialogue_prefix_repeats():
     assert len(set(starts)) < len(starts)  # the same start serves several turns
 
 
-def test_plain_chat_turn_may_be_spoken():
+def test_plain_qq_chat_uses_speech_default_with_concrete_text_exceptions():
     from types import SimpleNamespace
-    from runtime.reply.companion_runtime import project_decision, media_requested
-    plan = {'understanding': {'requirements': []}}
+    from runtime.reply.companion_runtime import project_decision, media_locked
+    from tests.persona.test_jev_pipeline import plan as chat_plan
+    plan = chat_plan()
     decision = SimpleNamespace(plan=plan, writer_projection=lambda: {})
     messages = ({'role': 'system', 'content': 'p'}, {'role': 'user', 'content': '晚安'})
-    note = project_decision(messages, decision, max_input_chars=10000, delivery='text_or_voice')[1]['content']
-    assert '自行选择 delivery' in note and '必须是 text' not in note
-    assert not media_requested(plan) and media_requested({'understanding': {'requirements': [{'id': 'r1'}]}})
-    assert media_requested(None)
+    note = project_decision(messages, decision, max_input_chars=10000, delivery='voice_default')[1]['content']
+    assert 'QQ本轮默认语音' in note and 'text_reason' in note and '必须是 text' not in note
+    assert not media_locked(plan) and media_locked({'understanding': {'requirements': [{'id': 'r1'}]}})
+    assert media_locked(None)

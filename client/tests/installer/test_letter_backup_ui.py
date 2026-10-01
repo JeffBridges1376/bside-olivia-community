@@ -49,6 +49,24 @@ const requestMutation=async(path,body)=>{
  file.files=[{size:100,text:async()=>JSON.stringify(pairs)}];
  await file.events.change(); assert.deepEqual(JSON.parse(imported),pairs);
  assert.equal(save.disabled,false);
+ assert.match(file.accept,/\.soul/);
+ const manifest={memory:{exchanges:[{incoming:'hello',reply:'reply',date:'2026-09-30',time:'12:34',replyVideoUrl:'private-media'}]},videos:['private-video']};
+ const bytes=new TextEncoder().encode(JSON.stringify(manifest)),head=new Uint8Array(16);
+ head.set(new TextEncoder().encode('SOUL0001'));
+ new DataView(head.buffer).setUint32(8,bytes.length,true);
+ const reads=[];
+ file.files=[{name:'history.SOUL',size:500*1024*1024,slice(start,end){
+   reads.push([start,end]);
+   assert.ok(end<=16+bytes.length,'must not read media');
+   return new Blob([start===0?head:bytes]);
+ },text(){throw Error('must not read whole soul')}}];
+ await file.events.change();
+ assert.equal(imported.format,'soul');
+ assert.deepEqual(imported.manifest,{memory:{exchanges:[{incoming:'hello',reply:'reply',date:'2026-09-30',time:'12:34'}]}});
+ assert.deepEqual(reads,[[0,16],[16,16+bytes.length]]);
+ imported=null;
+ file.files=[{name:'broken.soul',size:20,slice(){return new Blob([head])}}];
+ await file.events.change();assert.equal(imported,null);assert.equal(save.disabled,false);
  imported=null;file.files=[{size:17*1024*1024,text:async()=>{throw Error('must not read oversized file')}}];
  await file.events.change();assert.equal(imported,null);assert.equal(save.disabled,false);
 })().catch(e=>{console.error(e);process.exitCode=1});

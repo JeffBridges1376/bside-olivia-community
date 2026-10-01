@@ -85,6 +85,141 @@ def test_backend_jev_audio_uses_actual_body_without_new_instructions(monkeypatch
     assert row['requested_format'] == 'voice' and audio == ['Only these words']
 
 
+def ordinary_chat_result(**values):
+    from tests.persona.test_jev_pipeline import plan
+    result = pipeline_result(text=envelope(text='今天练得挺顺，刚歇下来。', **values))
+    result.companion_decision['plan'] = plan()
+    return result
+
+
+@pytest.mark.parametrize('listening', ['voice_ok', 'text_only'])
+def test_qq_default_speech_does_not_depend_on_writer_opting_in_or_old_listening_preference(
+        monkeypatch, tmp_path, listening):
+    result = ordinary_chat_result(delivery='text')
+    server, row, _, _, audio = server_fixture(monkeypatch, tmp_path, result)
+    row['listening_preference'] = listening
+    event = PersonalMessage('qq', 'b', 'u', '1', '今天怎么样？')
+    assert asyncio.run(backend.generate(server, event, row)) == '今天练得挺顺，刚歇下来。'
+    assert row['requested_format'] == 'voice' and audio == ['今天练得挺顺，刚歇下来。']
+    assert row['delivery_basis'] == 'QQ_DEFAULT_VOICE'
+
+
+def test_pending_future_media_does_not_lock_current_qq_reply_to_text(monkeypatch, tmp_path):
+    result = ordinary_chat_result(delivery='text')
+    result.companion_decision['plan']['understanding']['requirements'] = [dict(
+        id='later_photo', fulfillment='pending', alternatives=[dict(kinds=['image'], min_assets=1, max_assets=1)],
+        evidence_turn_ids=['t1'])]
+    server, row, _, _, audio = server_fixture(monkeypatch, tmp_path, result)
+    asyncio.run(backend.generate(server, PersonalMessage('qq', 'b', 'u', '1', '今天怎么样？'), row))
+    assert row['requested_format'] == 'voice' and len(audio) == 1
+
+
+@pytest.mark.parametrize('restriction', ['current_text', 'no_extras', 'uncertain_media'])
+def test_jev_current_media_constraints_still_control_delivery(monkeypatch, tmp_path, restriction):
+    result = ordinary_chat_result(delivery='voice')
+    value = result.companion_decision['plan']
+    if restriction in {'current_text', 'no_extras'}:
+        value['understanding']['requirements'] = [dict(id='requested_text', fulfillment='current',
+            alternatives=[dict(kinds=['text'], min_assets=1, max_assets=1)], evidence_turn_ids=['t1'])]
+        value['proposal']['steps'][0]['requirement_ids'] = ['requested_text']
+        if restriction == 'no_extras':
+            value['understanding']['extras_allowed'] = False
+    else:
+        value['proposal']['clarify_fields'] = ['media_requirement']
+        value['proposal']['moves'][0]['act'] = 'clarify'
+        value['resolution'].update(status='needs_clarification', uncertain_fields=['media_requirement'])
+    server, row, _, _, audio = server_fixture(monkeypatch, tmp_path, result)
+    asyncio.run(backend.generate(server, PersonalMessage('qq', 'b', 'u', '1', '这次发文字'), row))
+    assert row['requested_format'] == 'text' and audio == []
+
+
+@pytest.mark.parametrize('reason', ['speaker_unavailable', 'verbatim_text'])
+def test_same_writer_call_can_keep_text_for_speaker_or_literal_content(monkeypatch, tmp_path, reason):
+    result = ordinary_chat_result(delivery='text', text_reason=reason)
+    server, row, _, _, audio = server_fixture(monkeypatch, tmp_path, result)
+    asyncio.run(backend.generate(server, PersonalMessage('qq', 'b', 'u', '1', '今天怎么样？'), row))
+    assert row['requested_format'] == 'text' and audio == []
+    assert row['delivery_basis'] == reason.upper()
+
+
+@pytest.mark.parametrize('reason', ['recipient_cannot_listen', 'long_reply', 'recent_voice', {'private': 'annotation'}])
+def test_recipient_listening_and_invented_reasons_cannot_suppress_default_speech(monkeypatch, tmp_path, reason):
+    result = ordinary_chat_result(delivery='text', text_reason=reason)
+    server, row, _, _, audio = server_fixture(monkeypatch, tmp_path, result)
+    asyncio.run(backend.generate(server, PersonalMessage('qq', 'b', 'u', '1', '今天怎么样？'), row))
+    assert row['requested_format'] == 'voice' and len(audio) == 1
+
+
+@pytest.mark.parametrize('unavailable,basis', [('wechat', 'WECHAT_TEXT'),
+    ('transport', 'TRANSPORT_UNAVAILABLE'), ('provider', 'PROVIDER_UNAVAILABLE')])
+def test_default_speech_still_requires_actual_channel_transport_and_provider(monkeypatch, tmp_path, unavailable, basis):
+    server, row, _, _, audio = server_fixture(monkeypatch, tmp_path, ordinary_chat_result(delivery='text'))
+    channel = 'wechat' if unavailable == 'wechat' else 'qq'
+    if unavailable == 'transport': row['voice_available'] = False
+    if unavailable == 'provider': server._voice_reply_configured = lambda _: False
+    row['channel'] = channel
+    asyncio.run(backend.generate(server, PersonalMessage(channel, 'b', 'u', '1', '你好'), row))
+    assert row['requested_format'] == 'text' and audio == []
+    assert row['voice_ready'] is False and row['delivery_basis'] == basis
+
+
+def test_twelve_ordinary_qq_turns_deliver_audio_without_text_opt_in_or_replay(monkeypatch, tmp_path):
+    server, _, _, _, prepared = server_fixture(monkeypatch, tmp_path, ordinary_chat_result(delivery='text'))
+    # The fixture answers every turn with the same canned text; the repeat guard
+    # (regenerate a reply identical to a recent one) is not what this test covers.
+    from runtime.personal_chat import decision as decision_module
+    monkeypatch.setattr(decision_module, 'repeats_recent', lambda *a, **k: False)
+    rows, generated, sent = [], [], []
+    server.store.personal_chats = rows
+    async def generate(event, row):
+        generated.append(event.exchange_id)
+        return await backend.generate(server, event, row)
+    async def commit(row): pass
+    async def text_send(text): raise AssertionError('ordinary QQ turn should deliver speech')
+    async def audio_send(path):
+        sent.append(path)
+        return 'confirmed-' + str(len(sent))
+    text_send.audio = audio_send
+    server._persist_store_state = lambda: None
+    async def scenario():
+        service = PersonalChatService(rows, lambda: None, generate, commit, {'qq': ('b', 'u')})
+        for index in range(12):
+            event = PersonalMessage('qq', 'b', 'u', str(index), '今天怎么样？')
+            await service.handle(event, text_send)
+            await service.handle(event, text_send)  # A platform replay must not synthesize/send twice.
+        assert len(generated) == len(prepared) == len(sent) == 12
+        assert all(row['delivery_status'] == 'DELIVERED' and row['delivered_format'] == 'audio' for row in rows)
+        assert all(row['delivery_basis'] == 'QQ_DEFAULT_VOICE' for row in rows)
+        await asyncio.gather(*service.consumer_tasks.values())
+    asyncio.run(scenario())
+
+
+def test_optional_default_voice_render_failure_still_delivers_reply_text(monkeypatch, tmp_path):
+    server, _, _, _, _ = server_fixture(monkeypatch, tmp_path, ordinary_chat_result(delivery='text'))
+    rows, sent = [], []
+    server.store.personal_chats = rows
+    server._persist_store_state = lambda: None
+    async def unavailable(*a): raise RuntimeError('synthetic TTS failure')
+    monkeypatch.setattr(backend, 'prepare_chat_audio', unavailable)
+    async def generate(event, row): return await backend.generate(server, event, row)
+    async def commit(row): pass
+    async def text_send(text):
+        sent.append(text)
+        return 'confirmed-text'
+    async def audio_send(path): raise AssertionError('missing audio must not be sent')
+    text_send.audio = audio_send
+    async def scenario():
+        service = PersonalChatService(rows, lambda: None, generate, commit, {'qq': ('b', 'u')})
+        event = PersonalMessage('qq', 'b', 'u', '1', '今天怎么样？')
+        await service.handle(event, text_send)
+        assert sent == ['今天练得挺顺，刚歇下来']  # Existing QQ text formatting removes sentence-final dots.
+        assert rows[0]['delivery_status'] == 'DELIVERED' and rows[0]['delivered_format'] == 'text'
+        assert rows[0]['voice_fallback'] == 'PERSONAL_CHAT_TTS_UNAVAILABLE'
+        assert rows[0]['delivery_basis'] == 'VOICE_RENDER_FAILED'
+        await asyncio.gather(*service.consumer_tasks.values())
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize('timing', ['wait_user', 'defer', 'no_reply'])
 def test_backend_silent_decision_does_not_decode_empty_writer_or_render(monkeypatch, tmp_path, timing):
     server, row, _, saved, audio = server_fixture(monkeypatch, tmp_path, pipeline_result(timing=timing, text=''))

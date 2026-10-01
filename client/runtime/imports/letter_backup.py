@@ -1,5 +1,5 @@
 """Portable text-only mailbox backups; no provider, credentials or media paths."""
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import hashlib
 import json
 import math
@@ -101,6 +101,39 @@ def validate_backup(payload):
     return tuple(_record(row) for row in rows)
 
 
+def _soul_backup(manifest):
+    """Read only text exchanges from the SOUL0001 manifest (PR #508 format)."""
+    if not isinstance(manifest, dict) or len(json.dumps(manifest, ensure_ascii=False).encode('utf-8')) > MAX_BYTES:
+        raise ValueError('LETTER_BACKUP_INVALID')
+    memory = manifest.get('memory')
+    if not isinstance(memory, dict) or not isinstance(memory.get('exchanges'), list):
+        raise ValueError('LETTER_BACKUP_INVALID')
+    exchanges = memory['exchanges']
+    if len(exchanges) > MAX_LETTERS:
+        raise ValueError('LETTER_BACKUP_TOO_LARGE')
+    rows = []
+    for item in exchanges:
+        if not isinstance(item, dict):
+            raise ValueError('LETTER_BACKUP_INVALID')
+        content, reply = (_text('' if item.get(key) is None else item[key])
+                          for key in ('incoming', 'reply'))
+        if not (content.strip() or reply.strip()):
+            continue
+        date, clock = (_text('' if item.get(key) is None else item[key], 32)
+                       for key in ('date', 'time'))
+        stamp = None
+        if date:
+            try:
+                stamp = datetime.strptime(date + ' ' + (clock or '00:00'), '%Y-%m-%d %H:%M').replace(
+                    tzinfo=timezone(timedelta(hours=8))).isoformat()
+            except ValueError:
+                # Unknown dates stay unknown; never substitute the import date.
+                pass
+        rows.append({'content': content, 'reply_text': reply, 'created_at': stamp,
+                     'origin': 'user', 'reply_mode': 'text', 'letter_status': 'COMPLETED'})
+    return {'schema_version': SCHEMA, 'letters': rows}
+
+
 def import_letters(payload, *, adapter, existing=()):
     # Validate the entire document before the first write. Re-exported imports
     # retain their original record identity; repeated backups do not duplicate.
@@ -118,15 +151,23 @@ def import_letters(payload, *, adapter, existing=()):
             raise ValueError('LETTER_BACKUP_WRITE_FAILED')
         return {'status': 'APPLIED', 'seen': len(pairs), 'inserted': result.inserted,
                 'duplicates': result.duplicates, 'memory_mode': 'originals', 'provider_calls': 0}
+    soul = isinstance(payload, dict) and payload.get('format') == 'soul'
+    if soul:
+        payload = _soul_backup(payload.get('manifest'))
     rows = validate_backup(payload)
+    def pair(row):
+        return tuple(re.sub(r'\s+', ' ', row.get(key) or '').strip() for key in ('content', 'reply_text'))
+    existing_pairs = {pair(row) for row in existing} if soul else set()
     seen = {identity(row) for row in export_letters(existing)['letters']} if existing else set()
     records, duplicates = [], 0
     for position,row in enumerate(rows):
         digest = identity(row)
-        if digest in seen:
+        if digest in seen or (soul and pair(row) in existing_pairs):
             duplicates += 1
             continue
         seen.add(digest)
+        if soul:
+            existing_pairs.add(pair(row))
         offline = bool(re.fullmatch(r'offline-letter-pairs:[0-9a-f]{64}:\d{6}', row['source_id']))
         if offline:
             from .offline_letter_pairs import _pair_archive_content
@@ -136,6 +177,7 @@ def import_letters(payload, *, adapter, existing=()):
             source_record_id=row['source_id'] if offline else 'letter-backup:' + digest, source='letter-backup',
             occurred_at=row['created_at'],
             metadata={'import_kind': KIND, 'backup_record': row, 'import_position': position,
+                      **({'source_format': 'soul'} if soul else {}),
                       'user_content': row['content'], 'reply_text': row['reply_text'],
                       'replied_at': row['replied_at']},
         ))

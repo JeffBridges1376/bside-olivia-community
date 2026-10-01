@@ -6,7 +6,8 @@ from runtime.private_world.life_rhythm import LOCAL
 from .presentation import VOICE_POLICY
 
 INSTRUCTION = '''以 JSON 对象输出本轮决定，不要 Markdown、末尾控制标记或 JSON 外的正文。
-字段必须完整：{"text":"实际发给用户的正文","delivery":"text","listening":"keep","initiative":"keep","pause_until":null,"letter":"keep","letter_until":null,"followup_at":null,"evidence":"","sticker":null,"skip":false}。
+字段必须完整：{"text":"实际发给用户的正文","delivery":"voice","text_reason":null,"listening":"keep","initiative":"keep","pause_until":null,"letter":"keep","letter_until":null,"followup_at":null,"evidence":"","sticker":null,"skip":false}。
+QQ语音可转文字。语音可用且本轮媒体约束允许时默认voice；text_reason仅用于你自己确实不能开口（speaker_unavailable，须有当前世界依据），或正文包含必须原样复制的代码、链接、公式（verbatim_text），其他情况为null。用户可能不便听、内容较长、刚发过语音、关系不够亲近，都不是文字例外。不要把接收方上课或开会误当成你自己不能说话。
 delivery为text或voice；listening为keep/text_only/voice_ok；initiative和letter为keep/pause/open。偏好只根据当前用户明确表达改变，改变时evidence必须摘录能支持决定的当前原话。keep不改旧偏好。临时忙到某时用pause加pause_until；等用户回来或长期拒绝用pause加null。letter同理，今天不想写不等于永远不写。
 followup_at是用户明确希望你到时联系的时间，必须有evidence原话；null不新增任务；用户只取消之前约定时用字符串cancel，不必关闭所有主动聊天。用户取消所有主动联系时initiative=pause且pause_until=null也会取消旧任务。时间用带时区的ISO8601，基于decision_now计算，最多未来七天，过于含糊先自然询问而非猜一个日期。pause_until不能晚于followup_at。你自己发起的主动联系只在北京时间（UTC+8）8:30至24:00；用户明确要求的联系时间（如叫醒、到点提醒）任何时刻都可以安排，特殊情况下作息可以调整。任务会在软件运行且渠道可用时执行；不要承诺关机期间送达。没填有效followup_at不得在正文答应某时主动来找用户。
 语气沿用核心人格和真实关系。熟悉亲近可以自然关心、调侃、表达想念，不因渠道自动认定恋人。短话短接，长文或认真倾诉认真回应，不硬截长度。
@@ -94,7 +95,9 @@ def decode(raw, *, user, now, proactive=False):
             raise ValueError("FIELDS")
         # Extra model annotations are not executable preferences. Optional media
         # metadata must not discard an otherwise valid reply.
-        data = {key: value for key, value in data.items() if key in required | {'letter_invitation', 'sticker'}}
+        data = {key: value for key, value in data.items() if key in required | {'letter_invitation', 'sticker', 'text_reason'}}
+        if data.get('text_reason') not in ('speaker_unavailable', 'verbatim_text'):
+            data['text_reason'] = None
         if not isinstance(data.get('sticker'), str):
             data['sticker'] = None
         if not isinstance(data['text'], str) or type(data['skip']) is not bool:
@@ -132,7 +135,7 @@ def decode(raw, *, user, now, proactive=False):
         error = ValueError('PERSONAL_CHAT_DECISION_INVALID')
         if isinstance(locals().get('data'), dict):
             error.missing_fields = sorted(required - data.keys())
-            error.extra_field_count = len(data.keys() - required - {'letter_invitation', 'sticker'})
+            error.extra_field_count = len(data.keys() - required - {'letter_invitation', 'sticker', 'text_reason'})
         reasons = {'FOLLOWUP_CONFLICT', 'FIELDS', 'STICKER_TYPE', 'UNSUPPORTED_PREFERENCE_CHANGE', 'QUIET_HOURS', 'EVIDENCE_TYPE', 'PAUSE_CONFLICT', 'TEXT_OR_SKIP_TYPE', 'PREFERENCES', 'DELIVERY_OR_LISTENING', 'EMPTY_OR_SKIPPED_REPLY', 'TIME_RANGE', 'CONTROL_MARKER'}
         error.reason = str(exc) if type(exc) is ValueError and str(exc) in reasons else ('JSON_SYNTAX' if isinstance(exc, json.JSONDecodeError) else 'VALUE_TYPE_OR_TIME')
         raise error from exc

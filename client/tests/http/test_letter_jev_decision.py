@@ -167,7 +167,12 @@ assert detail['letterStatus'] == 4 and detail.get('replyBody', detail['replyText
 
 def test_secondary_photo_only_on_plain_turns():
     from runtime.image_reply import secondary_photo_allowed
-    plain = {'companion_decision': {'plan': {'understanding': {'requirements': []}}}, 'companion_delivery': 'text'}
-    asked = {'companion_decision': {'plan': {'understanding': {'requirements': [{'id': 'r1'}]}}}, 'companion_delivery': 'audio_speech'}
+    def plan(requirements, extras=True):
+        return {'plan': {'understanding': {'requirements': requirements, 'extras_allowed': extras},
+                         'resolution': {'uncertain_fields': []}}}
+    plain = {'companion_decision': plan([]), 'companion_delivery': 'text'}
+    asked = {'companion_decision': plan([{'id': 'r1', 'fulfillment': 'current'}]), 'companion_delivery': 'audio_speech'}
+    restricted = {'companion_decision': plan([], extras=False), 'companion_delivery': 'text'}
+    assert not secondary_photo_allowed(restricted)  # the user limited extra media
     assert secondary_photo_allowed({}) and secondary_photo_allowed(plain)
     assert not secondary_photo_allowed(asked)
