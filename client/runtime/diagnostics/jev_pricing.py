@@ -3,10 +3,10 @@ from decimal import Decimal
 
 PRICE_VERSION = 'jev-input-cny-20260928-v1'  # version of the signed usage receipt
 # Settlement price versions this client verifies. It declares the newest one;
-# the server charges that rate (2026-10-02: 20% lower) and reports the version.
+# the server charges that rate (2026-10-02: 10% lower) and reports the version.
 DISCOUNT_PRICE_VERSION = 'jev-input-cny-20261002-v2'
-INPUT_RATE_UNITS = {PRICE_VERSION: 150, DISCOUNT_PRICE_VERSION: 120}  # 1 yuan = 100,000,000 units
-INPUT_CNY_PER_MILLION = Decimal('1.20')
+INPUT_RATE_UNITS = {PRICE_VERSION: 150, DISCOUNT_PRICE_VERSION: 135}  # 1 yuan = 100,000,000 units
+INPUT_CNY_PER_MILLION = Decimal('1.35')
 OUTPUT_CNY_PER_MILLION = Decimal('0')
 
 
