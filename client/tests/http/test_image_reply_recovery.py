@@ -92,13 +92,17 @@ def test_missing_pillow_fails_before_paid_submission(tmp_path, monkeypatch):
 def setup(tmp_path, monkeypatch, failure='download'):
     monkeypatch.setenv('OLIVIA_GPU_API_URL', 'http://127.0.0.1:9')
     monkeypatch.setenv('OLIVIA_GPU_API_KEY', 'synthetic-only')
-    calls = {'submits': [], 'downloads': 0, 'plans': [], 'submissions': []}
+    calls = {'submits': [], 'statuses': [], 'downloads': 0, 'plans': [], 'submissions': []}
     async def tools(**kwargs):
         calls['plans'].append(kwargs['request_id'])
         return [SimpleNamespace(name='plan_reply_photo', arguments=dict(PLAN))]
     class Remote(remote_generation.RemoteGeneration):
         async def request(self, action, data):
             if action == 'capabilities': return {'kinds': ['image'], 'shared_assets': []}
+            if action == 'status':
+                assert data == {'task_id': 'saved-task'}
+                calls['statuses'].append(data['task_id'])
+                return dict(task_id='saved-task', status='succeeded', outputs=[{'url': 'http://invalid.example/photo.png'}])
             assert action == 'submit'
             calls['submits'].append(data['request_id'])
             calls['submissions'].append(data)
@@ -147,7 +151,7 @@ def test_transient_result_download_recovers_same_paid_request(tmp_path, monkeypa
         await image_reply.prepare(server, row, 'coffee?', 'Here')
         assert row['image_status'] == 'COMPLETED'
         assert row['image_phase'] == 'ready' and row['image_dependency_available'] is True
-        assert len(calls['submits']) == 2 and len(set(calls['submits'])) == 1
+        assert len(calls['submits']) == 1 and calls['statuses'] == ['saved-task']
         assert len(calls['plans']) == 1 and calls['plans'][0].startswith('reply-photo-plan-')
         assert row['image_description']['source'] == 'generated'
     asyncio.run(scenario())
@@ -170,7 +174,8 @@ def test_retry_budget_caps_network_failures_without_new_gpu_jobs(tmp_path, monke
         for attempt in range(6):
             row['image_retry_at'] = 0
             await image_reply._prepare_once(server, row, 'photo', 'Okay')
-        assert len(calls['submits']) == 4 and len(set(calls['submits'])) == 1
+        assert len(calls['submits']) == 1 and calls['statuses'] == ['saved-task'] * 3
+        assert calls['downloads'] == 4
         assert row['image_generation_failures'] == 4 and row['image_status'] == 'FAILED'
     asyncio.run(scenario())
 
@@ -200,7 +205,8 @@ def test_cancelled_attempt_resumes_receipt_not_new_job(tmp_path, monkeypatch):
             await image_reply.prepare(server, row, 'photo', 'Okay')
         assert row['image_receipt_required']
         await image_reply.prepare(server, row, 'photo', 'Okay')
-        assert row['image_status'] == 'COMPLETED' and len(set(calls['submits'])) == 1
+        assert row['image_status'] == 'COMPLETED' and len(calls['submits']) == 1
+        assert calls['statuses'] == ['saved-task']
     asyncio.run(scenario())
 
 
@@ -351,7 +357,7 @@ def test_saved_paid_photo_recovers_identically_after_expression_metadata_lost(tm
         row['image_retry_at'] = 0
         await image_reply.prepare(server, row, '随手拍', row['reply_text'])
         assert row['image_status'] == 'COMPLETED' and len(calls['plans']) == 1
-        assert len(calls['submissions']) == 2 and calls['submissions'][0] == calls['submissions'][1]
+        assert len(calls['submissions']) == 1 and calls['statuses'] == ['saved-task']
     asyncio.run(scenario())
 
 
