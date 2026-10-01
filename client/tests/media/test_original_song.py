@@ -8,6 +8,30 @@ import pytest
 from runtime.media import ace_cover, original_song, cover_reply
 
 
+@pytest.mark.parametrize('render_video',[False,True])
+def test_server_plans_original_song_without_client_model_calls(tmp_path,monkeypatch,render_video):
+    from runtime import remote_pipeline
+    from runtime.media import remote_materials
+    monkeypatch.setattr(remote_pipeline,'capabilities',lambda _:{'server_media_planning':True,'original_music_provider':'suno_v6'})
+    def forbidden(*a,**k):raise AssertionError('client song planner must not run')
+    monkeypatch.setattr(original_song,'cached_song_plan',forbidden)
+    monkeypatch.setattr(original_song,'plan_song_content',forbidden)
+    calls=[]
+    def generate(kind,data,output,**kwargs):
+        calls.append(kind)
+        assert data['media_request']['incoming']=='synthetic-letter'
+        assert data['media_request']['reply']=='synthetic-reply'
+        assert data['media_request']['duration_seconds']==240
+        output.write_bytes(b'synthetic-artifact')
+        return {'remote_task_id':'synthetic-task'}
+    monkeypatch.setattr(remote_pipeline,'generate',generate)
+    monkeypatch.setattr(remote_materials,'render_music_materials',generate)
+    output=tmp_path/('song.mp4' if render_video else 'song.wav')
+    result=original_song.render_original_reply('synthetic-letter','synthetic-reply',output,environment={'OLIVIA_GPU_ROUTE':'remote'},render_video=render_video)
+    assert calls==['original_video' if render_video else 'original']
+    assert output.read_bytes()==b'synthetic-artifact' and result['music_planning_duration_seconds']==240
+
+
 def test_original_audio_has_no_source_and_preserves_approved_parameters(tmp_path, monkeypatch):
     paths = ace_cover.cover_paths({'OLIVIA_LOCAL_DATA_ROOT': str(tmp_path)})
     calls = []

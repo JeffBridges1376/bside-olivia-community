@@ -38,10 +38,35 @@ def render_original_reply(content, reply_text, output_path, *, environment,
         raise MusicReplyError("MUSIC_DURATION_UNSUPPORTED")
     # Old central servers still render ACE's 110s preset. Only the advertised
     # Suno pipeline accepts the full-song lyric plan.
-    planning_duration = 240 if cloud and capabilities(environment).get('original_music_provider') == 'suno_v6' else 110
+    caps = capabilities(environment) if cloud else {}
+    planning_duration = 240 if caps.get('original_music_provider') == 'suno_v6' else 110
+    audio = output_path.with_name(output_path.stem + "-original.wav") if render_video else output_path
+    if cloud and caps.get('server_media_planning') is True:
+        persona = []
+        if reply_adapter is not None:
+            from llm_gateway import GatewayConfig
+            config = getattr(reply_adapter,'config',None)
+            if isinstance(config,GatewayConfig) and config.persona_v2_enabled:
+                from runtime.media.song_content import _runtime_path
+                from persona_loader import load_persona
+                loaded = load_persona(getattr(reply_adapter,'persona_v2_path',None) or _runtime_path(config.persona_v2_file))
+                if not loaded.ready:
+                    raise MusicReplyError('PERSONA_UNAVAILABLE')
+                persona = [declaration.statement for declaration in loaded.snapshot.declarations
+                           if declaration.tier in {'CONSTITUTION','PUBLIC_CANON','COMMUNITY_SOFT_CANON'}
+                           or declaration.tier=='MODE_STYLE' and declaration.mode=='musical_video'][:24]
+        data={'media_request':{'incoming':content,'reply':reply_text,'reference':expression_context or {},
+                              'persona':persona,'duration_seconds':planning_duration}}
+        if render_video:
+            from runtime.media.remote_materials import render_music_materials
+            metadata=render_music_materials('original_video',data,output_path,environment=environment,
+                                          include_spoken=include_spoken,reply_text=reply_text,**video_options)
+        else:
+            metadata=generate('original',data,audio,environment=environment)
+        return {**metadata,'music_planning_duration_seconds':planning_duration,
+                'reply_structure':metadata.get('reply_structure','original_song_audio')}
     if not enabled(environment) and not original_configured(environment):
         raise MusicReplyError("ORIGINAL_RUNTIME_UNAVAILABLE")
-    audio = output_path.with_name(output_path.stem + "-original.wav") if render_video else output_path
     from runtime.media.music_options import from_environment, generation_parameters
     music_options = from_environment(environment)
     try:

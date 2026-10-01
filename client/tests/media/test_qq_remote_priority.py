@@ -1,10 +1,16 @@
+import pytest
+
 from runtime import remote_pipeline
 
 
-def test_only_qq_tts_carries_priority_channel(monkeypatch, tmp_path):
+@pytest.mark.parametrize('server_planning', [False, True])
+def test_only_qq_tts_carries_priority_channel(monkeypatch, tmp_path, server_planning):
     calls = []
     class Remote:
         def __init__(self, *args): pass
+        async def request(self, action, data):
+            assert action == 'capabilities' and data == {}
+            return {'server_media_planning': server_planning}
         async def generate(self, kind, data, output, **kwargs):
             calls.append((kind, data))
             return {'task_id': 'synthetic'}
