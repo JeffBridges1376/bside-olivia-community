@@ -1,3 +1,4 @@
+from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES
 """Single-image Jev delivery uses the durable photo worker, never a text draft."""
 import asyncio
 from copy import deepcopy
@@ -159,6 +160,6 @@ def test_decision_input_leaves_out_oldest_turns_instead_of_failing(monkeypatch):
                                  as_of=datetime.now(timezone.utc), kinds=['text']))
     wire = port.turns[0].input['messages']
     assert wire[-1]['text'] == '现在呢'
-    assert len(json.dumps({'input': port.turns[0].input}, ensure_ascii=False).encode()) <= 32768
+    assert len(json.dumps({'input': port.turns[0].input}, ensure_ascii=False).encode()) <= JEV_MAX_INPUT_BYTES
     kept = [m['text'][:5] for m in wire[:-1]]
     assert kept and kept[-1].startswith('第11条')  # newest turns stay, oldest go first

@@ -407,3 +407,27 @@ assert.doesNotMatch(render(base),/每次最低/);
 '''
     result = subprocess.run([node, '-e', harness], capture_output=True, text=True, encoding='utf-8', timeout=30)
     assert result.returncode == 0, result.stderr
+
+
+def test_statement_rows_show_when_each_charge_happened():
+    node = shutil.which('node')
+    if node is None:
+        pytest.skip('Node.js is unavailable')
+    source = 'const drawUnifiedStatement =' + BOOTSTRAP_JAVASCRIPT.split('const drawUnifiedStatement =', 1)[1].split('\n  };\n', 1)[0] + '\n  };'
+    harness = r'''
+const assert = require('node:assert/strict');
+class Element { constructor(){this.children=[];this.style={};} append(...c){this.children.push(...c);} replaceChildren(...c){this.children=c;} }
+const document={createElement:()=>new Element()};
+const text=(tag,value)=>({textContent:value});
+const flat=node=>node.textContent!==undefined?[node.textContent]:node.children.flatMap(flat);
+''' + source + r'''
+const target=new Element();
+drawUnifiedStatement(target,{remaining_yuan:'1',reserved_yuan:'0',used_yuan:'0',items:[
+  {label:'音乐视频',status:'settled',created_at:'2026-10-01T13:03:27+00:00',charged_yuan:'3.88',reserved_yuan:'0'},
+  {label:'写回信',status:'settled',created_at:'not-a-date',charged_yuan:'0.01',reserved_yuan:'0'}]});
+const lines=flat(target);
+assert.ok(lines.some(line=>/2026.*10.*01/.test(line)), lines.join('|'));  // local date and time of the charge
+assert.ok(lines.includes('写回信 · 已结算'));                              // an unreadable time is simply omitted
+'''
+    result = subprocess.run([node, '-e', harness], capture_output=True, text=True, encoding='utf-8', timeout=60)
+    assert result.returncode == 0, result.stderr

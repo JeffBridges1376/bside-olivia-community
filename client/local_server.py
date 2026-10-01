@@ -1080,6 +1080,7 @@ class Store:
         self.midi_jobs = []    # {job_id, state, filename, created_at}
         self.settings = {}
         self.request_keys = {}
+        self.letter_maintenance = {}  # reversible mailbox display/time overrides
 
 store = Store()
 _store_state_error_code: str | None = None
@@ -1184,7 +1185,7 @@ def _read_store_state(path: Path) -> dict:
         ):
             raise ValueError("store state contains an invalid collection")
         normalized[name] = value
-    for name in ("settings", "request_keys", "personal_chat_cursors"):
+    for name in ("settings", "request_keys", "personal_chat_cursors", "letter_maintenance"):
         value = loaded.get(name, {})
         if not isinstance(value, dict):
             raise ValueError("store state contains invalid metadata")
@@ -1303,6 +1304,7 @@ def _load_store_state() -> None:
         store.request_keys = loaded["request_keys"]
     if isinstance(loaded.get("personal_chat_cursors"), dict):
         store.personal_chat_cursors = loaded["personal_chat_cursors"]
+    store.letter_maintenance = loaded.get("letter_maintenance", {})
     if needs_persist or recovered_from_backup:
         try:
             _persist_store_state()
@@ -1326,6 +1328,7 @@ def _submit_store_state():
         "midi_jobs": store.midi_jobs,
         "settings": store.settings,
         "request_keys": store.request_keys,
+        "letter_maintenance": getattr(store, "letter_maintenance", {}),
     }
     # Capture mutable state on the caller thread; serialize/write snapshots in
     # submission order so a slow older save cannot overwrite a newer one.
@@ -2071,7 +2074,7 @@ async def handler(request: web.Request):
     body_error = None
     if request.can_read_body:
         try:
-            if canonical_path == "/toy/letter/backup/import":
+            if canonical_path == "/toy/letter/backup/import" or canonical_path.startswith("/toy/letter/maintenance/"):
                 from runtime.imports.letter_backup import MAX_BYTES
                 raw = bytearray()
                 async for chunk in request.content.iter_chunked(65536):
@@ -2708,20 +2711,27 @@ def _official_history_mailbox_projection(*, strict: bool = False) -> list[dict]:
     return projected
 
 
-def _letter_collection(scope: str, *, strict: bool = False):
+def _letter_collection(scope: str, *, strict: bool = False, maintenance: bool = True):
     if scope == "legacy":
         return _legacy_letter_collection()
-    _mark_superseded_failed_retries()
+    if maintenance:
+        _mark_superseded_failed_retries()
     current = [letter for letter in store.letters if not letter.get("superseded_by")
                and (letter.get("origin") != "proactive" or letter.get("letter_status") == "COMPLETED")]
+    rows = [*current, *_official_history_mailbox_projection(strict=strict)]
+    if maintenance:
+        from runtime.imports.letter_maintenance import project
+        rows = project(rows, getattr(store, "letter_maintenance", {}))
     return sorted(
-        [*current, *_official_history_mailbox_projection(strict=strict)],
+        rows,
         key=_mailbox_sort_key,
         reverse=True,
     )
 
 
 def _mailbox_sort_key(letter: Mapping[str, object]) -> tuple:
+    if '_maintenance_order' in letter:
+        return (_mailbox_created_at(letter), 'backup', -letter['_maintenance_order'])
     metadata = letter.get("metadata")
     if is_letter_backup(metadata):
         return (_mailbox_created_at(letter), 'backup', -int(metadata.get('import_position', 0)))
@@ -3776,6 +3786,57 @@ async def route(
     if spec["state"] == "not_implemented" and p != "/toy/midi/generate":
         return not_implemented(spec["error_code"] or "ROUTE_NOT_IMPLEMENTED")
 
+    if p.startswith('/toy/letter/maintenance/'):
+        from runtime.imports.letter_maintenance import preview, apply_selection, project, source_rows, key, digest
+        if companion_confirmed is not True:
+            return err(403, 'COMPANION_CONFIRMATION_REQUIRED')
+        if _store_state_error_code or _state_root() is None:
+            return err(503, 'LETTER_BACKUP_STORAGE_UNAVAILABLE')
+        if not _history_memory_admin_gate.acquire(blocking=False):
+            return err(409, 'MEMORY_ADMIN_BUSY')
+        try:
+            rows = copy.deepcopy(_letter_collection('current', strict=True, maintenance=False))
+            edits = copy.deepcopy(getattr(store, 'letter_maintenance', {}))
+            backup = body.get('backup')
+            if p.endswith('/detail'):
+                candidates = project(rows, edits, include_hidden=True)
+                if backup is not None:
+                    candidates += list(source_rows(backup))
+                found = next((row for row in candidates if key(row) == body.get('key')), None)
+                if found is None:
+                    return err(404, 'LETTER_NOT_FOUND')
+                return ok({'status': 'READY', 'content': found.get('content') or '', 'reply_text': found.get('reply_text') or ''})
+            plan = await asyncio.to_thread(preview, rows, edits, backup)
+            if p.endswith('/preview'):
+                page = body.get('page', 0)
+                if type(page) is not int or not 0 <= page <= 10000:
+                    return err(400, 'LETTER_MAINTENANCE_INVALID')
+                counts = {}
+                for item in plan['items']:
+                    counts[item['kind']] = counts.get(item['kind'], 0) + 1
+                return ok({k: v for k, v in plan.items() if k not in {'_changes', 'items'}} | {
+                    'items': plan['items'][page * 30:(page + 1) * 30], 'total': len(plan['items']),
+                    'counts': counts, 'page': page})
+            current = _letter_collection('current', strict=True, maintenance=False)
+            if body.get('token') != plan['token'] or digest(current) != digest(rows) or getattr(store, 'letter_maintenance', {}) != edits:
+                return err(409, 'LETTER_MAINTENANCE_STALE')
+            updated = apply_selection(plan, body.get('selected'), edits)
+            store.letter_maintenance = updated
+            try:
+                # Atomic store writer includes all current state; never replace a
+                # stale state.json from the standalone utility or drop SQL guards.
+                _persist_store_state()
+            except StoreStateUnavailable:
+                store.letter_maintenance = edits
+                raise
+            return ok({'status': 'APPLIED', 'changed': len(set(body['selected'])), 'provider_calls': 0})
+        except (ValueError, TypeError, UnicodeError, OverflowError):
+            return err(400, 'LETTER_MAINTENANCE_INVALID')
+        except (OSError, sqlite3.Error, StoreStateUnavailable):
+            return err(503, 'LETTER_BACKUP_STORAGE_UNAVAILABLE')
+        finally:
+            _history_memory_admin_gate.release()
+
     if p in {"/toy/letter/backup/export", "/toy/letter/backup/import"}:
         if companion_confirmed is not True:
             return err(403, "COMPANION_CONFIRMATION_REQUIRED")
@@ -3792,8 +3853,13 @@ async def route(
                 return err(409, "MEMORY_ADMIN_BUSY")
             async def restore_backup():
                 try:
+                    from runtime.imports.letter_maintenance import project
+                    existing = _letter_collection("current", strict=True, maintenance=False)
+                    # Recognize both original backups and exports of repaired
+                    # dates, including hidden rows, without importing duplicates.
+                    existing = existing + project(existing, getattr(store, 'letter_maintenance', {}), include_hidden=True)
                     return await asyncio.to_thread(import_letter_backup, body.get("backup"),
-                        adapter=_legacy_import_adapter(), existing=_letter_collection("current", strict=True))
+                        adapter=_legacy_import_adapter(), existing=existing)
                 finally:
                     _history_memory_admin_gate.release()
             operation = asyncio.create_task(restore_backup())
@@ -4388,6 +4454,10 @@ async def route(
         if scope == "current" and not l.get("read_only") and reply_published:
             proactive_unread = l.get('origin') == 'proactive' and not l.get('is_read', 0)
             l["is_read"] = 1
+            # A repaired date is a display projection, not the mutable store row.
+            original = next((row for row in store.letters if row.get('letter_id') == lid), None)
+            if original is not None:
+                original['is_read'] = 1
             if proactive_unread:
                 _persist_store_state()
                 _refresh_proactive_context()

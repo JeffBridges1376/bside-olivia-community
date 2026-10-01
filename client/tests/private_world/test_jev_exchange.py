@@ -1,3 +1,4 @@
+from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES
 import asyncio
 
 import pytest
@@ -282,7 +283,7 @@ def test_oversized_exchange_fails_before_provider_instead_of_batching():
     from runtime.private_world.jev_exchange import extract
     port = Port(first)
     with pytest.raises(ValueError, match='JEV_INPUT_TOO_LARGE'):
-        asyncio.run(extract(port, {'user_letter': '你好。', 'linli_reply': '你好。'}, 'x' * 32768, 'life:large'))
+        asyncio.run(extract(port, {'user_letter': '你好。', 'linli_reply': '你好。'}, 'x' * JEV_MAX_INPUT_BYTES, 'life:large'))
     assert port.calls == []
 
 
@@ -356,7 +357,7 @@ def test_realistic_letter_with_existing_projects_fits_one_packet():
     asyncio.run(extract(port, data, _EXCHANGE_LIFE_PROMPT, 'life:budget'))
     state, questions, purpose = port.calls[0]
     size = len(json.dumps(dict(state=state, questions=questions, purpose=purpose), ensure_ascii=False, separators=(',', ':')).encode())
-    assert size < 32768
+    assert size < JEV_MAX_INPUT_BYTES
     assert len(questions) == 56  # includes three addressing quotes and the world-update gate
     assert state['sources'] == {key: data[key] for key in ('user_letter', 'linli_reply')}
     assert _EXCHANGE_LIFE_PROMPT not in str(state)
@@ -383,3 +384,23 @@ def test_exchange_keeps_how_each_side_addresses_the_other_as_original_quotes():
     port = Port(first)
     assert asyncio.run(extract(port, proactive, '', 'life:p'))['addressing'] == {}
     assert not any(key.startswith('address_') for key in port.calls[0][1])
+
+
+def test_long_letter_uses_coarser_quotes_instead_of_dropping_the_exchange():
+    from runtime.private_world.jev_exchange import _quotes, extract
+    letter = ''.join(f'第{i}天我去了图书馆，借了一本书，晚上读到很晚。' for i in range(60))
+    with pytest.raises(ValueError, match='JEV_EXCHANGE_QUOTE_CAPACITY'):
+        _quotes(letter, 'u')  # the finest windows no longer fit
+    assert len(_quotes(letter, 'u', 2)) == 60
+    port = Port(first)
+    asyncio.run(extract(port, {'user_letter': letter, 'linli_reply': '好。'}, '', 'long-letter'))
+    assert len(port.calls) == 1  # degrading happens before the single paid request
+    state = port.calls[0][0]
+    assert all(start >= 0 for start, _ in state['quotes'].values())
+
+
+def test_run_on_sentence_splits_only_at_clause_marks():
+    from runtime.private_world.jev_exchange import _quotes
+    sentence = '，'.join(['今天去了河边散步看到很多人在钓鱼'] * 20) + '。'
+    quotes = _quotes(sentence, 'u', 2)
+    assert all(len(quote) <= 240 and sentence.find(quote) >= 0 for quote in quotes.values())

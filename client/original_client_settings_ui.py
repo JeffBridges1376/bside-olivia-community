@@ -176,9 +176,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         this.setOpen(false);
         if(['SKIPPED','NOT_REQUESTED'].includes(data?.imageStatus)){this.replaceChildren();return;}
         if(data?.imageStatus==='FAILED'){
-          const reasons={GPU_NOT_CONFIGURED:'请先在云端 GPU 设置中连接照片服务。',GPU_AUTH_FAILED:'照片服务验证失败，请检查云端 GPU 设置。',GPU_INSUFFICIENT_BALANCE:'云端余额不足，请检查云服务余额。',GPU_BILLING_CONSENT_REQUIRED:'请先在云端 GPU 设置中确认使用服务。',IMAGE_DEPENDENCY_MISSING:'照片组件不完整，请更新或修复客户端。'};
+          const reasons={GPU_NOT_CONFIGURED:'请先连接 Olivia 账户。',GPU_AUTH_FAILED:'照片服务验证失败，请检查 Olivia 账户。',GPU_INSUFFICIENT_BALANCE:'云端余额不足，请检查云服务余额。',GPU_BILLING_CONSENT_REQUIRED:'请先在设置中确认使用云端服务。',IMAGE_DEPENDENCY_MISSING:'照片组件不完整，请更新或修复客户端。'};
           const code=/^[A-Z][A-Z0-9_]{0,95}$/.test(data.imageErrorCode||'')?data.imageErrorCode:'';
-          this.textContent='照片未能附上。'+(reasons[code]||'请导出诊断包以便排查。')+(code?'（'+code+'）':'');return;
+          this.textContent='照片这次没能附上。'+(reasons[code]||'');this.title=code;return;
         }
         this.textContent=data.imageStatus==='RETRY_PENDING'?'照片连接暂时中断，正在自动重试…':data.imagePhase==='waiting'||data.imageCloudStatus==='queued'?'照片正在排队，完成后会附在正文后…':'照片正在准备…';
       } catch(_){if(controller.signal.aborted)return;if(this.isConnected&&id===this.getAttribute('letter-id'))this.textContent='暂时无法获取照片状态，正在重试…';}
@@ -536,6 +536,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       || path === LOCAL_LETTER_IMPORT_PATH
       || path === MEMORY_CLEAR_PATH
       || path.startsWith("/toy/letter/backup/")
+      || path.startsWith("/toy/letter/maintenance/")
     )
       ? 300000
       : 8000;
@@ -561,7 +562,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       }
       const payload = (path === VIDEO_REPLY_SETTINGS_PATH
           || path === LOCAL_LETTER_IMPORT_PATH
-          || path === MEMORY_RETRY_PATH || path.startsWith("/toy/letter/backup/"))
+          || path === MEMORY_RETRY_PATH || path.startsWith("/toy/letter/backup/")
+          || path.startsWith("/toy/letter/maintenance/"))
         && responseBody && responseBody.data && typeof responseBody.data === "object"
         ? responseBody.data
         : responseBody;
@@ -1932,7 +1934,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     for(const item of account.items||[]){
       const row=document.createElement('div');row.style.cssText='display:flex;justify-content:space-between;gap:16px;padding:12px 0;border-bottom:1px solid #8884';
       const held=Number(item.reserved_yuan)>0;
-      row.append(text('span',`${item.label} · ${status[item.status]||item.status}`),text('span',(held?'预留 ':'−')+money(held?item.reserved_yuan:item.charged_yuan)));
+      const name=document.createElement('span');name.style.cssText='display:grid;gap:2px;min-width:0';
+      name.append(text('span',`${item.label} · ${status[item.status]||item.status}`));
+      const at=new Date(item.created_at||'');
+      if(!Number.isNaN(at.getTime()))name.append(text('span',at.toLocaleString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}),'text-text-secondary text-caption-m'));
+      row.append(name,text('span',(held?'预留 ':'−')+money(held?item.reserved_yuan:item.charged_yuan)));
       target.append(row);
     }
     if(!(account.items||[]).length)target.append(text('p','还没有消费记录。'));
@@ -3168,12 +3174,12 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const confirmReplyRoute = (route, ready, video = false, readiness = {}) => new Promise((resolve) => {
     const cloudUnavailable = !ready && readiness.backend === 'remote';
     const cloudMessages = {
-      GPU_NOT_CONFIGURED: '请在“云端 GPU”中配置连接。',
+      GPU_NOT_CONFIGURED: '请先连接 Olivia 账户。',
       GPU_TLS_FAILED: '无法验证云端证书，请检查系统时间和网络。',
       GPU_CONNECTION_TIMEOUT: '云端检查超时，请稍后重试。',
       GPU_CONNECT_FAILED: '无法连接云端服务，请检查网络后重试。',
       GPU_CONNECTION_FAILED: '云端连接中断，请重试。',
-      GPU_AUTH_FAILED: '云端认证失败，请检查“云端 GPU”中的账户配置。',
+      GPU_AUTH_FAILED: '云端认证失败，请检查 Olivia 账户。',
       GPU_RESPONSE_INVALID: '云端返回异常，请重试。',
       GPU_QUEUE_FULL: '云端繁忙，请稍后重试。',
       GPU_CAPABILITY_UNAVAILABLE: '云端当前未提供所需生成能力，请稍后重试。',
@@ -3824,6 +3830,28 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     void refresh();
   };
 
+  const readLetterBackupFile = async (selected) => {
+    let backup;
+    if (/\.soul$/i.test(selected.name || "")) {
+      const head = await selected.slice(0, 16).arrayBuffer();
+      if (head.byteLength !== 16 || new TextDecoder().decode(head.slice(0, 8)) !== "SOUL0001") throw Error("invalid soul");
+      const view = new DataView(head), length = view.getUint32(8, true);
+      if (view.getUint32(12, true) !== 0 || !length || length > 16 * 1024 * 1024 || length + 16 > selected.size) throw Error("invalid soul size");
+      const manifest = JSON.parse(new TextDecoder("utf-8", {fatal:true}).decode(await selected.slice(16, 16 + length).arrayBuffer()));
+      if (!Array.isArray(manifest?.memory?.exchanges)) throw Error("invalid soul exchanges");
+      backup = {format:"soul", manifest:{memory:{exchanges:manifest.memory.exchanges.map(row => {
+        if (!row || typeof row !== "object" || Array.isArray(row)) throw Error("invalid soul exchange");
+        const {incoming, reply, date, time} = row;
+        return {incoming, reply, date, time};
+      })}}};
+    } else {
+      if (selected.size > 16 * 1024 * 1024) throw Error("backup too large");
+      backup = (await selected.text()).replace(/^\uFEFF/, "");
+    }
+    if (new TextEncoder().encode(JSON.stringify({backup})).length > 16 * 1024 * 1024 + 1024) throw Error("backup too large");
+    return backup;
+  };
+
   const mountLetterBackup = (section) => {
     const state = text("div", "备份包含双方文字原文、时间和信件类型，不含音视频附件。请自行保管信件内容。", "text-text-secondary text-body-m font-regular");
     state.setAttribute("aria-live", "polite");
@@ -3851,25 +3879,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const selected = file.files?.[0]; if (!selected) return;
       setButtonsBusy([save, restore], true);
       try {
-        let backup;
-        if (/\.soul$/i.test(selected.name || "")) {
-          const head = await selected.slice(0, 16).arrayBuffer();
-          if (head.byteLength !== 16 || new TextDecoder().decode(head.slice(0, 8)) !== "SOUL0001") throw Error("invalid soul");
-          const view = new DataView(head);
-          const length = view.getUint32(8, true);
-          if (view.getUint32(12, true) !== 0 || !length || length > 16 * 1024 * 1024 || length + 16 > selected.size) throw Error("invalid soul size");
-          const manifest = JSON.parse(new TextDecoder("utf-8", {fatal:true}).decode(await selected.slice(16, 16 + length).arrayBuffer()));
-          if (!Array.isArray(manifest?.memory?.exchanges)) throw Error("invalid soul exchanges");
-          backup = {format:"soul", manifest:{memory:{exchanges:manifest.memory.exchanges.map(row => {
-            if (!row || typeof row !== "object" || Array.isArray(row)) throw Error("invalid soul exchange");
-            const {incoming, reply, date, time} = row;
-            return {incoming, reply, date, time};
-          })}}};
-        } else {
-          if (selected.size > 16 * 1024 * 1024) throw Error("backup too large");
-          backup = (await selected.text()).replace(/^\uFEFF/, "");
-        }
-        if (new TextEncoder().encode(JSON.stringify({backup})).length > 16 * 1024 * 1024 + 1024) throw Error("backup too large");
+        const backup = await readLetterBackupFile(selected);
         if (!await confirmAction("导入所选文件中的信件？支持灵离 .soul、原版 letter_pairs.json 和 Olivia 信件备份。只导入双方文字，.soul 内的音视频不会上传或导入；重复信件跳过，已有信件不覆盖。随后按顺序每五封调用模型评估关系并消耗额度，已有进度保留。")) return;
         state.textContent = "正在保存信件原文，无需等待大模型……";
         const result = await requestMutation("/toy/letter/backup/import", {backup});
@@ -3884,8 +3894,134 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       text("p", "已有灵离 .soul 或 JSON 备份、换电脑恢复：点“选择文件导入”。.soul 只读取文字，不导入音视频。没有单独保存文件：可在下方从原版目录读取。"), state, controls);
   };
 
+  const mountLetterMaintenance = (section) => {
+    const box = document.createElement("details");
+    box.className = "olivia-letter-maintenance";
+    box.append(text("summary", "信件对比与整理"));
+    const style = text("style", `
+      .olivia-letter-maintenance{margin:24px 0;border-top:1px solid #424242;padding-top:20px;color:inherit}
+      .olivia-letter-maintenance summary{cursor:pointer;font-weight:600;padding:8px 0;font-size:18px}
+      .olivia-letter-maintenance p{line-height:1.65;margin:12px 0;max-width:72ch}
+      .olivia-letter-maintenance .lm-controls{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0}
+      .olivia-letter-maintenance .lm-row{padding:18px 0;border-top:1px solid #424242}
+      .olivia-letter-maintenance .lm-pair{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:20px;margin:12px 0}
+      .olivia-letter-maintenance .lm-copy{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7;max-height:260px;overflow:auto;margin:8px 0}
+      .olivia-letter-maintenance .lm-column{min-width:0}
+      .olivia-letter-maintenance label{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+      .olivia-letter-maintenance select{background:#242424;color:#eee;border:1px solid #777;border-radius:6px;padding:8px;max-width:100%}
+      .olivia-letter-maintenance :focus-visible{outline:2px solid currentColor;outline-offset:3px}
+      .olivia-letter-maintenance [hidden]{display:none!important}
+      .olivia-letter-maintenance button:disabled,.olivia-letter-maintenance select:disabled{opacity:.5;cursor:default}
+    `);
+    const help = text("p", "先检查，再选择要整理的信件。可以对比 .soul 或 JSON 备份、修复时间和顺序、收起重复信与失败信。整理只影响信箱显示，不改原文或长期记忆，也不调用模型；可在这里恢复。");
+    const status = text("p", "尚未检查。检查当前信箱无需选择文件。");
+    status.setAttribute("aria-live", "polite");
+    const controls = actions(); controls.className = "lm-controls";
+    const results = document.createElement("div"), pager = actions(); pager.className = "lm-controls";
+    const file = document.createElement("input"); file.type = "file"; file.accept = ".json,.soul,application/json"; file.hidden = true;
+    file.addEventListener("cancel", event => event.stopPropagation());
+    let backup = null, filename = "", plan = null, page = 0, busy = false, selectors = [];
+    const labels = {duplicate:"完全重复", near:"近似重复 · 请核对两侧正文", time:"可修复时间与顺序", failed:"失败或已取消的信件",
+      imported:"旧工具导入信", restore:"已整理 · 可恢复", same:"内容一致", missing:"仅备份中存在 · 可用上方入口导入",
+      source_near:"正文有差异 · 仅对比，不自动覆盖或修复时间", ambiguous:"备份存在多个日期 · 暂不修复", library_only:"仅信箱中存在"};
+    const selected = () => selectors.map(el => el.value).filter(Boolean);
+    const sync = () => {
+      setButtonsBusy([scan, compare, previous, next], busy);
+      selectors.forEach(el => el.disabled = busy);
+      apply.disabled = busy || !plan || !selected().length;
+      apply.textContent = `应用所选（${selected().length}）`;
+      previous.disabled = busy || page === 0;
+      next.disabled = busy || !plan || (page + 1) * 30 >= plan.total;
+    };
+    const failure = error => {
+      const messages = {LETTER_MAINTENANCE_STALE:"信箱已变化，请重新检查后选择。", MEMORY_ADMIN_BUSY:"正在导入或整理记忆，请稍后重新检查。",
+        LETTER_BACKUP_STORAGE_UNAVAILABLE:"无法保存信箱整理结果，请检查磁盘后重试。", LETTER_MAINTENANCE_INVALID:"所选操作有冲突或备份格式无效，请重新检查；不要同时收起需要保留的信件。"};
+      status.textContent = messages[error?.code] || "检查或整理未完成，请重试。可重新打开此入口检查实际状态。";
+    };
+    const column = (row, title) => {
+      const col = document.createElement("div"); col.className = "lm-column";
+      let date = "时间未知";
+      if (row.created_at != null) {
+        const parsed = new Date(typeof row.created_at === "number" ? row.created_at * 1000 : row.created_at);
+        if (!Number.isNaN(parsed.getTime())) date = parsed.toLocaleString("zh-CN", {timeZone:"Asia/Shanghai"}) + "（北京时间）";
+      }
+      const content = text("div", `你的信：\n${row.content || "（空）"}\n\n回信：\n${row.reply_text || "（空）"}`, "lm-copy");
+      col.append(text("strong", title), text("p", date), content);
+      if (row.truncated) {
+        const full = button("查看完整正文", async () => {
+          full.disabled = true;
+          try {
+            const data = await requestMutation("/toy/letter/maintenance/detail", {backup, key:row.key});
+            content.textContent = `你的信：\n${data.content || "（空）"}\n\n回信：\n${data.reply_text || "（空）"}`;
+            full.hidden = true;
+          } catch (error) { failure(error); full.disabled = false; }
+        });
+        col.append(full);
+      }
+      return col;
+    };
+    const render = () => {
+      results.replaceChildren(); selectors = [];
+      for (const item of plan.items) {
+        const row = document.createElement("div"); row.className = "lm-row";
+        row.append(text("strong", labels[item.kind] || item.kind));
+        const pair = document.createElement("div"); pair.className = "lm-pair";
+        const sourceLeft = ["missing", "source_near", "ambiguous"].includes(item.kind);
+        pair.append(column(item.left, sourceLeft ? "备份中的信件" : "信箱中的信件"));
+        if (item.right) pair.append(column(item.right, ["same", "time"].includes(item.kind) ? "备份中的信件" : "信箱中的另一封"));
+        row.append(pair);
+        if (item.options.length) {
+          const label = text("label", "处理方式"), select = document.createElement("select");
+          const skip = text("option", "保持原样"); skip.value = ""; select.append(skip);
+          item.options.forEach(option => { const el = text("option", option.label); el.value = option.id; select.append(el); });
+          select.addEventListener("change", sync); selectors.push(select); label.append(select); row.append(label);
+        }
+        results.append(row);
+      }
+      pager.hidden = plan.total <= 30;
+      pageLabel.textContent = `第 ${page + 1} 页 / ${Math.max(1, Math.ceil(plan.total / 30))} 页`;
+    };
+    const inspect = async (targetPage = 0) => {
+      if (busy) return;
+      busy = true; plan = null; selectors = []; results.replaceChildren(); sync();
+      status.textContent = "正在检查信件，只读取本地内容……";
+      try {
+        plan = await requestMutation("/toy/letter/maintenance/preview", {backup, page:targetPage});
+        page = targetPage; render();
+        const counts = plan.counts;
+        status.textContent = `${filename ? `对比文件：${filename}。` : "当前信箱："}共 ${plan.total} 项；完全重复 ${counts.duplicate || 0}，近似重复 ${counts.near || 0}，可修复时间 ${counts.time || 0}，失败信 ${counts.failed || 0}，可恢复 ${counts.restore || 0}。${plan.total ? "选择处理方式后点击应用。翻页会清空本页选择，请先应用。" : "没有需要整理的信件。"}${plan.near_limited ? "信件较多，本次仅完成部分近似对比；完全重复检查已覆盖全部。" : ""}`;
+      } catch (error) { failure(error); }
+      finally { busy = false; sync(); }
+    };
+    const scan = button("检查当前信箱", () => { backup = null; filename = ""; return inspect(); });
+    const compare = button("选择备份对比 / 修复时间", () => file.click());
+    const apply = button("应用所选（0）", async () => {
+      const ids = selected(); if (busy || !plan || !ids.length) return;
+      if (!await confirmAction(`应用所选的 ${ids.length} 项整理？收起的信件会从信箱移除显示，原文仍保留，可在此恢复。时间修复按所选备份执行，不会改写正文。`)) return;
+      busy = true; sync(); status.textContent = "正在保存整理结果……";
+      try {
+        await requestMutation("/toy/letter/maintenance/apply", {backup, token:plan.token, selected:ids});
+        busy = false; await inspect();
+        status.textContent = `已应用 ${ids.length} 项。重新进入信箱即可查看。` + status.textContent;
+      } catch (error) { failure(error); plan = null; }
+      finally { busy = false; sync(); }
+    });
+    const previous = button("上一页", () => inspect(page - 1)), next = button("下一页", () => inspect(page + 1));
+    const pageLabel = text("span", "");
+    file.addEventListener("change", async () => {
+      const chosen = file.files?.[0]; if (!chosen || busy) return;
+      busy = true; sync();
+      try { backup = await readLetterBackupFile(chosen); filename = chosen.name; busy = false; await inspect(); }
+      catch (_) { plan = null; results.replaceChildren(); selectors = []; status.textContent = "备份无法读取。请选择完整的 .soul 或 JSON 文件（文字清单最大 16 MB）。"; }
+      finally { file.value = ""; busy = false; sync(); }
+    });
+    controls.append(scan, compare, apply, file); pager.append(previous, pageLabel, next); pager.hidden = true;
+    box.append(style, help, controls, status, results, pager); section.append(box); sync();
+  };
+
   const mountLocalLetterImport = (section) => {
     mountLetterBackup(section);
+    mountLetterMaintenance(section);
     const importRow = document.createElement("div");
     importRow.className = "flex items-center justify-between px-0 py-3 rounded-3";
     const importCopy = document.createElement("div");
@@ -4414,7 +4550,7 @@ BOOTSTRAP_JAVASCRIPT = r'''
         const data=(await response.json()).data;const status=this.querySelector('.voice-status');if(!status||!data)return;
         const labels={loading:'正在准备翻唱…',transcribing:'正在识别原曲歌词…',loading_model:'正在加载翻唱模型…',generating:'林离正在翻唱…',decoding:'正在保存歌曲音频…',completed:'歌曲已完成，正在准备回信…'};
         const errors={COVER_LYRICS_REQUIRED:'未能识别歌词，请补充原曲歌词后重新寄信。',COVER_RUNTIME_UNAVAILABLE:'翻唱组件尚未准备完整，请检查本地组件。',COVER_GENERATION_TIMEOUT:'这次翻唱等待超时，可以手动重试。',COVER_SOURCE_REQUIRED:'这封信缺少原曲音频，请重新选择后寄信。'};
-        const cloudErrors={GPU_TLS_FAILED:'云端证书校验失败，请更新补丁并检查电脑时间。',GPU_CONNECTION_TIMEOUT:'云端连接超时，本次生成已停止等待。',GPU_CONNECT_FAILED:'无法连接云端，本次生成未完成。',GPU_CONNECTION_FAILED:'云端连接中断，本次生成未完成。',GPU_AUTH_FAILED:'云端 Key 验证失败，请检查云端 GPU 设置。',GPU_QUEUE_FULL:'云端队列已满，本次任务未进入队列。',GPU_TASK_TIMEOUT:'云端任务等待超时，已停止等待。',GPU_TASK_FAILED:'云端生成失败。',GPU_DOWNLOAD_FAILED:'生成结果下载失败。',GPU_SHARED_SCENE_MISSING:'视频素材与云端不匹配，请联系管理员。',MEDIA_JOB_INTERRUPTED:'上次生成已中断，未自动重复提交。'};
+        const cloudErrors={GPU_TLS_FAILED:'云端证书校验失败，请更新补丁并检查电脑时间。',GPU_CONNECTION_TIMEOUT:'云端连接超时，本次生成已停止等待。',GPU_CONNECT_FAILED:'无法连接云端，本次生成未完成。',GPU_CONNECTION_FAILED:'云端连接中断，本次生成未完成。',GPU_AUTH_FAILED:'云端 Key 验证失败，请检查 Olivia 账户。',GPU_QUEUE_FULL:'云端队列已满，本次任务未进入队列。',GPU_TASK_TIMEOUT:'云端任务等待超时，已停止等待。',GPU_TASK_FAILED:'云端生成失败。',GPU_DOWNLOAD_FAILED:'生成结果下载失败。',GPU_SHARED_SCENE_MISSING:'视频素材与云端不匹配，请联系管理员。',MEDIA_JOB_INTERRUPTED:'上次生成已中断，未自动重复提交。'};
         cloudErrors.GPU_INSUFFICIENT_BALANCE='Olivia 可用余额不足，本次媒体任务未入队。请充值后重试。';
         cloudErrors.GPU_BILLING_CONSENT_REQUIRED='请更新收费版客户端，确认费用上限后再生成。';
         if(['FAILED','UNAVAILABLE'].includes(data.status)) {
