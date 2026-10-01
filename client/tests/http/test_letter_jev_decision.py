@@ -204,3 +204,35 @@ def test_plain_jev_letter_reaches_the_photo_planner_and_never_waits_forever(monk
     assert asked['image_status'] == 'SKIPPED'
     assert serialize_letter_detail(asked)['letterStatus'] == 4
     assert serialize_letter_detail(plain)['letterStatus'] == 4
+
+
+def test_requested_voice_turns_a_text_letter_into_a_voice_reply(tmp_path):
+    run_isolated(tmp_path, r'''
+import asyncio
+import local_server as server
+from runtime.reply.reply_pipeline import ReplyPipeline, UnavailableRewriter
+from runtime.reply.reply_reviewer import NullReviewer
+from tests.persona.test_jev_pipeline import Port, plan
+from tests.persona.test_reply_semantic_wiring import Engine
+
+row = {'letter_id': 'voice-asked', 'content': '可是拍到的三个人真的很菜啊\n语音回复',
+       'reply_routes': {'voice_reply': True, 'singing_video': False, 'voice_song_video': False},
+       'image_reply_settings': {'enabled': False}}
+server.store.letters[:] = [row]
+server.store.personal_chats[:] = []
+server.daily_life_runtime = None
+server._current_life_rhythm = lambda: {}
+server._schedule_text_reply_delay = lambda *a: None
+server._commit_private_world_letter = lambda row: False
+server.letters_adapter.remember_conversation = lambda *a: None
+scheduled = []
+server._schedule_media_job = lambda letter_id, content, text, mode: scheduled.append(mode)
+port = Port(plan(kind='audio_speech'))
+server.reply_pipeline = ReplyPipeline(Engine('是有点菜，不过笑死我了。'), reviewer=NullReviewer(), rewriter=UnavailableRewriter(),
+    discover_runtime_ports=False, companion_decision_port=port)
+assert asyncio.run(server.generate_reply(row['letter_id'], row['content']))
+# The route classifier said "text letter"; JEV heard "语音回复". The user gets a voice reply.
+assert row['letter_status'] == 'COMPLETED' and row['reply_mode'] == 'voice_reply'
+assert row['reply_video_enabled'] is False and row['media_status'] == 'PENDING'
+assert scheduled == ['voice_reply']
+''')
