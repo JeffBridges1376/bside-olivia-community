@@ -10,7 +10,7 @@ import re
 import urllib.error
 import urllib.request
 
-from runtime.diagnostics.jev_pricing import PRICE_VERSION
+from runtime.diagnostics.jev_pricing import DISCOUNT_PRICE_VERSION, INPUT_RATE_UNITS, PRICE_VERSION
 
 
 @dataclass(frozen=True)
@@ -24,7 +24,7 @@ CURRENT = ContextVar('jev_billing_turn', default=None)
 # This header tells the relay the client verifies it; older clients are billed
 # exact usage because they reject any other amount.
 MINIMUM_CHARGE_UNITS = 1_000_000
-MINIMUM_HEADER = {'X-Olivia-Billing-Minimum': '1'}
+MINIMUM_HEADER = {'X-Olivia-Billing-Minimum': '1', 'X-Olivia-JEV-Price': DISCOUNT_PRICE_VERSION}
 _account_key = None
 
 
@@ -143,14 +143,15 @@ def settle_receipt_sync(billing, expected_body_digest):
     except Exception:
         # Do not expose provider bodies, tokens or signed receipt contents.
         raise ValueError('JEV_BILLING_UNAVAILABLE') from None
-    amount = receipt['input_tokens'] * 150
+    rate = INPUT_RATE_UNITS.get(result.get('price_version')) if isinstance(result, dict) else None
+    amount = receipt['input_tokens'] * (rate or 0)
     # Exact usage, or the published minimum when usage is below it. A charge
     # that is neither is a real mismatch, reported as such (not "unavailable").
     allowed = {amount} | ({MINIMUM_CHARGE_UNITS} if 0 < amount < MINIMUM_CHARGE_UNITS else set())
     if (not isinstance(result, dict) or result.get('status') != 'settled'
             or result.get('turn_id') != turn.turn_id
             or result.get('operation_id') != receipt['operation_id']
-            or result.get('price_version') != PRICE_VERSION
+            or rate is None
             or type(result.get('input_tokens')) is not int or result['input_tokens'] != receipt['input_tokens']
             or type(result.get('charged_units')) is not int or result['charged_units'] not in allowed
             or type(result.get('replayed')) is not bool
