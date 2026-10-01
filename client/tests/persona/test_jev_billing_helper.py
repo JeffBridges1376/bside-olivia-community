@@ -215,10 +215,10 @@ def test_account_key_missing_only_when_billing_needs_a_key(monkeypatch):
 
 
 @pytest.mark.parametrize('version,rate,ok', [
-    ('jev-input-cny-20261002-v2', 120, True),   # declared lower price
+    ('jev-input-cny-20261002-v2', 135, True),   # declared lower price
     ('jev-input-cny-20260928-v1', 150, True),   # a server that has not applied it yet
     ('jev-input-cny-20261002-v2', 150, False),  # price does not match its version
-    ('jev-input-cny-20991231-v9', 120, False),  # unknown price version
+    ('jev-input-cny-20991231-v9', 135, False),  # unknown price version
 ])
 def test_settlement_is_verified_against_its_declared_price_version(configured, monkeypatch, version, rate, ok):
     tokens = 17000
