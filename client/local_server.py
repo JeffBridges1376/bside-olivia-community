@@ -5992,7 +5992,11 @@ async def _run_reply_pipeline_for_letter(
         _persist_store_state()
     decision_token = TURN_CONTEXT.set(dict(received_source_id=f'reply:{letter_id}:user',
         semantic_kinds=(['text', 'image'] if exact_mode == ReplyMode.TEXT_LETTER.value
-                        and letter.get('image_reply_settings', {}).get('enabled') else ['text']),
+                        and letter.get('image_reply_settings', {}).get('enabled') else ['text'])
+                       # A spoken reply the user asks for is honoured even when the
+                       # route classifier chose a text letter (the voice route must be on).
+                       + (['audio_speech'] if exact_mode in {ReplyMode.TEXT_LETTER.value, 'voice_reply'}
+                          and (letter.get('reply_routes') or {}).get('voice_reply') is True else []),
         input_revision=input_revision, companion_decision=letter.get('companion_decision'),
         save_companion_decision=save_companion_decision))
     try:
@@ -6185,6 +6189,11 @@ async def _generate_reply_billed(letter_id, content, *, idempotency_key=None):
         letter['companion_decision'] = result.companion_decision
         letter['companion_timing'] = result.companion_timing
         letter['companion_delivery'] = result.companion_delivery
+        if result.companion_delivery == 'audio_speech' and exact_mode == ReplyMode.TEXT_LETTER.value:
+            # JEV found a spoken reply was asked for: send this letter as a voice reply.
+            exact_mode = 'voice_reply'
+            letter['reply_mode'] = exact_mode
+            letter['reply_video_enabled'] = False
         image_requested = (result.companion_delivery == 'image'
                            and letter.get('image_reply_settings', {}).get('enabled') is True)
         from runtime.image_reply import secondary_photo_allowed
