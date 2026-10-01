@@ -1934,7 +1934,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     for(const item of account.items||[]){
       const row=document.createElement('div');row.style.cssText='display:flex;justify-content:space-between;gap:16px;padding:12px 0;border-bottom:1px solid #8884';
       const held=Number(item.reserved_yuan)>0;
-      row.append(text('span',`${item.label} · ${status[item.status]||item.status}`),text('span',(held?'预留 ':'−')+money(held?item.reserved_yuan:item.charged_yuan)));
+      const name=document.createElement('span');name.style.cssText='display:grid;gap:2px;min-width:0';
+      name.append(text('span',`${item.label} · ${status[item.status]||item.status}`));
+      const at=new Date(item.created_at||'');
+      if(!Number.isNaN(at.getTime()))name.append(text('span',at.toLocaleString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}),'text-text-secondary text-caption-m'));
+      row.append(name,text('span',(held?'预留 ':'−')+money(held?item.reserved_yuan:item.charged_yuan)));
       target.append(row);
     }
     if(!(account.items||[]).length)target.append(text('p','还没有消费记录。'));
