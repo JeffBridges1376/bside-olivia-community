@@ -37,6 +37,20 @@ INSTRUCTION += ('\n优先回应本轮用户的新内容；recent_dialogue里的�
                 '接住用户这一句的意思再回应，不把用户的玩笑或亲近的话理解成与上文无关的新情况。\n')
 
 
+HISTORY_HEADER = re.compile(r'\[历史消息\s*\{.*?\}\s*\]\s*', re.DOTALL)
+
+
+def repeats_recent(text, rows, *, channel, binding_id, limit=6):
+    """True when this reply says exactly what one of her last delivered replies said."""
+    normalized = lambda value: re.sub(r'[\s。，,.!！?？~～…]+', '', value or '')
+    target = normalized(text)
+    if len(target) < 6:
+        return False  # Short acknowledgements ("好呀") legitimately recur.
+    recent = [row.get('reply_text') for row in rows if row.get('channel') == channel
+              and row.get('binding_id') == binding_id and row.get('delivery_status') == 'DELIVERED'][-limit:]
+    return any(normalized(value) == target for value in recent)
+
+
 _CONTROL_REASONS = {'UNSUPPORTED_PREFERENCE_CHANGE', 'TIME_RANGE', 'PAUSE_CONFLICT', 'FOLLOWUP_CONFLICT'}
 
 
@@ -88,6 +102,9 @@ def decode(raw, *, user, now, proactive=False):
             data['sticker'] = None
         if not isinstance(data['text'], str) or type(data['skip']) is not bool:
             raise ValueError("TEXT_OR_SKIP_TYPE")
+        # The model sometimes copies the provenance header of an earlier message.
+        # It is metadata, never something she says; an echo with nothing else is no reply.
+        data['text'] = HISTORY_HEADER.sub('', data['text']) if isinstance(data['text'], str) else data['text']
         # Incoming platform placeholders must not reach either QQ text or TTS.
         for marker in ('[QQ表情]', '(QQ表情)', '（QQ表情）', '【QQ表情】'):
             data['text'] = data['text'].replace(marker, '')

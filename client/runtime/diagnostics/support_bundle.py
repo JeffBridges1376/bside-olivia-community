@@ -37,6 +37,7 @@ _NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _STATUS_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,95}$")
 _EVENT_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_PHASE_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}(?::[a-z_][a-z0-9_]{0,47})?$")
 _TOKEN_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,159}$")
 _METHODS = frozenset({"GET", "HEAD", "OPTIONS", "POST"})
 _REPLY_MODES = frozenset(
@@ -392,6 +393,15 @@ def _project_tail_record(value: object, *, runtime: bool) -> dict[str, object]:
             record[name] = _status(value.strip().lower())
     if "error_code" in source:
         record["error_code"] = _code(source["error_code"])
+    # Startup timing: a bounded step name and durations, never paths or content.
+    if "phase" in source:
+        phase = source["phase"]
+        if isinstance(phase, str) and _PHASE_RE.fullmatch(phase):
+            record["phase"] = phase
+    for name in ("elapsed_seconds", "preparation_seconds"):
+        value = source.get(name)
+        if type(value) in (int, float) and 0 <= value <= 3600:
+            record[name] = round(float(value), 3)
     if runtime:
         from runtime.diagnostics.failure_context import project_failure_context
         record.update(project_failure_context(source))

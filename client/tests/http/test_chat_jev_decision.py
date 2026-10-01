@@ -165,6 +165,10 @@ def test_default_speech_still_requires_actual_channel_transport_and_provider(mon
 
 def test_twelve_ordinary_qq_turns_deliver_audio_without_text_opt_in_or_replay(monkeypatch, tmp_path):
     server, _, _, _, prepared = server_fixture(monkeypatch, tmp_path, ordinary_chat_result(delivery='text'))
+    # The fixture answers every turn with the same canned text; the repeat guard
+    # (regenerate a reply identical to a recent one) is not what this test covers.
+    from runtime.personal_chat import decision as decision_module
+    monkeypatch.setattr(decision_module, 'repeats_recent', lambda *a, **k: False)
     rows, generated, sent = [], [], []
     server.store.personal_chats = rows
     async def generate(event, row):

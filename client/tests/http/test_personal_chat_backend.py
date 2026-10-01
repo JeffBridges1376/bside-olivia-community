@@ -447,3 +447,20 @@ def test_consumer_failure_preserves_reply_and_retries_without_stopping_transport
         assert len(attempts) == 5 and sends == ['reply']
         assert rows[0]["consumer_error_code"] == "PERSONAL_CHAT_DAILY_LIFE_UNAVAILABLE"
     asyncio.run(scenario())
+
+
+def test_copied_history_header_is_stripped_and_repeats_are_detected():
+    from datetime import datetime, timezone
+    from runtime.personal_chat.decision import decode, repeats_recent
+    header = '[历史消息 {"source": "reply:im-1:1", "actor": "linli", "source_message_ids": ["a"], "truncated": false}]\n'
+    body = {"text": header + "好呀，晚安", "delivery": "voice", "listening": "keep", "initiative": "keep",
+            "pause_until": None, "letter": "keep", "letter_until": None, "followup_at": None, "evidence": "", "skip": False}
+    now = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    assert decode(json.dumps(body), user="晚安", now=now)["text"] == "好呀，晚安"
+    body["text"] = header
+    with pytest.raises(ValueError):
+        decode(json.dumps(body), user="晚安", now=now)
+    rows = [{"channel": "qq", "binding_id": "b", "delivery_status": "DELIVERED", "reply_text": "今天也要早点睡哦，晚安。"}]
+    assert repeats_recent("今天也要早点睡哦 晚安", rows, channel="qq", binding_id="b")
+    assert not repeats_recent("好呀", rows, channel="qq", binding_id="b")
+    assert not repeats_recent("今天也要早点睡哦 晚安", rows, channel="wechat", binding_id="b")

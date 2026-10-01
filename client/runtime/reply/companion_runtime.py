@@ -212,6 +212,12 @@ def project_decision(messages, decision, *, max_input_chars, delivery):
     result = [dict(message) for message in messages]
     position = next((i for i in range(len(result) - 1, -1, -1) if result[i].get('role') == 'user'), len(result))
     result.insert(position, dict(role='system', content=note))
-    if sum(len(message.get('content', '')) for message in result) > max_input_chars:
-        raise CompanionRuntimeError('JEV_CONTEXT_BUDGET_EXCEEDED')
+    # The plan arrives after assembly. When it does not fit, give up the oldest
+    # native dialogue messages first rather than the whole reply.
+    while sum(len(message.get('content', '')) for message in result) > max_input_chars:
+        oldest = next((i for i, m in enumerate(result) if m.get('role') in ('user', 'assistant')
+                       and isinstance(m.get('content'), str) and m['content'].startswith('[历史消息 ')), None)
+        if oldest is None:
+            raise CompanionRuntimeError('JEV_CONTEXT_BUDGET_EXCEEDED')
+        del result[oldest]
     return tuple(result)

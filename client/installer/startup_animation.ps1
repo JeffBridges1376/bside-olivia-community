@@ -102,7 +102,7 @@ public static class OliviaStartupReady {
     $window.Top = $work.Top + ($work.Height - $height) / 2
     $window.Background = [Windows.Media.Brushes]::Black
     $window.ShowInTaskbar = $true
-    $window.Topmost = $true
+    $window.Topmost = $false  # A slow start must not cover other windows.
 
     $script:media = New-Object Windows.Controls.MediaElement
     $media.LoadedBehavior = 'Manual'
