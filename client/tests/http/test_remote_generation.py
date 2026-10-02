@@ -7,6 +7,21 @@ from runtime.remote_generation import RemoteGeneration
 from runtime.cloud_service import CloudError
 
 
+def test_long_speech_download_defers_ack_until_qq_delivery(tmp_path,monkeypatch):
+    calls=[]
+    async def request(self,action,data):
+        calls.append(action)
+        if action=='capabilities':return dict(kinds=['tts'],shared_assets=[],result_acknowledgement=True)
+        assert action=='submit'
+        return dict(task_id='synthetic',status='succeeded')
+    async def download(self,task,output,**kwargs):
+        output.write_bytes(b'synthetic-mp3');return task
+    monkeypatch.setattr(RemoteGeneration,'request',request)
+    monkeypatch.setattr(RemoteGeneration,'_download',download)
+    asyncio.run(RemoteGeneration().generate('tts',dict(text='frozen-script',speech_mode='asmr'),tmp_path/'audio.mp3'))
+    assert calls==['capabilities','submit']
+
+
 @pytest.mark.parametrize('kind', ['video', 'lipsync', 'original_video', 'cover_video'])
 def test_slow_video_is_not_cancelled_by_elapsed_client_budget(tmp_path, monkeypatch, kind):
     calls = []

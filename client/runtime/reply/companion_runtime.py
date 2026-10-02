@@ -80,7 +80,7 @@ def _decision_context(messages, required_sources=()):
 
 
 async def prepare_decision(port, messages, user_text, *, source_id, input_revision, as_of, kinds, cached=None,
-                           required_sources=()):
+                           required_sources=(), speech_enabled=False):
     from .companion_decision import FrozenCompanionTurn, FrozenCompanionDecision
     metadata = TURN_CONTEXT.get() or {}
     recent = _decision_context(messages, (*required_sources, *metadata.get('companion_context_sources', ())))
@@ -103,6 +103,9 @@ async def prepare_decision(port, messages, user_text, *, source_id, input_revisi
     reuse = isinstance(cached, dict) and cached.get('input_revision') == input_revision
     if reuse:
         as_of = cached.get('as_of', as_of)
+        # A capability rollout must not invalidate a paid, frozen decision.
+        # Legacy records have no speech slot; digest validation still catches edits.
+        speech_enabled = 'speech_request' in cached
     from .companion_decision import CompanionDecisionError
     protected = set(required_sources)
     while True:
@@ -111,7 +114,7 @@ async def prepare_decision(port, messages, user_text, *, source_id, input_revisi
                 capabilities=dict(kinds=list(kinds), synchronize=False, playback_events=False,
                     compose_audio=False, compose_video=False, split_spoken_content=False),
                 environment=dict(can_read=None, can_view=None, can_listen=None), forbidden_kinds=[],
-                as_of=as_of, input_revision=input_revision)
+                as_of=as_of, input_revision=input_revision, speech_enabled=speech_enabled)
             break
         except CompanionDecisionError as exc:
             # Long QQ bursts can exceed one request's size or turn count. Leave out

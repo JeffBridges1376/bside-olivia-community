@@ -81,6 +81,11 @@ async def _recover_chat_loop(server, runtime, *, interval_seconds=30):
             pass
 
 
+async def deliver_speech(server,row,send):
+    from .speech import deliver
+    return await deliver(server,row,send)
+
+
 async def prepare_chat_audio(server, text, path):
     """Submit chat speech independently of letter and photo media work."""
     from runtime.media.voice_direction import TextOnlyVoicePlan
@@ -304,6 +309,8 @@ async def _generate_billed(server, event, row):
                    'TRANSPORT_UNAVAILABLE' if not row.get('voice_available') else
                    'PROVIDER_UNAVAILABLE' if not server._voice_reply_configured(os.environ) else None)
     voice_available = voice_block is None
+    from .speech import supported as speech_supported
+    speech_enabled = event.channel == 'qq' and await speech_supported(os.environ)
     row['voice_ready'] = voice_available
     semantic_kinds = ['text'] + (['audio_speech'] if voice_available else [])
     if (event.channel == 'qq' and row.get('image_available') and row['image_reply_settings'].get('enabled')
@@ -372,11 +379,16 @@ async def _generate_billed(server, event, row):
                                 'recent_delivery_formats': recent_delivery_formats(server.store.personal_chats,
                                     channel=event.channel, binding_id=event.binding_id),
                                 'structured': True, 'raw_user_text': event.text,
+                                'speech_enabled': speech_enabled,
                                 'incoming_observation_context': observation_context,
                                 'semantic_kinds': semantic_kinds,
                                 'received_source_id': f'reply:{event.exchange_id}:user',
                                 'input_revision': revision,
                                 'companion_decision': row.get('companion_decision'),
+                                'story_continuation': next((r['speech_script']['continuation_summary']
+                                    for r in reversed(server.store.personal_chats) if r.get('binding_id')==event.binding_id
+                                    and r.get('speech_delivery_status')=='DELIVERED' and isinstance(r.get('speech_script'),dict)
+                                    and r['speech_script'].get('continuation_summary')),None),
                                 'save_companion_decision': save_companion_decision,
                                 'decision_now': datetime.now(LOCAL).isoformat(),
                                 'due_followup': row.get('followup_quote'),
@@ -511,6 +523,14 @@ async def _generate_billed(server, event, row):
             return text  # The service merges new input before any draft is sent.
         from runtime.reply.character_emotion_context import store_expression_context
         store_expression_context(row, getattr(result, 'expression_context', None), text)
+        speech_intent = (row.get('companion_decision') or {}).get('speech_request')
+        script = decision.get('speech')
+        if script:
+            if not speech_intent or event.channel != 'qq':
+                raise ValueError('SPEECH_INTENT_INVALID')
+            row.update(speech_script=script, speech_intent=speech_intent, requested_format='text',
+                       speech_status='PENDING', speech_delivery_status='PENDING')
+            mode = 'text'
         if mode == 'voice' and voice_available and text != '[[skip]]':
             path = server._state_root() / 'media' / (event.exchange_id + '.wav')
             try:
@@ -813,7 +833,8 @@ def install_personal_chat(app, server):
             service = PersonalChatService(server.store.personal_chats, lambda: persist_chat(server),
                 lambda event, row: generate(server, event, row), lambda row: recoverable_commit(server, row), bindings,
                 sticker_allowed=sticker_allowed, photo=lambda row, send: deliver_photo(server, row, send),
-                prepare_photo=lambda row, send: prepare_chat_photo(server, row, send))
+                prepare_photo=lambda row, send: prepare_chat_photo(server, row, send),
+                speech=lambda row, send: deliver_speech(server,row,send))
             from .probe import ProbeJournal
             journal = ProbeJournal(server._state_root() / "personal-chat-diagnostics")
             runtime = {"stop": stop_event, "tasks": [], "service": service, "status": {},
@@ -929,6 +950,7 @@ def install_personal_chat(app, server):
 
             handle.ingest = ingest
             handle.pending = lambda channel: service.pending(channel) if channel in selected_channels(server) else ()
+            handle.ready = service.resume_speech
 
             async def run(name, factory):
                 def on_state(state):
@@ -1013,7 +1035,7 @@ def install_personal_chat(app, server):
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        tasks = [*runtime['service'].photo_tasks.values(),
+        tasks = [*runtime['service'].photo_tasks.values(), *runtime['service'].speech_tasks.values(),
                  *getattr(runtime['service'], 'consumer_tasks', {}).values()]
         for task in tasks:
             task.cancel()

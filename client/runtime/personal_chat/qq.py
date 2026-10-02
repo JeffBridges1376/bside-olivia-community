@@ -18,6 +18,11 @@ class QQAuthRequired(ValueError):
     pass
 
 
+class QQFileRejected(RuntimeError):
+    """The platform explicitly rejected the file action; a retry is safe."""
+    pass
+
+
 def text_segments(text):
     """Convert exact catalog labels, never interpret arbitrary CQ commands."""
     segments = []
@@ -125,8 +130,32 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
         from pathlib import Path
         return await send_item({'type': 'image', 'data': {'file': Path(path).resolve().as_uri()}})
 
+    async def send_file(path, name):
+        from pathlib import Path
+        path = Path(path).resolve()
+        if not path.is_file() or path.suffix.lower() != '.mp3' or not isinstance(name,str) or not name:
+            raise ValueError('QQ_FILE_INVALID')
+        echo = uuid.uuid4().hex
+        future = asyncio.get_running_loop().create_future()
+        pending[echo] = future
+        try:
+            await ws.send_json({'action':'upload_private_file','echo':echo,
+                'params':{'user_id':int(owner_id),'file':str(path),'name':name}})
+            raw=await asyncio.wait_for(future,media_ack_timeout)
+            if raw.get('status')=='failed' and type(raw.get('retcode')) is int and raw['retcode']!=0:
+                raise QQFileRejected('QQ_FILE_REJECTED')
+            if raw.get('status')!='ok' or type(raw.get('retcode')) is not int or raw['retcode']!=0:
+                raise RuntimeError('QQ_FILE_ACK_UNCONFIRMED')
+            # OneBot upload_private_file confirms with empty data rather than a message_id.
+            return 'qq-file:' + echo
+        finally:
+            pending.pop(echo,None)
+            if not future.done():
+                future.cancel()
+
     send.audio = send_audio
     send.image = send_image
+    send.file = send_file
     send.is_available = lambda: not ws.closed
 
     def for_exchange(event):
@@ -144,6 +173,7 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
             from pathlib import Path
             return await send_item({'type': 'image', 'data': {'file': Path(path).resolve().as_uri()}}, reply_to)
         correlated.image = correlated_image
+        correlated.file = send_file
         correlated.is_available = send.is_available
         return correlated
 
@@ -174,6 +204,9 @@ async def _connection(ws, account_id, owner_id, handle_message, stop_event, ack_
 
     async def intake_worker():
         refill()  # Login identity has been verified before workers are started.
+        ready=getattr(handle_message,'ready',None)
+        if callable(ready):
+            ready('qq',send)
         while True:
             event = await intake_queue.get()
             try:
