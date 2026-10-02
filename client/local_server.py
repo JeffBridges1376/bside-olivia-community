@@ -5620,7 +5620,11 @@ async def _start_reply_tasks(_app: web.Application) -> None:
                 old_media_status = letter.get('media_world_status')
                 _sync_media_delivery_world(letter)
                 media_changed = media_changed or old_media_status != letter.get('media_world_status')
-            if letter.get("letter_status") == "COMPLETED" and letter.get("daily_life_status") == "PENDING":
+            # Each start retries pending letters, and each retry is a paid extraction:
+            # a letter that keeps failing is let go after three attempts.
+            if (letter.get("letter_status") == "COMPLETED" and letter.get("daily_life_status") == "PENDING"
+                    and letter.get("daily_life_attempts", 0) < _LETTER_LIFE_ATTEMPTS):
+                letter["daily_life_attempts"] = letter.get("daily_life_attempts", 0) + 1
                 _schedule_daily_life_exchange(letter)
         if media_changed:
             try:
@@ -5784,6 +5788,9 @@ def _refresh_contact_relationship_projection() -> bool:
     except (AttributeError, OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error):
         _safe_log('contact_projection_refresh_unavailable')
         return False
+
+
+_LETTER_LIFE_ATTEMPTS = 3
 
 
 def _schedule_daily_life_exchange(letter: dict) -> None:
