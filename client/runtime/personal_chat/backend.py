@@ -539,7 +539,8 @@ async def commit(server, row):
         return
     failures = []
     from runtime.image_understanding import commit_image_memory
-    for consume in (_commit_mailbox_notice, _commit_world, _commit_candidates, _commit_life, _commit_memory, commit_image_memory):
+    # Memory first: the daily-life extraction can be slow and must never hold it back.
+    for consume in (_commit_mailbox_notice, _commit_world, _commit_candidates, _commit_memory, commit_image_memory, _commit_life):
         try:
             await consume(server, row)
         except asyncio.CancelledError:
@@ -640,8 +641,17 @@ async def _commit_candidates(server, row):
             row["candidate_delivery_status"] = status
         await persist_chat(server)
 
+_LIFE_ATTEMPTS = 3
+
+
 async def _commit_life(server, row):
     if row.get("daily_life_status") != "COMMITTED":
+        if row.get("daily_life_attempts", 0) >= _LIFE_ATTEMPTS:
+            # Each attempt is a paid extraction; a reply that keeps failing is let go.
+            return
+        task = server.daily_life_tasks.get(f"reply:{row['letter_id']}:1")
+        if task is None or task.done():
+            row["daily_life_attempts"] = row.get("daily_life_attempts", 0) + 1
         server._schedule_daily_life_exchange(row)
         task = server.daily_life_tasks.get(f"reply:{row['letter_id']}:1")
         if task is not None:
