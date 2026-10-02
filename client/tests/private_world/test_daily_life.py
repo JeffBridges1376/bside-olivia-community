@@ -13,7 +13,7 @@ def test_joined_exact_sentences_restore_complete_source_including_conditions(tmp
         "status": "planned", "kind": "shared", "actor": actor,
         "quote": "我会练一下。练好后再发给你。",
     }], occurred_at=NOW)
-    assert life.exchange_state()["shared"][0]["quote"] == source
+    assert life.exchange_state(now=NOW)["shared"][0]["quote"] == source
 
 
 @pytest.mark.parametrize("source, quote", [
@@ -29,7 +29,7 @@ def test_source_quote_recovery_rejects_fabrication_ambiguity_reordering_and_over
             "id": "practice", "title": "练曲子", "detail": "尝试练曲子",
             "status": "planned", "kind": "shared", "actor": "linli", "quote": quote,
         }], occurred_at=NOW)
-    assert life.exchange_state()["shared"] == []
+    assert life.exchange_state(now=NOW)["shared"] == []
 import asyncio
 import json
 from types import SimpleNamespace
@@ -84,7 +84,7 @@ def test_actual_completed_statement_still_updates_state(tmp_path):
     quote = '我已经完成了练习'
     life.record_exchange('reply:done:1', quote, '好', [dict(id='practice', title='练习', detail='完成练习',
         status='completed', kind='shared', actor='user', quote=quote)], occurred_at=NOW)
-    assert life.exchange_state('练习')['shared'][0]['status'] == 'completed'
+    assert life.exchange_state('练习', now=NOW)['shared'][0]['status'] == 'completed'
 
 
 def test_old_stored_plan_is_not_restored_as_live_activity(tmp_path):
@@ -112,10 +112,10 @@ def test_next_exchange_uses_verified_quote_without_rewriting_stored_summary(tmp_
         "status": "planned", "kind": "shared", "actor": actor, "quote": quote,
     }], occurred_at=NOW)
     stored = life.snapshot(NOW)["shared"][0]
-    following = life.exchange_state()["shared"][0]
+    following = life.exchange_state(now=NOW)["shared"][0]
     assert following == {**stored, "detail": quote, "evidence_kind": "user_statement" if actor == "user" else "character_statement"}
     assert following["actor"] == actor
-    assert summary not in json.dumps(life.exchange_state(), ensure_ascii=False)
+    assert summary not in json.dumps(life.exchange_state(now=NOW), ensure_ascii=False)
     assert life.snapshot(NOW)["shared"][0] == stored
     disclosed = json.loads(life.reply_context("寄书邮费", now=NOW))["threads"][0]
     assert following == disclosed
@@ -307,7 +307,7 @@ def test_proactive_exchange_stores_linli_original_without_user_routine_or_rest(t
         boundaries=[{"action": "set", "boundary_id": None, "quote": "我不想把这段录音公开。"}],
     )
 
-    state = life.exchange_state("练琴")
+    state = life.exchange_state("练琴", now=NOW)
     assert state["projects"][0]["source_id"] == "reply:proactive:1"
     with life._db() as db:
         payload = json.loads(db.execute(
@@ -382,7 +382,7 @@ def test_proactive_runtime_passes_empty_user_and_commits_only_linli_evidence(tmp
     request = json.loads(calls[0][1]["content"])
     assert request["origin"] == "proactive"
     assert request["user_letter"] == ""
-    assert life.exchange_state()["projects"][0]["actor"] == "linli"
+    assert life.exchange_state(now=NOW)["projects"][0]["actor"] == "linli"
 
 
 def test_runtime_refresh_is_cached_and_failed_generation_keeps_public_state(tmp_path):
@@ -520,7 +520,7 @@ def test_unanswered_character_invitation_is_not_resurfaced_by_history_alone(tmp_
     current = json.loads(life.reply_context("那本书选好了。", related_text=invitation, now=NOW))
     assert current["threads"][0]["id"] == "book"
     assert current["threads"][0]["status"] == "linli_waiting"
-    assert life.exchange_state()["shared"][0]["quote"] == invitation
+    assert life.exchange_state(now=NOW)["shared"][0]["quote"] == invitation
     assert life.snapshot(NOW)["shared"] == stored
 
 
@@ -673,7 +673,7 @@ def test_terminal_same_title_items_restore_complete_evidence_for_either_speaker(
 
     runtime = DailyLifeRuntime(store, lambda: Model(), lambda: "")
     asyncio.run(runtime.consume_exchange("reply:new:1", user, reply, occurred_at=NOW))
-    compact = store.exchange_state()["shared"]
+    compact = store.exchange_state(now=NOW)["shared"]
     assert len(compact) == 2 and all("quote" not in row and "detail" not in row for row in compact)
 
 
@@ -682,10 +682,10 @@ def test_compact_daily_identity_does_not_invent_a_quotation_speaker(tmp_path):
     store.publish_day("day:old", {"location": "琴房", "activity": "练琴", "note": "休息。"}, [{
         "id": "piano", "title": "左手练习", "detail": "左手练习完毕。", "status": "completed",
     }], occurred_at=NOW)
-    identity = store.exchange_state()["projects"][0]
+    identity = store.exchange_state(now=NOW)["projects"][0]
     assert identity["actor"] is None and "quote" not in identity
     assert identity["source_id"] == "day:old" and identity["updated_at"] == NOW.isoformat()
-    assert store.exchange_state("左手练习")["projects"][0] == {**store.snapshot(NOW)["projects"][0], "evidence_kind": "published_life"}
+    assert store.exchange_state("左手练习", now=NOW)["projects"][0] == {**store.snapshot(NOW)["projects"][0], "evidence_kind": "published_life"}
 
 
 @pytest.mark.parametrize("stored_count,user_text,status", [(0, "长信正文" * 150, "planned"), (20, "你好。", "planned"), (20, "你好。", "completed")])
@@ -698,7 +698,7 @@ def test_exchange_over_budget_is_explicit_and_never_commits_partial_state(tmp_pa
             "id": f"book-{index}", "title": "推荐书籍", "detail": quote, "status": status,
             "kind": "shared", "actor": "user", "quote": quote,
         }], occurred_at=NOW)
-    before = store.exchange_state()
+    before = store.exchange_state(now=NOW)
 
     class Model:
         config = SimpleNamespace(max_input_chars=len(_EXCHANGE_PROMPT) + 500)
@@ -710,7 +710,7 @@ def test_exchange_over_budget_is_explicit_and_never_commits_partial_state(tmp_pa
     with pytest.raises(ValueError, match="^DAILY_LIFE_CONTEXT_TOO_LARGE$"):
         asyncio.run(runtime.consume_exchange("reply:new:1", user_text, "好。", occurred_at=NOW))
     assert not store.has_source("reply:new:1")
-    assert store.exchange_state() == before
+    assert store.exchange_state(now=NOW) == before
 
 
 def test_addressing_profile_keeps_latest_exact_quotes_per_side(tmp_path):
@@ -756,3 +756,17 @@ def test_exchange_commit_keeps_addressing_and_world_gate_from_one_request(tmp_pa
     assert [q['quote'] for q in store.addressing_profile(now=now)['user_calls_linli']] == ['小离，']
     with store._db() as db:
         assert db.execute('SELECT decision FROM life_exchange_world_gate WHERE source_id=?', ('reply:x:1',)).fetchone()[0] == 'none'
+
+
+def test_exchange_state_does_not_grow_with_every_finished_item_forever(tmp_path):
+    """Finished items stay matchable for two weeks, or when this exchange mentions them."""
+    life = DailyLifeStore(tmp_path / 'life.sqlite3')
+    old = NOW - timedelta(days=30)
+    for i, (status, when) in enumerate([('completed', old), ('cancelled', old), ('completed', NOW), ('planned', old)]):
+        name = ['钢琴曲','吉他谱','合唱排练','陶艺课'][i]
+        quote = f'我已经完成了{name}' if status == 'completed' else f'{name}先不做了' if status == 'cancelled' else f'我会去{name}'
+        life.record_exchange(f'reply:item{i}:1', quote, '好', [dict(id=f'item{i}', title=['钢琴曲','吉他谱','合唱排练','陶艺课'][i], detail=quote,
+            status=status, kind='shared', actor='user', quote=quote)], occurred_at=when)
+    ids = lambda state: sorted(item['id'] for item in state['shared'])
+    assert ids(life.exchange_state(now=NOW)) == ['item2', 'item3']  # old finished items dropped, open item kept
+    assert ids(life.exchange_state('还记得钢琴曲吗', now=NOW)) == ['item0', 'item2', 'item3']

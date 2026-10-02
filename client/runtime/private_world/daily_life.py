@@ -131,6 +131,20 @@ def _current_time_consistent(note: object, occurred_at: object) -> bool:
 
 
 
+_FINISHED_IDENTITY_DAYS = 14
+
+
+def _recently_finished(item: dict, now: datetime) -> bool:
+    """A finished item stays matchable for two weeks; older ones return only when mentioned."""
+    try:
+        stamp = datetime.fromisoformat(str(item.get("updated_at")).replace("Z", "+00:00"))
+    except ValueError:
+        return True  # Unknown time: keep the identity rather than mint a duplicate.
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return now - stamp <= timedelta(days=_FINISHED_IDENTITY_DAYS)
+
+
 def _time(value: datetime) -> str:
     if not isinstance(value, datetime) or value.tzinfo is None:
         raise ValueError("DAILY_LIFE_TIME_INVALID")
@@ -689,21 +703,25 @@ class DailyLifeStore:
         return [project_time_at(db, project_at(json.loads(row[0]), now), now) if row[1] == 1 else json.loads(row[0]) for row in rows]
 
     def exchange_state(self, query: str = "", *, related_text: str = "", now: datetime | None = None, include_history: bool = False) -> dict:
-        """All identities; full evidence for active or currently mentioned items."""
+        """Open items and items this exchange mentions, with full evidence; finished
+        items only as identities, and only while recent. Every exchange sent all items
+        ever recorded (109 for one user) and each update slot listed them all again,
+        so the request grew with the user's history until it could not be sent."""
         value = {"projects": [], "shared": []}
         tokens = _query_tokens(query) | _query_tokens(related_text)
+        now = now or datetime.now(timezone.utc)
         with self._db() as db:
             db.execute("BEGIN")
             changes = {}
-            for item in self._project_changes_at(db, now or datetime.now(timezone.utc),
-                                                 per_project=3 if include_history else 1):
+            for item in self._project_changes_at(db, now, per_project=3 if include_history else 1):
                 changes.setdefault(item['id'], []).append(item)
             for history in changes.values():
                 item = history[-1]
-                if item["status"] not in {"completed", "cancelled"} or tokens & _query_tokens(
-                    item["title"] + " " + item.get("quote", item["detail"])
-                ):
+                mentioned = bool(tokens & _query_tokens(item["title"] + " " + item.get("quote", item["detail"])))
+                if item["status"] not in {"completed", "cancelled"} or mentioned:
                     disclosed = _project_evidence(item)
+                elif not _recently_finished(item, now):
+                    continue
                 else:
                     # Keep every stable identity, even outside
                     # the UI window. Omitted evidence is never a blank quote.
