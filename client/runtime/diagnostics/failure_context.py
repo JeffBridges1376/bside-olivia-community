@@ -28,6 +28,11 @@ import re
 # Internal failure codes are fixed identifiers raised by Olivia itself. Only
 # these shapes are kept, so arbitrary exception text never enters a bundle.
 _CAUSE_CODE = re.compile(r'(?:JEV|LLM|MEM0|MEMORY|PRIVATE_WORLD|DAILY_LIFE|REPLY|IMAGE|WORLD|COMPANION|QUALITY|RECALL|REVIEW|PERSONA)_[A-Z0-9_]{2,60}')
+REWRITE_ERROR_CODES = frozenset({
+    'REWRITE_FAILED', 'REWRITE_EVIDENCE_INVALID', 'REWRITE_INPUT_TOO_LARGE',
+    'REWRITE_OUTPUT_INVALID', 'REWRITE_OUTPUT_EMPTY', 'REWRITE_PROVIDER_UNAVAILABLE',
+    'REWRITE_BUDGET_EXHAUSTED',
+})
 
 
 def cause_code(exc):
@@ -36,7 +41,7 @@ def cause_code(exc):
     while exc is not None and id(exc) not in seen:
         seen.add(id(exc))
         for value in (getattr(exc, 'code', None), *getattr(exc, 'args', ())[:1]):
-            if isinstance(value, str) and _CAUSE_CODE.fullmatch(value):
+            if isinstance(value, str) and (value in REWRITE_ERROR_CODES or _CAUSE_CODE.fullmatch(value)):
                 return value
         exc = exc.__cause__ or exc.__context__
     return None
@@ -63,7 +68,7 @@ def letter_failure_context(exc):
 def project_failure_context(source):
     result = {}
     cause = source.get('cause_code')
-    if isinstance(cause, str) and _CAUSE_CODE.fullmatch(cause):
+    if isinstance(cause, str) and (cause in REWRITE_ERROR_CODES or _CAUSE_CODE.fullmatch(cause)):
         result['cause_code'] = cause
     raw = source.get('provider_request_id')
     if isinstance(raw, str):

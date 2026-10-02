@@ -456,7 +456,9 @@ def test_extended_rewrite_preserves_generation_messages_without_promoting_draft(
     assert not any(row["role"] == "assistant" for row in sent)
     payload = json.loads(sent[-1]["content"])
     assert payload["candidate"] == "Synthetic draft."
-    assert payload["user_message"] == original[-1]["content"]
+    assert "user_message" not in payload
+    assert payload["user_message_ref"] == "last_user_message"
+    assert sum(row["content"].count(original[-1]["content"]) for row in sent) == 1
 
 
 def test_complete_review_context_over_budget_is_unavailable_before_provider() -> None:
@@ -474,7 +476,53 @@ def test_complete_rewrite_context_over_budget_fails_before_provider(monkeypatch:
     monkeypatch.setattr(quality_module, "_complete_text", unexpected)
     rewriter = GatewayPersonaRewriter(None, ROOT / "linli_character/persona_release_v2.json", 2.0)
     with pytest.raises(RuntimeError, match="REWRITE_INPUT_TOO_LARGE"):
-        rewriter.rewrite_with_messages("Synthetic.", _context(), (), ({"role": "user", "content": "原" * 30000},))
+        rewriter.rewrite_with_messages("Synthetic.", _context(), (), ({"role": "user", "content": "原" * 100000},))
+
+
+def test_rewrite_has_headroom_beyond_review_budget_without_losing_frozen_input(monkeypatch):
+    original = ({"role": "system", "content": "frozen persona"},
+                {"role": "user", "content": "原" * 29924})
+    sent = []
+    monkeypatch.setattr(quality_module, "_complete_text",
+                        lambda gateway, messages, *a, **k: sent.append(messages) or "Safe replacement.")
+    rewriter = GatewayPersonaRewriter(None, ROOT / "linli_character/persona_release_v2.json", 2.0)
+    assert rewriter.rewrite_with_messages("Synthetic.", _context(), (), original) == "Safe replacement."
+    assert tuple(sent[0][1:-1]) == original
+    assert sum(len(row["content"]) for row in sent[0]) > 30000
+    assert sum(row["content"].count(original[-1]["content"]) for row in sent[0]) == 1
+
+
+def test_rewrite_respects_configured_writer_budget(monkeypatch):
+    monkeypatch.setattr(quality_module, "_complete_text",
+                        lambda *a, **k: pytest.fail("oversized rewrite reached provider"))
+    gateway = SimpleNamespace(config=SimpleNamespace(max_input_chars=38000))
+    rewriter = GatewayPersonaRewriter(gateway, ROOT / "linli_character/persona_release_v2.json", 2)
+    with pytest.raises(RuntimeError, match="REWRITE_INPUT_TOO_LARGE"):
+        rewriter.rewrite_with_messages("Draft.", _context(), (), ({"role":"user", "content":"原" * 38000},))
+
+
+@pytest.mark.parametrize('raw,expected', [('not json', 'REWRITE_OUTPUT_INVALID'),
+    ('{"edits":[]}', 'REWRITE_OUTPUT_INVALID'), ('', 'REWRITE_OUTPUT_EMPTY')])
+def test_fact_repair_output_is_classified_without_echoing_model_text(monkeypatch, raw, expected):
+    monkeypatch.setattr(quality_module, '_complete_text', lambda *a, **k: raw)
+    candidate = 'Synthetic unsupported fact.'
+    evidence = (quality_module.ReviewerViolation('MEMORY_FABRICATION', 'hard', 0, len(candidate)),)
+    rewriter = GatewayPersonaRewriter(None, ROOT / 'linli_character/persona_release_v2.json', 2)
+    with pytest.raises(RuntimeError, match=expected):
+        rewriter.rewrite_with_evidence(candidate, _context(), ('MEMORY_FABRICATION',),
+                                      ({'role':'user','content':'Synthetic input.'},), evidence)
+
+
+@pytest.mark.parametrize('reason,expected', [(ReviewFailureReason.EMPTY_TEXT, 'REWRITE_OUTPUT_EMPTY'),
+    (ReviewFailureReason.TRANSPORT, 'REWRITE_PROVIDER_UNAVAILABLE')])
+def test_rewrite_maps_completion_failure_to_fixed_code(monkeypatch, reason, expected):
+    def complete(*args, **kwargs):
+        assert kwargs['diagnostic'] is True
+        raise quality_module._ReviewContractFailure(reason)
+    monkeypatch.setattr(quality_module, '_complete_text', complete)
+    rewriter = GatewayPersonaRewriter(None, ROOT / 'linli_character/persona_release_v2.json', 2)
+    with pytest.raises(RuntimeError, match=expected):
+        rewriter.rewrite_with_messages('Draft.', _context(), (), ({'role':'user', 'content':'Input.'},))
 _REVIEW_LAYERS = (
     "identity_boundary",
     "voice_style",
@@ -3146,7 +3194,7 @@ def test_quality_model_default_timeout_allows_slow_configured_provider(
     assert review_gateway is not gateway
     assert review_gateway.config.model == "vendor/not-deepseek"
     assert reviewer.adapter.config.model == "vendor/not-deepseek"
-    assert review_gateway.config.max_input_chars == 30_000
+    assert review_gateway.config.max_input_chars == 38_000
     assert review_gateway.config.fallback_provider == "none"
 
     monkeypatch.setenv("OLIVIA_REPLY_REVIEW_TIMEOUT_SECONDS", "20")

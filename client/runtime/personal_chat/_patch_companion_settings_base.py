@@ -526,6 +526,7 @@ def _repair_mailbox_write_access(root: Path) -> str:
     source = _repair_native_letter_audio(source)
     source = _repair_native_proactive_collection(source)
     source = _repair_native_silent_reply(source)
+    source = _repair_native_reply_failure(source)
     anchor_count = source.count(MAILBOX_WRITE_ANCHOR_0627)
     replacement_count = source.count(MAILBOX_WRITE_REPLACEMENT_0627)
     if anchor_count == 1 and replacement_count == 0:
@@ -731,6 +732,33 @@ __all__ = [
     "sha256_file",
     "validate_api_base",
 ]
+
+
+def _repair_native_reply_failure(source: str) -> str:
+    """Carry the public failure code through native mapping, polling and paper."""
+    for before, after, marker in (
+        ('letterStatus:e.letterStatus,', 'errorCode:e.replyErrorCode||e.error_code||"",letterStatus:e.letterStatus,', 'errorCode:e.replyErrorCode'),
+        ('__name:"MailBoxReplyContent",props:{', '__name:"MailBoxReplyContent",props:{errorCode:{},', 'errorCode:{}'),
+        ('F(ks,{', 'F(ks,{errorCode:i.mail.errorCode,', 'errorCode:i.mail.errorCode'),
+        ('re.isUnread!==Ee.isUnread', 're.errorCode!==Ee.errorCode||re.isUnread!==Ee.isUnread', 're.errorCode!==Ee.errorCode'),
+        ('["coverId","audioUrl","audioStatus","songUrl",', '["errorCode","coverId","audioUrl","audioStatus","songUrl",', '["errorCode","coverId"'),
+        ('["replyWaitReason","audioUrl","audioStatus","songUrl",', '["errorCode","replyWaitReason","audioUrl","audioStatus","songUrl",', '["errorCode","replyWaitReason"'),
+        ('["audioUrl","audioStatus","songUrl",', '["errorCode","audioUrl","audioStatus","songUrl",', '["errorCode","audioUrl"'),
+        ('v(o(i)("mailbox_reply_error_title"))',
+         'v(window.__oliviaReplyFailureMessage?.(A.errorCode,"title")||o(i)("mailbox_reply_error_title"))',
+         'A.errorCode,"title"'),
+        ('v(o(i)("mailbox_reply_error_hint"))',
+         'v(window.__oliviaReplyFailureMessage?.(A.errorCode,"hint")||o(i)("mailbox_reply_error_hint"))',
+         'A.errorCode,"hint"'),
+    ):
+        if marker not in source:
+            source = source.replace(before, after)
+    # Fresh assets without audio props are supported too; props marked dynamic
+    # must update when a retried letter changes its failure reason.
+    for name in ('modelValue', 'model-value'):
+        source = source.replace(f'["{name}","videoUrl","timestamp","type"',
+                                f'["errorCode","{name}","videoUrl","timestamp","type"')
+    return source
 
 
 def _repair_native_letter_audio(source: str) -> str:

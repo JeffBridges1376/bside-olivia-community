@@ -125,6 +125,7 @@
             "LLM_PROTOCOL_ERROR",
             "LLM_REPLY_LENGTH_INVALID",
             "REPLY_QUALITY_BLOCKED",
+            "REPLY_REWRITE_FAILED",
             "PERSONA_NOT_READY"
           ],
           "properties": {
@@ -150,6 +151,9 @@
               "$ref": "#/$defs/generation_error"
             },
             "REPLY_QUALITY_BLOCKED": {
+              "$ref": "#/$defs/generation_error"
+            },
+            "REPLY_REWRITE_FAILED": {
               "$ref": "#/$defs/generation_error"
             },
             "PERSONA_NOT_READY": {

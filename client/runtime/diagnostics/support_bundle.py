@@ -230,8 +230,37 @@ def _project_install(value: object) -> dict[str, object]:
     return result
 
 
+def project_reply_quality(value: Mapping[str, object]) -> dict[str, object]:
+    """Finite metadata shared by letter and chat diagnostics, without drafts."""
+    from .failure_context import REWRITE_ERROR_CODES
+    result = {}
+    if value.get('quality_status') in ('not_checked', 'accepted', 'accepted_degraded', 'accepted_with_warnings', 'blocked'):
+        result['quality_status'] = value['quality_status']
+    for field, maximum in (('reviewer_calls', 2), ('rewrite_calls', 1)):
+        count = value.get(field)
+        if type(count) is int and 0 <= count <= maximum:
+            result[field] = count
+    code = value.get('quality_error_code')
+    if isinstance(code, str) and code in REWRITE_ERROR_CODES | {
+            'REPLY_QUALITY_BLOCKED', 'REVIEW_FAILED', 'REVIEWER_UNAVAILABLE', 'REVIEWER_RESPONSE_INVALID',
+            'REVIEWER_DISABLED', 'FRESH_INTIMACY_CLAIMS_REQUIRED',
+            'INTIMACY_CLAIM_SOURCE_CONFLICT', 'INTIMACY_REQUEST_INCONSISTENT'}:
+        result['quality_error_code'] = code
+    stage = value.get('quality_failure_stage')
+    if isinstance(stage, str) and stage in ('review', 'rewrite_evidence', 'rewrite', 'rewrite_validation', 'final_review'):
+        result['quality_failure_stage'] = stage
+    elif result.get('quality_status') == 'blocked':
+        result['quality_failure_stage'] = (
+            'rewrite_evidence' if code == 'REWRITE_EVIDENCE_INVALID' else
+            'rewrite_validation' if isinstance(code, str) and code in {'REWRITE_OUTPUT_EMPTY', 'REWRITE_OUTPUT_INVALID'} else
+            'rewrite' if isinstance(code, str) and code in REWRITE_ERROR_CODES else
+            'final_review' if result.get('reviewer_calls') == 2 else 'review')
+    return result
+
+
 def project_chat_task(value: Mapping[str, object]) -> dict[str, object]:
     result = {}
+    result.update(project_reply_quality(value))
     if value.get('channel') in ('qq', 'wechat'):
         result['channel'] = value['channel']
     if value.get('delivery_status') in ('RECEIVED', 'GENERATING', 'GENERATED', 'MEDIA_PENDING', 'SENDING', 'DELIVERY_UNCONFIRMED', 'DELIVERED', 'FAILED', 'SKIPPED'):
@@ -255,12 +284,6 @@ def project_chat_task(value: Mapping[str, object]) -> dict[str, object]:
             result['requested_format'] = value['requested_format']
         if value.get('delivered_format') in ('text', 'audio'):
             result['delivered_format'] = value['delivered_format']
-        if value.get('quality_status') in ('not_checked', 'accepted', 'accepted_degraded', 'accepted_with_warnings', 'blocked'):
-            result['quality_status'] = value['quality_status']
-        for field, maximum in (('reviewer_calls', 2), ('rewrite_calls', 1)):
-            count = value.get(field)
-            if type(count) is int and 0 <= count <= maximum:
-                result[field] = count
         # The exchange ID is already an application hash, never a QQ account or
         # platform message ID. Domain-separate it again for support correlation.
         identifier = value.get('letter_id')
@@ -414,6 +437,7 @@ def _project_tail_record(value: object, *, runtime: bool) -> dict[str, object]:
     if runtime:
         from runtime.diagnostics.failure_context import project_failure_context
         record.update(project_failure_context(source))
+        record.update(project_reply_quality(source))
         if event == "history_recall":
             from runtime.diagnostics.recall_trace import project
             record.update(project(dict(source)))

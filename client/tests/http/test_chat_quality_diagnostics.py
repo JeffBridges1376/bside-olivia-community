@@ -108,6 +108,31 @@ def test_quality_projection_rejects_arbitrary_values_and_boolean_counts():
                               'decision_rejection_reason': 'private text'}) == {'channel': 'qq'}
 
 
+def test_letter_quality_diagnostics_survive_bundle_without_body_or_chat_channel():
+    row = {'quality_status': 'blocked', 'reviewer_calls': 1, 'rewrite_calls': 1,
+           'quality_error_code': 'REWRITE_INPUT_TOO_LARGE',
+           'quality_failure_stage': 'rewrite', 'reply_text': 'private draft',
+           'exception_text': 'private exception'}
+    assert project_chat_task(row) == {key: value for key, value in row.items()
+                                     if key not in {'reply_text', 'exception_text'}}
+    source = _source()
+    source['tasks']['items'] = [{**row, 'status': 'failed', 'stage': 'reply_generation',
+                                'elapsed_bucket': 'under_1m'}]
+    source['runtime_tail'] = [{**row, 'event': 'letter_failed',
+                              'cause_code': 'REWRITE_INPUT_TOO_LARGE'}]
+    with zipfile.ZipFile(io.BytesIO(build_diagnostic_bundle(source))) as archive:
+        item = json.loads(archive.read('tasks.json'))['items'][0]
+        event = json.loads(archive.read('runtime-tail.jsonl').splitlines()[0])
+    assert item['quality_error_code'] == 'REWRITE_INPUT_TOO_LARGE'
+    assert item['rewrite_calls'] == 1
+    assert 'private' not in json.dumps(item)
+    assert event['cause_code'] == 'REWRITE_INPUT_TOO_LARGE'
+    assert event['quality_failure_stage'] == 'rewrite'
+    assert 'private' not in json.dumps(event)
+    assert project_chat_task({'quality_error_code': 'REWRITE_PRIVATE_TEXT',
+                              'quality_failure_stage': 'private text'}) == {}
+
+
 @pytest.mark.parametrize('counts', [(-1, -1), (3, 2), (1.0, False), ('2', '1')])
 def test_quality_counts_are_strict_bounded_integers(counts):
     assert project_chat_task({'channel': 'qq', 'reviewer_calls': counts[0], 'rewrite_calls': counts[1]}) == {'channel': 'qq'}

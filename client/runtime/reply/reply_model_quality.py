@@ -300,6 +300,10 @@ _LAYER_RELEASE_FACETS = {
     "autonomy_life": frozenset({"AUTONOMY", "BACKGROUND", "CORE_TRAIT"}),
 }
 _REVIEW_INPUT_CHARACTER_LIMIT = 30000
+# Text rewriting uses the writer's budget, independently of the review input.
+# Reserve room for the candidate, adjudicated spans and repair instructions.
+_REWRITE_REPAIR_RESERVE = 8000
+_REWRITE_INPUT_CHARACTER_LIMIT = 100000
 _REVIEW_FACETS = frozenset(
     {
         "CORE_TRAIT",
@@ -892,6 +896,10 @@ class GatewayPersonaRewriter:
             "confirmed_violation_evidence": confirmed_violation_evidence,
         }
         recent = _recent_dialogue(generation_messages)
+        if generation_messages:
+            # The current user's complete message is already frozen in messages.
+            payload.pop("user_message")
+            payload["user_message_ref"] = "last_user_message"
         if recent:
             payload["recent_dialogue"] = recent
         payload["relationship_context"]["intimacy_request"] = context.intimacy_request.value
@@ -992,7 +1000,10 @@ class GatewayPersonaRewriter:
             retained = tuple(message for index, message in enumerate(generation_messages)
                              if not (_recent_row(message, index, generation_messages) or {}).get("event_id") in projected)
             messages = (*retained, messages[0], messages[-1])
-        if sum(len(str(item.get("content", ""))) for item in messages) > _REVIEW_INPUT_CHARACTER_LIMIT:
+        limit = getattr(getattr(self.gateway, "config", None), "max_input_chars",
+                        _REWRITE_INPUT_CHARACTER_LIMIT)
+        limit = min(limit, _REWRITE_INPUT_CHARACTER_LIMIT)
+        if sum(len(str(item.get("content", ""))) for item in messages) > limit:
             raise RuntimeError("REWRITE_INPUT_TOO_LARGE")
         reasoning_scope = (
             GatewayRequestScope.TEXT_LETTER_MAX_REASONING
@@ -1000,16 +1011,23 @@ class GatewayPersonaRewriter:
             and self.reasoning_timeout_seconds is not None
             else None
         )
-        rewritten = _complete_text(
-            self.gateway,
-            messages,
-            (
-                self.reasoning_timeout_seconds
-                if reasoning_scope is not None
-                else self.timeout_seconds
-            ),
-            gateway_scope=reasoning_scope,
-        ).strip()
+        try:
+            rewritten = _complete_text(
+                self.gateway,
+                messages,
+                (self.reasoning_timeout_seconds if reasoning_scope is not None
+                 else self.timeout_seconds),
+                diagnostic=True,
+                gateway_scope=reasoning_scope,
+            ).strip()
+        except _ReviewContractFailure as exc:
+            code = ("REWRITE_OUTPUT_EMPTY" if exc.reason is ReviewFailureReason.EMPTY_TEXT
+                    else "REWRITE_PROVIDER_UNAVAILABLE")
+            raise RuntimeError(code) from exc
+        except Exception as exc:
+            raise RuntimeError("REWRITE_PROVIDER_UNAVAILABLE") from exc
+        if not rewritten:
+            raise RuntimeError("REWRITE_OUTPUT_EMPTY")
         if not fact_sentences:
             try:
                 envelope = json.loads(rewritten)
@@ -1018,10 +1036,12 @@ class GatewayPersonaRewriter:
             if (isinstance(envelope, dict) and "text" in envelope
                     or re.fullmatch(r"```(?:json)?\s*\n.*\n```", rewritten, re.S)):
                 raise RuntimeError("REWRITE_OUTPUT_INVALID")
-        return (
-            _apply_fact_sentence_edits(candidate, fact_sentences, rewritten)
-            if fact_sentences else rewritten
-        )
+        if fact_sentences:
+            try:
+                return _apply_fact_sentence_edits(candidate, fact_sentences, rewritten)
+            except (ValueError, TypeError, KeyError) as exc:
+                raise RuntimeError("REWRITE_OUTPUT_INVALID") from exc
+        return rewritten
 
 
 def _fact_repair_sentences(
@@ -1176,7 +1196,9 @@ def create_model_quality_ports(
             config,
             model=resolved.model,
             stream=False,
-            max_input_chars=max(config.max_input_chars, 30_000),
+            max_input_chars=min(_REWRITE_INPUT_CHARACTER_LIMIT,
+                                max(config.max_input_chars, _REVIEW_INPUT_CHARACTER_LIMIT)
+                                + _REWRITE_REPAIR_RESERVE),
             fallback_provider="none",
         )
         quality_gateway = (

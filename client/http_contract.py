@@ -60,6 +60,7 @@ ERROR_CODES: dict[str, dict[str, Any]] = {
     "LLM_PROTOCOL_ERROR": {"http_status": 503, "retryable": False},
     "LLM_REPLY_LENGTH_INVALID": {"http_status": 503, "retryable": False},
     "REPLY_QUALITY_BLOCKED": {"http_status": 503, "retryable": False},
+    "REPLY_REWRITE_FAILED": {"http_status": 503, "retryable": False},
     "PERSONA_NOT_READY": {"http_status": 503, "retryable": False},
     "LETTER_RESEND_NOT_IMPLEMENTED": {"http_status": 501, "retryable": False},
     "LETTER_SHARE_NOT_IMPLEMENTED": {"http_status": 501, "retryable": False},
@@ -182,6 +183,7 @@ LETTER_DETAIL_GENERATION_ERROR_CODES: dict[str, dict[str, Any]] = {
         "LLM_PROTOCOL_ERROR",
         "LLM_REPLY_LENGTH_INVALID",
         "REPLY_QUALITY_BLOCKED",
+        "REPLY_REWRITE_FAILED",
         "PERSONA_NOT_READY",
     )
 }

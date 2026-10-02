@@ -6,10 +6,19 @@ import base64
 from pathlib import Path
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v53"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v54"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
+
+  window.__oliviaReplyFailureMessage = (code, part = "title") => {
+    const titles = {
+      REPLY_REWRITE_FAILED: "这封回信在修改时遇到了问题，暂时没能寄回。你的信仍保留在信箱里。",
+      REPLY_QUALITY_BLOCKED: "这封回信检查后仍有问题，暂时没能寄回。你的信仍保留在信箱里。"
+    };
+    if (!Object.hasOwn(titles, code)) return null;
+    return part === "hint" ? "请导出诊断包并反馈，修复后可重新寄信。" : titles[code];
+  };
 
   window.__oliviaExplainRelayFailure = payload => {
     const data = payload?.data || payload;
@@ -19,7 +28,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       LLM_QUOTA_EXHAUSTED: "Olivia 余额不足，请在“回信服务 → Olivia 账户”充值后再寄信；重复寄信不会恢复余额。",
       LLM_AUTH_FAILED: "大模型服务认证失败，请检查当前账户或 Key 是否有效。",
       LLM_USAGE_PENDING: "这次模型请求中断，用量正在等待核对。请保留诊断包，暂勿反复寄信。",
-      LLM_REQUEST_DUPLICATE: "这次请求已经提交，请先查看原信件状态，避免重复寄出。"
+      LLM_REQUEST_DUPLICATE: "这次请求已经提交，请先查看原信件状态，避免重复寄出。",
+      REPLY_REWRITE_FAILED: window.__oliviaReplyFailureMessage("REPLY_REWRITE_FAILED"),
+      REPLY_QUALITY_BLOCKED: window.__oliviaReplyFailureMessage("REPLY_QUALITY_BLOCKED")
     };
     const message = messages[data?.error_code] || messages[payload?.message];
     if (!message || document.getElementById("olivia-relay-error")) return;

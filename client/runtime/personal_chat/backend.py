@@ -113,8 +113,8 @@ def _failure_code(exc):
 def _generation_failure_code(code):
     if isinstance(code, str) and code in JEV_ERROR_CODES:
         return code
-    from runtime.diagnostics.failure_context import CODES
-    known = CODES | {'INPUT_TOO_LONG', 'RECALL_CONTEXT_BUDGET_EXCEEDED',
+    from runtime.diagnostics.failure_context import CODES, REWRITE_ERROR_CODES
+    known = CODES | REWRITE_ERROR_CODES | {'INPUT_TOO_LONG', 'RECALL_CONTEXT_BUDGET_EXCEEDED',
                      'PERSONA_NOT_READY', 'IDEMPOTENCY_CONFLICT',
                      'LLM_TIMEOUT', 'LLM_INTERNAL',
                      'CURRENT_TURN_INTERPRETATION_FAILED', 'REVIEW_FAILED',
@@ -437,9 +437,11 @@ async def _generate_billed(server, event, row):
         if shadow is not None:
             _start_semantic_shadow_recorder(server, row, shadow)
         from runtime.diagnostics.support_bundle import project_chat_task
-        quality_fields = ('quality_status', 'reviewer_calls', 'rewrite_calls', 'decision_rejection_reason')
+        quality_fields = ('quality_status', 'reviewer_calls', 'rewrite_calls', 'decision_rejection_reason',
+                          'quality_error_code', 'quality_failure_stage')
         quality = project_chat_task({'channel': event.channel, **{
-            field: getattr(result, field, None) for field in quality_fields}})
+            field: getattr(result, field, None) for field in quality_fields},
+            'quality_error_code': getattr(result, 'error_code', None)})
         for field in quality_fields:
             row.pop(field, None)
             if field in quality:
