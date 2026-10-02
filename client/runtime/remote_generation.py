@@ -207,11 +207,18 @@ class RemoteGeneration:
             temporary_receipt.replace(receipt)
         progress = getattr(self, 'progress', lambda phase, task: None)
         progress('submission', {})
-        # A known order must never go through admission/billing again. Older
-        # receipts retain their idempotency key for ambiguous submission failures.
+        # Poll known orders; retain the original submission for ambiguous failures
+        # and recovery of the same CPU export under its original idempotency key.
         task_id = saved.get('task_id')
         task = (await self._status(task_id) if task_id is not None
                 else await self.request('submit', submission))
+        if (task_id is not None and kind == 'tts' and data.get('speech_mode')
+                and task.get('status') == 'failed' and task.get('stage') == 'speech_postprocess_failed'):
+            # Resume the original CPU export, never a second GPU generation/order.
+            recovered = await self.request('submit', submission)
+            if recovered.get('task_id') != task_id:
+                raise CloudError('GPU_TASK_INVALID', 502)
+            task = recovered
         if receipt:
             temporary_receipt = receipt.with_suffix('.tmp')
             temporary_receipt.write_text(json.dumps({'fingerprint': fingerprint,
