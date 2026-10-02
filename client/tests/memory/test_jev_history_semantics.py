@@ -225,3 +225,66 @@ def test_recall_trace_records_intent_and_whether_evidence_reached_the_reply():
     recall_trace.finish([], [], {'status': 'unavailable', 'reply_intent': 'made-up', 'findings': []})
     record = recall_trace.snapshot()[-1]
     assert record['evidence_used'] is False and 'reply_intent' not in record
+
+
+def test_recall_resolves_compacted_original_text(monkeypatch):
+    from runtime.reply.fact_attribution import prepare_dialogue_messages
+    source = 'reply:synthetic:1'
+    record = {'citation': 'indexed-original', 'speaker': 'user',
+              'provenance': {'source_record_id': source},
+              'evidence_scope': 'recorded_utterance', 'text': '我计划十月去登记。'}
+    tail = {'kind': 'recent_dialogue', 'letters': [
+        {'source_id': source, 'user_letter': record['text'], 'linli_reply': '记下了。'}]}
+    wrapper = '<untrusted_history>' + json.dumps({'text': json.dumps(tail, ensure_ascii=False)}, ensure_ascii=False) + '</untrusted_history>'
+    original = [{'role': 'system', 'content': _block([[record]]) + wrapper},
+                {'role': 'user', 'content': '登记的计划是什么？'}]
+    prepared = prepare_dialogue_messages(original, max_input_chars=30000)
+    assert 'text_ref' in prepared[0]['content']
+    port = Port({'relevance_h0': 'yes'})
+    monkeypatch.setattr('runtime.reply.jev_questions.configured_questions', lambda: port)
+    captured = []
+    monkeypatch.setattr('runtime.diagnostics.recall_trace.finish', lambda *args: captured.append(args[-1]))
+    asyncio.run(select_history_messages(prepared, ForbiddenGateway(), max_input_chars=30000))
+    assert captured[-1]['status'] == 'checked', captured[-1]
+    assert port.calls[0][0]['records']['indexed-original']['text'] == record['text']
+
+
+def test_recall_accepts_canonical_correspondence_envelope(monkeypatch):
+    from runtime.reply.recent_correspondence import recent_correspondence
+    envelope = recent_correspondence([{'letter_status': 'COMPLETED', 'letter_id': 'synthetic',
+        'reply_revision': 1, 'content': '我计划十月去登记。', 'reply_text': '记下了。',
+        'private_world_occurred_at': '2026-09-01T10:00:00Z'}], query='登记计划是什么？')
+    original = [{'role': 'system', 'content': '<untrusted_history>' + json.dumps({'text': envelope}, ensure_ascii=False) + '</untrusted_history>'},
+                {'role': 'user', 'content': '登记计划是什么？'}]
+    port = Port({'relevance_h0': 'yes'})
+    monkeypatch.setattr('runtime.reply.jev_questions.configured_questions', lambda: port)
+    captured = []
+    monkeypatch.setattr('runtime.diagnostics.recall_trace.finish', lambda *args: captured.append(args[-1]))
+    result = asyncio.run(select_history_messages(original, ForbiddenGateway(), max_input_chars=30000))
+    assert captured[-1]['status'] == 'checked', captured[-1]
+    records = port.calls[0][0]['records']
+    assert records['reply:synthetic:1:user']['speaker'] == 'user'
+    assert records['reply:synthetic:1:user']['occurred_at'] is None
+    assert records['reply:synthetic:1:linli']['speaker'] == 'linli'
+    assert '我计划十月去登记。' in result[0]['content']
+
+
+@pytest.mark.parametrize('target_speaker', ['linli', None])
+def test_compact_reference_never_borrows_another_speaker_or_missing_text(target_speaker):
+    from runtime.memory.history_selection import _split
+    from runtime.memory.jev_history import select_history
+    record = {'citation': 'original', 'speaker': 'user', 'text_ref': 'target',
+              'evidence_scope': 'recorded_utterance'}
+    groups = [[record]]
+    if target_speaker:
+        groups.append([{'citation': 'target', 'speaker': target_speaker,
+                       'text': 'Only the assistant said this.', 'evidence_scope': 'recorded_utterance'}])
+    _, candidates = _split([{'role': 'system', 'content': _block(groups)},
+                           {'role': 'user', 'content': 'What did I say?'}])
+    port = Port({'relevance_h0': 'yes'})
+    packet = {'candidates': [{'id': f'h{i}', 'records': group} for i, group in enumerate(candidates)]}
+    result = asyncio.run(select_history(port, packet, [r for g in candidates for r in g]))
+    assert result['selected_ids'] == ['h0']
+    state = port.calls[0][0]
+    assert 'text' not in state['records']['original']
+    assert 'original' not in state['record_ids'].values()

@@ -1770,6 +1770,9 @@ def test_continuity_rubric_has_typed_current_fact_decision_cases() -> None:
         ("invented_current_location", "reject_memory_fabrication"),
         ("invented_current_action", "reject_memory_fabrication"),
         ("invented_recurring_habit", "reject_memory_fabrication"),
+        ("current_question_is_not_a_memory", "reject_memory_fabrication"),
+        ("acknowledge_uncertain_recall", "allow"),
+        ("transcript_is_not_acoustic_evidence", "reject_memory_fabrication"),
     }
 
 

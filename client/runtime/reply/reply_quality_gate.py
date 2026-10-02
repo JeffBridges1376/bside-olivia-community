@@ -98,6 +98,8 @@ def run_reply_quality_gate(
     generation_messages: Sequence[Mapping[str, Any]] = (),
     trusted_evidence: TrustedReviewEvidence = TrustedReviewEvidence(),
     intimacy_claims: tuple[IntimacyClaim, ...] = (),
+    allow_rewrite: bool = True,
+    normalize_rewrite=None,
 ) -> QualityGateResult:
     review = _review_candidate(
         reviewer,
@@ -184,6 +186,10 @@ def run_reply_quality_gate(
             reviewer_calls=1,
             rewrite_calls=0,
         )
+    if not allow_rewrite:
+        return QualityGateResult(QualityGateStatus.BLOCKED, candidate, initial_codes,
+            deterministic_checks=1, reviewer_calls=1, rewrite_calls=0,
+            error_code='REWRITE_BUDGET_EXHAUSTED')
     try:
         confirmed_evidence = _confirmed_rewrite_evidence(
             reviewer,
@@ -211,6 +217,8 @@ def run_reply_quality_gate(
             generation_messages,
             confirmed_evidence,
         )
+        if normalize_rewrite is not None:
+            rewritten = normalize_rewrite(rewritten)
     except Exception:
         return QualityGateResult(
             QualityGateStatus.BLOCKED,

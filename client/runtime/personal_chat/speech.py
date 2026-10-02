@@ -71,6 +71,12 @@ async def deliver(server,row,send):
     if state in {'SENDING','UNKNOWN','DELIVERED'}:
         return  # ACK ambiguity requires reconciliation, never an automatic resend.
     script=validate_script(row['speech_script'])
+    seal = row.get('content_review')
+    if seal is not None:
+        if (not isinstance(seal, dict) or seal.get('version') != 1
+                or not isinstance(seal.get('hashes'), dict)
+                or seal['hashes'].get('speech') != hashlib.sha256(script['spoken_text'].encode()).hexdigest()):
+            raise ValueError('SPEECH_REVIEW_CONTENT_CHANGED')
     intent=validate_intent(row['speech_intent'])
     directory=server._state_root()/'media'/'speech'/row['letter_id']
     directory.mkdir(parents=True,exist_ok=True)

@@ -385,7 +385,10 @@ async def _generate_billed(server, event, row):
                                 'received_source_id': f'reply:{event.exchange_id}:user',
                                 'input_revision': revision,
                                 'companion_decision': row.get('companion_decision'),
-                                'story_continuation': next((r['speech_script']['continuation_summary']
+                                'story_continuation': next(({
+                                    'source_id': 'speech:' + str(r.get('letter_id')),
+                                    'kind': 'fiction_summary' if (r.get('speech_intent') or {}).get('mode') in ('story', 'asmr_story') else 'speech_summary',
+                                    'text': r['speech_script']['continuation_summary']}
                                     for r in reversed(server.store.personal_chats) if r.get('binding_id')==event.binding_id
                                     and r.get('speech_delivery_status')=='DELIVERED' and isinstance(r.get('speech_script'),dict)
                                     and r['speech_script'].get('continuation_summary')),None),
@@ -434,7 +437,7 @@ async def _generate_billed(server, event, row):
         if shadow is not None:
             _start_semantic_shadow_recorder(server, row, shadow)
         from runtime.diagnostics.support_bundle import project_chat_task
-        quality_fields = ('quality_status', 'reviewer_calls', 'rewrite_calls')
+        quality_fields = ('quality_status', 'reviewer_calls', 'rewrite_calls', 'decision_rejection_reason')
         quality = project_chat_task({'channel': event.channel, **{
             field: getattr(result, field, None) for field in quality_fields}})
         for field in quality_fields:
@@ -525,6 +528,8 @@ async def _generate_billed(server, event, row):
         store_expression_context(row, getattr(result, 'expression_context', None), text)
         speech_intent = (row.get('companion_decision') or {}).get('speech_request')
         script = decision.get('speech')
+        if getattr(result, 'reviewed_content', None) is not None:
+            row['content_review'] = dict(version=1, hashes=result.reviewed_content)
         if script:
             if not speech_intent or event.channel != 'qq':
                 raise ValueError('SPEECH_INTENT_INVALID')

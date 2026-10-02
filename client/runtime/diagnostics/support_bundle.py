@@ -240,6 +240,11 @@ def project_chat_task(value: Mapping[str, object]) -> dict[str, object]:
     if isinstance(code, str) and _CODE_RE.fullmatch(code):
         result['consumer_error_code'] = code
     if 'channel' in result:
+        if value.get('decision_rejection_reason') in {
+                'FIELDS', 'JSON_SYNTAX', 'VALUE_TYPE_OR_TIME', 'TEXT_OR_SKIP_TYPE',
+                'DELIVERY_OR_LISTENING', 'PREFERENCES', 'EVIDENCE_TYPE',
+                'EMPTY_OR_SKIPPED_REPLY', 'CONTROL_MARKER', 'REPEATED_REPLY'}:
+            result['decision_rejection_reason'] = value['decision_rejection_reason']
         if type(value.get('voice_ready')) is bool:
             result['voice_ready'] = value['voice_ready']
         if value.get('delivery_basis') in ('QQ_DEFAULT_VOICE', 'SPEAKER_UNAVAILABLE', 'VERBATIM_TEXT',

@@ -105,6 +105,7 @@ class PipelineResult:
     violation_codes: tuple[str, ...] = ()
     reviewer_calls: int = 0
     rewrite_calls: int = 0
+    reviewed_content: dict | None = None
     sticker_id: str | None = None
     signature: str | None = None
     semantic_shadow_task: asyncio.Task | None = field(default=None, repr=False, compare=False)
@@ -116,6 +117,7 @@ class PipelineResult:
     companion_timing: str | None = None
     companion_delivery: str | None = None
     proactive_decision: dict | None = field(default=None, repr=False)
+    decision_rejection_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -394,8 +396,8 @@ class ReplyPipeline:
         if speech_request and (chat_metadata or {}).get('channel') == 'qq':
             note = '<speech_request>' + json.dumps(speech_request, ensure_ascii=False) + '</speech_request>'
             if speech_request['continuation']:
-                note += '\n<story_continuation>' + json.dumps(
-                    (chat_metadata or {}).get('story_continuation'),ensure_ascii=False) + '</story_continuation>'
+                from .fact_attribution import story_evidence
+                note += '\n' + story_evidence((chat_metadata or {}).get('story_continuation'))
             messages = list(_generation_messages(prepared))
             at = next((i for i in range(len(messages)-1,-1,-1) if messages[i].get('role') == 'user'),len(messages))
             messages.insert(at, {'role':'system','content':note})
@@ -421,7 +423,8 @@ class ReplyPipeline:
         if not clean_text.strip():
             return PipelineResult(candidate.request_id, ReplyState.FAILED, error_code="PROVIDER_PROTOCOL")
         quality = None
-        if not isinstance(self.reviewer, NullReviewer) and context.mode in {ReplyMode.TEXT_LETTER, ReplyMode.FUTURE_IM}:
+        reviewed_content = None
+        if not isinstance(self.reviewer, NullReviewer):
             envelope = None
             review_text = clean_text
             if chat_metadata is not None and chat_metadata.get('structured'):
@@ -432,9 +435,14 @@ class ReplyPipeline:
                     decision = decode(clean_text, **options)
                     fenced = re.fullmatch(r'\s*```(?:json)?\s*\n(.*?)\n```\s*', clean_text, re.DOTALL | re.IGNORECASE)
                     envelope = json.loads(fenced.group(1) if fenced else clean_text)
+                    if isinstance(envelope, list):
+                        # decode already validated the supported single-object wrapper.
+                        envelope = envelope[0]
                     review_text = decision['text']
-                except (ValueError, TypeError, KeyError):
-                    return PipelineResult(candidate.request_id, ReplyState.FAILED, error_code='PERSONAL_CHAT_DECISION_INVALID')
+                except (ValueError, TypeError, KeyError) as exc:
+                    return PipelineResult(candidate.request_id, ReplyState.FAILED,
+                        error_code='PERSONAL_CHAT_DECISION_INVALID',
+                        decision_rejection_reason=getattr(exc, 'reason', 'VALUE_TYPE_OR_TIME'))
             # A validated proactive skip has no outgoing text to review.
             if envelope is None or not decision['skip']:
                 # Delivery JSON / sticker instructions are not prose rewrite instructions.
@@ -452,7 +460,8 @@ class ReplyPipeline:
                         evidence.append('<evidence_summary>' + json.dumps({
                             'text': observation, 'evidence_kind': 'incoming_observation',
                             'untrusted': True}, ensure_ascii=False).replace('<', r'\u003c') + '</evidence_summary>')
-                    plan = {key: value for key, value in envelope.items() if key in decision and key != 'text'}
+                    # Plans contain metadata, not another copy of the long spoken body.
+                    plan = {key: value for key, value in envelope.items() if key in decision and key not in {'text', 'speech'}}
                     evidence.append('<reply_delivery_plan>' + json.dumps({
                         'text': json.dumps(plan, ensure_ascii=False),
                         'evidence_kind': 'planned_delivery', 'untrusted': True,
@@ -468,10 +477,46 @@ class ReplyPipeline:
                 try:
                     from runtime.persona.persona_selection import snapshot_for_messages
                     from .reply_model_quality import using_persona_snapshot
-                    with using_persona_snapshot(snapshot_for_messages(preparation.persona_snapshot, review_messages)):
-                        quality = await asyncio.to_thread(run_reply_quality_gate, review_text, context,
-                            reviewer=self.reviewer, rewriter=self.rewriter,
-                            generation_messages=review_messages, trusted_evidence=preparation.trusted_evidence)
+                    bodies = [('text', review_text, context)]
+                    if envelope is not None and decision.get('speech'):
+                        from .reply_context import OutputConstraints
+                        scope = (companion_decision or {}).get('speech_request') or {}
+                        speech_context = replace(context, mode=ReplyMode.VOICE_REPLY,
+                            output_constraints=replace(OutputConstraints.for_mode(ReplyMode.VOICE_REPLY),
+                                                       content_scope=scope.get('mode', 'ordinary')))
+                        bodies.append(('speech', decision['speech']['spoken_text'], speech_context))
+                    reviews, rewrites = 0, 0
+                    checked_bodies = {}
+                    accepted_qualities = []
+                    for field, body, body_context in bodies:
+                        def normalize_rewrite(value):
+                            if field == 'speech':
+                                from runtime.personal_chat.speech import validate_script
+                                return validate_script({**decision['speech'], 'spoken_text': value})['spoken_text']
+                            if envelope is not None:
+                                return decode(json.dumps({**envelope, 'text': value}), **options)['text']
+                            return value
+                        with using_persona_snapshot(snapshot_for_messages(preparation.persona_snapshot, review_messages)):
+                            quality = await asyncio.to_thread(run_reply_quality_gate, body, body_context,
+                                reviewer=self.reviewer, rewriter=self.rewriter,
+                                generation_messages=review_messages, trusted_evidence=preparation.trusted_evidence,
+                                allow_rewrite=rewrites == 0, normalize_rewrite=normalize_rewrite)
+                        reviews += quality.reviewer_calls
+                        rewrites += quality.rewrite_calls
+                        quality = replace(quality, reviewer_calls=reviews, rewrite_calls=rewrites)
+                        if not quality.accepted:
+                            break
+                        checked_bodies[field] = quality.text
+                        accepted_qualities.append(quality)
+                    if quality.accepted:
+                        from .reply_quality_gate import QualityGateStatus
+                        # One body's clean result must not hide another body's warning.
+                        if any(item.status is QualityGateStatus.ACCEPTED_DEGRADED for item in accepted_qualities):
+                            quality = replace(quality, status=QualityGateStatus.ACCEPTED_DEGRADED)
+                        elif any(item.status is QualityGateStatus.ACCEPTED_WITH_WARNINGS for item in accepted_qualities):
+                            quality = replace(quality, status=QualityGateStatus.ACCEPTED_WITH_WARNINGS)
+                        quality = replace(quality, violation_codes=tuple(dict.fromkeys(
+                            code for item in accepted_qualities for code in item.violation_codes)))
                 except Exception:
                     return PipelineResult(candidate.request_id, ReplyState.FAILED, error_code='REVIEW_FAILED',
                                           quality_status='blocked', reviewer_calls=1)
@@ -480,18 +525,26 @@ class ReplyPipeline:
                         error_code=quality.error_code or 'REPLY_QUALITY_BLOCKED', quality_status=quality.status.value,
                         violation_codes=quality.violation_codes, reviewer_calls=quality.reviewer_calls,
                         rewrite_calls=quality.rewrite_calls)
-                clean_text = quality.text
+                clean_text = checked_bodies['text']
                 if envelope is not None:
                     # Preserve wire-format timestamps, preferences, and media selections.
                     # decode's normalized timestamps are not the generation JSON contract.
                     envelope['text'] = clean_text
+                    if 'speech' in checked_bodies:
+                        envelope['speech'] = {**decision['speech'], 'spoken_text': checked_bodies['speech']}
                     clean_text = json.dumps(envelope, ensure_ascii=False)
                     try:
-                        decode(clean_text, **options)
-                    except ValueError:
+                        delivered = decode(clean_text, **options)
+                        if (delivered['text'] != checked_bodies['text']
+                                or 'speech' in checked_bodies and delivered['speech']['spoken_text'] != checked_bodies['speech']):
+                            raise ValueError('REVIEWED_CONTENT_CHANGED')
+                    except ValueError as exc:
                         return PipelineResult(candidate.request_id, ReplyState.FAILED,
                             error_code='PERSONAL_CHAT_DECISION_INVALID', quality_status='blocked',
+                            decision_rejection_reason=getattr(exc, 'reason', 'VALUE_TYPE_OR_TIME'),
                             reviewer_calls=quality.reviewer_calls, rewrite_calls=quality.rewrite_calls)
+                reviewed_content = {field: hashlib.sha256(body.encode()).hexdigest()
+                                    for field, body in checked_bodies.items()}
         shadow = None
         if (os.environ.get('OLIVIA_SEMANTIC_SHADOW_URL', '').strip()
                 and not use_companion and chat_metadata is not None and not chat_metadata.get('proactive') and user_text):
@@ -508,6 +561,7 @@ class ReplyPipeline:
             violation_codes=quality.violation_codes if quality else (),
             reviewer_calls=quality.reviewer_calls if quality else 0,
             rewrite_calls=quality.rewrite_calls if quality else 0,
+            reviewed_content=reviewed_content,
             semantic_shadow_task=shadow,
             expression_context=expression_context,
             companion_decision=companion_decision,
