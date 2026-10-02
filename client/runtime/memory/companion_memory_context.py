@@ -616,10 +616,15 @@ def _rank_recall(result):
     semantic = [index for index, group in enumerate(groups)
                 if any(record.metadata.get("retrieval_route") in {"semantic", "hybrid"} for record in group)]
     if semantic:
-        ranks = {index: 1 / (60 + rank + 1) for rank, index in enumerate(lexical)}
+        # Reciprocal rank fusion counts a list only where it actually matched. A group
+        # sharing no term with the question is absent from the lexical list, not ranked
+        # last in it; otherwise every semantic neighbour collects two scores and the
+        # exact lexical match (e.g. the letter that set the agreed code) sorts after all
+        # of them and falls outside the few groups a QQ reply has room for.
+        ranks = {index: 1 / (60 + rank + 1) if scores[index] > 0 else 0.0 for rank, index in enumerate(lexical)}
         for rank, index in enumerate(semantic):
             ranks[index] += 1 / (60 + rank + 1)
-        lexical.sort(key=lambda index: (-ranks[index], index))
+        lexical.sort(key=lambda index: (-ranks[index], -scores[index], index))
     return replace(result, records=tuple(record for index in lexical for record in groups[index]))
 
 

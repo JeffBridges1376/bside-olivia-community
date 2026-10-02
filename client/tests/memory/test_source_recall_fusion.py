@@ -137,3 +137,25 @@ def test_original_fragment_offsets_account_for_whitespace_and_empty_parts(tmp_pa
     assert records[0].metadata['start'] == 2002
     assert records[-1].text.endswith('更正还在末尾。')
     assert all(r.metadata['part_count'] == len(records) for r in records)
+
+
+def test_exact_lexical_match_is_not_ranked_behind_unrelated_semantic_neighbours():
+    """A QQ reply has room for only a few groups; the letter that set the agreed code
+    must reach them even when the semantic index returns many unrelated neighbours."""
+    from runtime.memory.companion_memory_context import _rank_recall
+    from runtime.memory.recall import RecallResult, source_id
+    from runtime.memory.memory_port import MemoryRecord
+
+    def record(source, speaker, text, route):
+        return MemoryRecord(memory_id=source + speaker, domain='letters', text=text, source='x', created_at=0,
+                            provenance={'source_record_id': source},
+                            metadata={'speaker': speaker, 'retrieval_route': route, 'source_id': source})
+    records = []
+    for i in range(10):
+        records += [record(f'chat{i}', 'user', f'今天加班好累{i}，晚饭吃了吗', 'semantic'),
+                    record(f'chat{i}', 'linli', f'辛苦啦，我刚练完琴{i}', 'semantic')]
+    records += [record('code', 'user', '我俩约定个暗号吧，7020，下次见面就用这个暗号打招呼', 'archive'),
+                record('code', 'linli', '好，我记住了', 'archive')]
+    ranked = _rank_recall(RecallResult(tuple(records), topics=('你还记得我们之间那个暗号吗？让我俩来对个暗号',)))
+    order = list(dict.fromkeys(source_id(item) for item in ranked.records))
+    assert order.index('code') <= 1
