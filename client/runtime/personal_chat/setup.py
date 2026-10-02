@@ -49,6 +49,10 @@ _SETUP_PATHS = {
     NAPCAT_BROWSER_PATH: frozenset({"POST"}),
 }
 _NAPCAT_WATCHDOG_SECONDS = 15.0
+# QQ can kick the account offline while NapCat keeps running; checked this often,
+# and NapCat restarted (quick login, no new QR) at most this often.
+_NAPCAT_ONLINE_CHECK_SECONDS = 60.0
+_NAPCAT_RELOGIN_SECONDS = 600.0
 
 
 def _failure_code(exc: BaseException) -> str:
@@ -378,6 +382,30 @@ async def _qq_probe(url: str, token: str, expected_account: str | None = None) -
     raise RuntimeError("QQ_LOGIN_UNAVAILABLE")
 
 
+async def _qq_online(url: str, token: str) -> bool:
+    """NapCat's own view of whether the logged-in account is still online."""
+    timeout = aiohttp.ClientTimeout(total=10)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.ws_connect(
+            checked_url(url, local=True),
+            headers={"Authorization": "Bearer " + token},
+            heartbeat=20,
+        ) as ws:
+            await ws.send_json({"action": "get_status", "echo": "olivia-status"})
+            for _ in range(20):
+                message = await asyncio.wait_for(ws.receive(), 5)
+                if message.type != aiohttp.WSMsgType.TEXT:
+                    continue
+                raw = json.loads(message.data)
+                if raw.get("echo") != "olivia-status":
+                    continue
+                data = raw.get("data")
+                if raw.get("status") != "ok" or not isinstance(data, dict) or not isinstance(data.get("online"), bool):
+                    raise RuntimeError("QQ_STATUS_UNAVAILABLE")
+                return data["online"]
+    raise RuntimeError("QQ_STATUS_UNAVAILABLE")
+
+
 async def _prepare_napcat(server, runtime: dict[str, object]) -> None:
     from . import napcat_installer
 
@@ -459,6 +487,31 @@ def install_setup_routes(app: web.Application, server) -> None:
         runtime["napcat_state"] = state
         return state
 
+    async def relogin_if_offline(process) -> None:
+        from . import napcat_installer
+
+        now = time.monotonic()
+        if now - runtime.setdefault("napcat_online_checked", now) < _NAPCAT_ONLINE_CHECK_SECONDS:
+            return
+        runtime["napcat_online_checked"] = now
+        try:
+            url, token = await asyncio.to_thread(napcat_installer.managed_connection, _root(server))
+            online = await asyncio.wait_for(_qq_online(url, token), 15)
+        except Exception:
+            return  # An unanswered probe is not proof of a logout.
+        # Two offline answers in a row: a moment of network loss recovers on its own.
+        runtime["napcat_offline_checks"] = 0 if online else int(runtime.get("napcat_offline_checks") or 0) + 1
+        if runtime["napcat_offline_checks"] < 2:
+            return
+        if now - float(runtime.get("napcat_relogin_at") or -_NAPCAT_RELOGIN_SECONDS) < _NAPCAT_RELOGIN_SECONDS:
+            return
+        runtime["napcat_relogin_at"] = now
+        runtime["napcat_offline_checks"] = 0
+        runtime["napcat_state"] = "STARTING"
+        await asyncio.to_thread(napcat_installer.stop_shell, _root(server), process)
+        runtime["napcat_shell_process"] = await asyncio.to_thread(napcat_installer.ensure_shell, _root(server))
+        await refresh_managed_napcat_state()
+
     async def napcat_watchdog() -> None:
         from . import napcat_installer
 
@@ -472,6 +525,9 @@ def install_setup_routes(app: web.Application, server) -> None:
                 process = runtime.get("napcat_shell_process")
                 alive = process is not None and getattr(process, "poll", lambda: 0)() is None
                 state = await refresh_managed_napcat_state()
+                if state == "ONEBOT_READY":
+                    await relogin_if_offline(process)
+                    continue
                 if state != "STARTING":
                     continue
                 if alive:

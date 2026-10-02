@@ -501,6 +501,38 @@ def ensure_shell(data_root: Path) -> subprocess.Popen | None:
     return launch_shell(data_root)
 
 
+def stop_shell(data_root: Path, process: subprocess.Popen | None = None) -> None:
+    """End this installation's NapCat so the next start quick-logs in again.
+
+    After QQ kicks the account offline, NapCat keeps running with OneBot open but
+    never logs back in by itself; quick login only runs when NapCat starts. Only
+    processes started from this installation's NapCat folder are ended."""
+    if os.name != "nt":
+        raise NapCatSetupError("NAPCAT_WINDOWS_REQUIRED")
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if process is not None and process.poll() is None:
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(process.pid)],
+                       capture_output=True, timeout=30, creationflags=flags)
+    shell = find_shell(data_root)
+    if shell is not None:
+        # NapCat may have been started by an earlier Olivia backend we hold no handle to.
+        script = r"""
+$dir = $env:OLIVIA_NAPCAT_DIR.TrimEnd('\')
+Get-CimInstance Win32_Process | Where-Object {
+  $_.ExecutablePath -and $_.ExecutablePath.StartsWith($dir + '\', [StringComparison]::OrdinalIgnoreCase)
+} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+"""
+        subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                       capture_output=True, timeout=60, creationflags=flags,
+                       env=dict(os.environ, OLIVIA_NAPCAT_DIR=str(shell.resolve())))
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        if not _onebot_port_open() and not _tcp_port_open(_webui_port(data_root)):
+            return
+        time.sleep(0.5)
+    raise NapCatSetupError("NAPCAT_STOP_TIMEOUT")
+
+
 def managed_connection(data_root: Path) -> tuple[str, str]:
     _shell, token = prepare_onebot(data_root)
     return NAPCAT_WS_URL, token
