@@ -108,11 +108,12 @@ def test_explicit_reviewer_checks_decoded_text_and_current_user(mode):
     assert all('字段必须完整' not in m['content'] for m in reviewer.seen[0][1])
 
 
-def test_qq_rewrite_changes_only_text_and_preserves_wire_dates():
+@pytest.mark.parametrize('wrapped', [False, True])
+def test_qq_rewrite_changes_only_text_and_preserves_wire_dates(wrapped):
     original = envelope()
     original.update(followup_at='2026-09-26T15:00:00+08:00', evidence='三点联系我')
     reviewer, rewriter = Reviewer(ReviewVerdict.REWRITE, ReviewVerdict.PASS), Rewriter('好，三点再聊。')
-    result, _ = execute(json.dumps(original), mode=ReplyMode.FUTURE_IM, reviewer=reviewer, rewriter=rewriter, raw='三点联系我')
+    result, _ = execute(json.dumps([original] if wrapped else original), mode=ReplyMode.FUTURE_IM, reviewer=reviewer, rewriter=rewriter, raw='三点联系我')
     assert result.state is ReplyState.COMPLETED
     assert json.loads(result.text) == {**original, 'text':'好，三点再聊。'}
     assert result.reviewer_calls == 2 and result.rewrite_calls == 1
@@ -133,6 +134,7 @@ def test_invalid_qq_json_rejected_before_review():
     result, _ = execute('{}', mode=ReplyMode.FUTURE_IM, reviewer=reviewer)
     assert result.error_code == 'PERSONAL_CHAT_DECISION_INVALID'
     assert not reviewer.seen
+    assert result.decision_rejection_reason == 'FIELDS'
 
 
 def test_default_disabled_keeps_existing_behavior():

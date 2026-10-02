@@ -31,7 +31,7 @@ def _clear_draft(row):
                 'presentation_status', 'delivery_basis', 'voice_ready', 'quality_status', 'reviewer_calls', 'rewrite_calls',
                 'mailbox_notice_letter_id', 'decision_rejection_reason', 'semantic_shadow', 'expression_context',
                 'companion_decision', 'companion_timing', 'companion_delivery',
-                'speech_script', 'speech_intent', 'speech_status', 'speech_delivery_status',
+                'speech_script', 'speech_intent', 'speech_status', 'speech_delivery_status', 'content_review',
                 'proactive_decision', 'proactive_basis', 'proactive_opportunity'):
         row.pop(key, None)
 

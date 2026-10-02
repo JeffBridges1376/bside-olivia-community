@@ -42,6 +42,7 @@ def test_pipeline_quality_persists_before_failure_and_survives_bundle(monkeypatc
     result = SimpleNamespace(state=ReplyState.FAILED if failed is True else ReplyState.COMPLETED,
         error_code='REPLY_QUALITY_BLOCKED' if failed is True else None, text='private candidate',
         quality_status='blocked' if failed is True else 'accepted', reviewer_calls=2, rewrite_calls=1,
+        decision_rejection_reason='FIELDS' if failed is True else None,
         violation_codes=('private violation text',))
     async def run(*a): return result
     server = SimpleNamespace(letters_adapter=SimpleNamespace(config=SimpleNamespace(persona_v2_enabled=True,
@@ -93,13 +94,18 @@ def test_pipeline_quality_persists_before_failure_and_survives_bundle(monkeypatc
         item = json.loads(archive.read('tasks.json'))['items'][0]
     assert item['quality_status'] == result.quality_status
     assert item['reviewer_calls'] == 2 and item['rewrite_calls'] == 1
+    if failed is True:
+        assert item['decision_rejection_reason'] == 'FIELDS'
+    else:
+        assert 'decision_rejection_reason' not in item
     assert 'private' not in json.dumps(item)
     assert project_chat_task(project_chat_task(row)) == project_chat_task(row)
 
 
 def test_quality_projection_rejects_arbitrary_values_and_boolean_counts():
     assert project_chat_task({'channel': 'qq', 'quality_status': 'private text', 'reviewer_calls': True,
-                              'rewrite_calls': 999, 'violation_codes': ['private text']}) == {'channel': 'qq'}
+                              'rewrite_calls': 999, 'violation_codes': ['private text'],
+                              'decision_rejection_reason': 'private text'}) == {'channel': 'qq'}
 
 
 @pytest.mark.parametrize('counts', [(-1, -1), (3, 2), (1.0, False), ('2', '1')])

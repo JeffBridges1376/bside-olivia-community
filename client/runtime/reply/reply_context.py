@@ -357,8 +357,11 @@ class OutputConstraints:
     plain_text_only: bool = True
     allow_stage_directions: bool = False
     allow_control_markup: bool = False
+    content_scope: str = 'ordinary'
 
     def __post_init__(self) -> None:
+        if self.content_scope not in ('ordinary', 'story', 'asmr', 'asmr_story'):
+            raise ReplyContextError('content scope is invalid')
         if not isinstance(self.channel, OutputChannel):
             raise ReplyContextError("output channel is invalid")
         if type(self.max_characters) is not int or self.max_characters < 1:
@@ -402,6 +405,7 @@ class OutputConstraints:
             "plain_text_only": self.plain_text_only,
             "allow_stage_directions": self.allow_stage_directions,
             "allow_control_markup": self.allow_control_markup,
+            **({'content_scope': self.content_scope} if self.content_scope != 'ordinary' else {}),
         }
 
 

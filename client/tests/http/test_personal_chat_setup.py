@@ -15,6 +15,24 @@ class _Store:
         self.letters = []
 
 
+@pytest.mark.parametrize('owner', ['', 'abc'])
+def test_invalid_owner_edit_does_not_replace_live_connection(tmp_path, monkeypatch, owner):
+    from runtime.personal_chat import setup
+    monkeypatch.setattr(setup, '_selected_channels', lambda server: {'qq'})
+    app = web.Application()
+    setup.install_setup_routes(app, _Server(tmp_path))
+    app[setup._SETUP]['qq'] = {'state': 'CONNECTED'}
+    async def scenario():
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(setup.QQ_CONFIGURE_PATH,
+                headers={setup.CONFIRM_HEADER: setup.CONFIRM_VALUE},
+                json={'managed': True, 'owner': owner})
+            assert response.status == 400
+            assert (await response.json())['error'] == 'QQ_SETUP_INVALID'
+            assert app[setup._SETUP]['qq'] == {'state': 'CONNECTED'}
+    asyncio.run(scenario())
+
+
 class _Server:
     def __init__(self, root: Path) -> None:
         self.root = root

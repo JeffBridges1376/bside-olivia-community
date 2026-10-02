@@ -181,6 +181,13 @@ _LAYER_SPECS = {
             "the current clock: current meal/activity claims must agree with the "
             "runtime current schedule and character local time. This exception "
             "never supports an invented fact."
+            " A current question presupposing a past conversation is not independent "
+            "evidence that the character remembers it. Claiming to remember even "
+            "part of that event requires historical support; acknowledging the "
+            "current report or saying the memory is unclear is allowed. "
+            "Use current.input_evidence to distinguish incoming text/transcripts "
+            "from outgoing audio. A transcript cannot support claims of hearing "
+            "the user's vocal tone, breath, or background sounds."
         ),
     },
     "autonomy_life": {
@@ -329,6 +336,26 @@ _CONTINUITY_DECISION_CASES = (
         "kind": "invented_recurring_habit",
         "expected": "reject_memory_fabrication",
         "candidate": "I always leave the window open when it rains.",
+    },
+    {
+        "kind": "current_question_is_not_a_memory",
+        "current_user_input": "我上次说要爬泰山，你记得是几月吗？",
+        "historical_support": [],
+        "expected": "reject_memory_fabrication",
+        "candidate": "具体几月不记得了，光记得要爬泰山了。",
+    },
+    {
+        "kind": "acknowledge_uncertain_recall",
+        "current_user_input": "我上次说要爬泰山，你记得是几月吗？",
+        "historical_support": [],
+        "expected": "allow",
+        "candidate": "这件事我记不太清了，你提醒我一下？",
+    },
+    {
+        "kind": "transcript_is_not_acoustic_evidence",
+        "input_evidence": {"voice_transcript_available": True, "audio_waveform_available": False},
+        "expected": "reject_memory_fabrication",
+        "candidate": "语音听过了，你声音听起来没什么气。",
     },
 )
 
@@ -551,7 +578,7 @@ class GatewayReviewTransport:
         timeout_seconds: float,
     ) -> object:
         mode = str(request.get("mode", ""))
-        evidence_bound = mode == ReplyMode.TEXT_LETTER.value
+        evidence_bound = mode in {item.value for item in ReplyMode}
         reasoning_scope = (
             GatewayRequestScope.JSON_MAX_REASONING
             if evidence_bound and self.reasoning_timeout_seconds is not None
@@ -753,8 +780,7 @@ class GatewayPersonaReviewer:
         review: ReviewResult,
     ) -> tuple[ReviewerViolation, ...]:
         if (
-            context.mode is not ReplyMode.TEXT_LETTER
-            or review.status is not ReviewStatus.COMPLETED
+            review.status is not ReviewStatus.COMPLETED
         ):
             self._transport.consume_confirmed_rewrite_evidence(
                 candidate, required=False
@@ -877,8 +903,7 @@ class GatewayPersonaRewriter:
             payload["delivery_length_contract"] = delivery_length_contract
         fact_sentences = (
             _fact_repair_sentences(candidate, confirmed_violation_evidence)
-            if context.mode is ReplyMode.TEXT_LETTER
-            and set(violation_codes) == {"MEMORY_FABRICATION"}
+            if set(violation_codes) == {"MEMORY_FABRICATION"}
             and confirmed_violation_evidence
             else []
         )
@@ -1210,6 +1235,8 @@ def _build_release_layer_authorities(
     *,
     mode: str,
 ) -> tuple[_LayerAuthority, ...]:
+    from runtime.persona.persona_mode import persona_mode_for_reply_mode
+    mode = persona_mode_for_reply_mode(ReplyMode(mode))
     if snapshot.status != "READY" or not snapshot.declarations:
         raise RuntimeError("PERSONA_RELEASE_UNAVAILABLE")
     if not any(

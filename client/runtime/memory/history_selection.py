@@ -1,5 +1,6 @@
 """One bounded relevance pass; only selected original records reach generation."""
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -69,7 +70,7 @@ def _split(messages):
             if '[ORIGINAL_CORRESPONDENCE_UNTRUSTED]' in text:
                 groups = [json.loads(line) for line in text.split('\n') if line.startswith('[{')]
             elif isinstance(packet, dict) and isinstance(packet.get('letters'), list):
-                groups = [[row] for row in packet['letters']]
+                groups = [_correspondence_records(row) for row in packet['letters']]
             else:
                 # Status/coverage disclosures contain no selectable original.
                 return match.group(0)
@@ -81,7 +82,42 @@ def _split(messages):
             return ''  # Malformed optional data cannot become instructions.
     base = [{**m, 'content': _HISTORY.sub(project, m['content'])} if m.get('role') == 'system'
             else dict(m) for m in messages]
+    # compact_evidence replaces duplicate originals with text_ref. Resolve only
+    # same-speaker references to originals already present in this request.
+    originals = {r['citation']: r for r in [*recent_records(base),
+        *(r for group in candidates for r in group)]
+        if isinstance(r.get('citation'), str) and isinstance(r.get('text'), str)}
+    for group in candidates:
+        for record in group:
+            target = originals.get(record.get('text_ref'))
+            if ('text' not in record and target is not None
+                    and target.get('speaker') == record.get('speaker')):
+                record['text'] = target['text']
     return base, candidates
+
+
+def _correspondence_records(row):
+    """Project a legacy envelope into independently attributed exact originals."""
+    if not isinstance(row, dict):
+        return []
+    source = row.get('source_id')
+    identity = source if isinstance(source, str) and source else (
+        'correspondence:' + hashlib.sha256(_encode(row).encode()).hexdigest()[:24])
+    result = []
+    for key, speaker in (('user_letter', 'user'), ('linli_reply', 'linli')):
+        text = row.get(key)
+        if not isinstance(text, str) or not text or speaker == 'user' and row.get('origin') == 'proactive':
+            continue
+        result.append({'citation': identity + ':' + speaker,
+            'provenance': {'source_record_id': source} if source else {},
+            'speaker': speaker, 'text': text,
+            # Legacy time is reply completion, never the user's sending time.
+            'occurred_at': row.get('time') if speaker == 'linli' else None,
+            'evidence_scope': 'recorded_utterance',
+            **{k: row[k] for k in ('channel', 'message_kind', 'source_note') if k in row},
+            **({k: row[k] for k in ('media_deliveries', 'media_outcome', 'reply_phase') if k in row}
+               if speaker == 'linli' else {})})
+    return result
 
 
 async def _jev_persona_selection(port, messages, current, snapshot, mode):

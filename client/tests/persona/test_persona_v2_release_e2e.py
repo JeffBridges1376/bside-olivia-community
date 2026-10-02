@@ -124,7 +124,7 @@ def test_chinese_letter_uses_release_persona_then_commits_canonical_once(
 
 
 @pytest.mark.parametrize("mode", [ReplyMode.SPOKEN_VIDEO, ReplyMode.MUSICAL_VIDEO])
-def test_media_spoken_text_is_not_automatically_rewritten(mode: ReplyMode) -> None:
+def test_media_spoken_text_uses_the_same_review_and_repair_gate(mode: ReplyMode) -> None:
     rewriter = FixedRewriter("我听见了。" + "林" * 185)
     result = asyncio.run(
         ReplyPipeline(
@@ -135,9 +135,10 @@ def test_media_spoken_text_is_not_automatically_rewritten(mode: ReplyMode) -> No
     )
 
     assert result.state is ReplyState.COMPLETED
-    assert result.rewrite_calls == 0
-    assert rewriter.calls == 0
-    assert result.text == "(smiles)\n我听见了。"
+    assert result.rewrite_calls == 1
+    assert rewriter.calls == 1
+    assert result.text == rewriter.text
+    assert result.reviewer_calls == 2
 
 
 def test_reviewer_is_not_invoked_by_single_pass_delivery() -> None:

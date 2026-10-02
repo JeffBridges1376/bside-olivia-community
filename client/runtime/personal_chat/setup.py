@@ -707,9 +707,10 @@ def install_setup_routes(app: web.Application, server) -> None:
             return web.json_response({"error": "QQ_SETUP_INVALID"}, status=400)
         managed = body.get("managed") is True
         owner = str(body.get("owner", "")).strip()
+        # Invalid form input says nothing about the existing live connection.
+        if not _QQ_ID.fullmatch(owner):
+            return web.json_response({"error": "QQ_SETUP_INVALID"}, status=400)
         try:
-            if not _QQ_ID.fullmatch(owner):
-                raise RuntimeError("QQ_SETUP_INVALID")
             if managed:
                 from . import napcat_installer
 

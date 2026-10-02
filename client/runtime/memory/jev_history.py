@@ -52,6 +52,8 @@ async def select_history(port, packet, refs):
     # sentences cannot anchor a dependency, but must not fail the recall.
     quote_catalog, quotable = {}, []
     for record in records:
+        if not isinstance(record.get('text'), str):
+            continue  # An unresolved compact reference cannot anchor a quote.
         options = _sentences(record['text'], 500, 'JEV_HISTORY_QUOTE_CAPACITY', chunk=True)
         if not options or len(options) > 255:
             continue

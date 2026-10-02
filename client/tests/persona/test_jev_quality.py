@@ -226,9 +226,9 @@ def test_jev_confirmation_cannot_reintroduce_full_policy_or_history(monkeypatch)
     for layer in ('voice_style', 'focus_response'):
         assert set(unpack(state['layers'][layer]['input_refs'])) <= {'mode','current_user_input','candidate_reply','output_constraints'}
     continuity = unpack(state['layers']['continuity_memory']['input_refs'])
-    assert continuity['recent_turns'] == turns[-4:]
+    assert continuity['recent_turns'] == turns
     confirmed = unpack(state['adjudication_contexts']['continuity_fact'])
-    assert confirmed['recent_turns'] == turns[-4:]
+    assert confirmed['recent_turns'] == turns
     assert state['adjudication_contexts']['continuity_fact']['recent_turns'] == state['layers']['continuity_memory']['input_refs']['recent_turns']
     assert set(state['adjudication_contexts']['relationship']) == {'relationship_context'}
     assert 'current_user_input' not in state['adjudication_contexts']['identity_world']
@@ -244,7 +244,7 @@ def test_identity_projection_uses_only_selected_identity_and_background():
     assert [item['value']['facet'] for item in state['input']['selected_persona_facts']] == ['IDENTITY','BACKGROUND']
 
 
-def test_purpose_packets_keep_only_scoped_fields_and_two_turn_window():
+def test_purpose_packets_keep_only_scoped_fields_and_frozen_turn_window():
     import json
     from runtime.reply.jev_quality import _purpose_state
     turns = [{'source_id': f'reply:{i}', 'user_letter': f'question{i}', 'linli_reply': f'answer{i}'} for i in range(5)]
@@ -260,7 +260,7 @@ def test_purpose_packets_keep_only_scoped_fields_and_two_turn_window():
         state = _purpose_state(layer, ({'content': 'unused'}, {'content': json.dumps(data)}), {})
         assert 'BIG_GLOBAL_POLICY' not in str(state) and 'BIG_RUNTIME_POLICY' not in str(state)
         if name == 'continuity_memory':
-            assert state['input']['recent_turns'] == turns[-2:]
+            assert state['input']['recent_turns'] == turns
             assert '不是全部历史' in state['input']['history_coverage']
         else:
             assert 'recent_turns' not in state['input']
@@ -284,7 +284,8 @@ def test_detection_size_does_not_grow_with_confirmations(monkeypatch):
     detect_state, detect = port.calls[0]
     assert len(detect_state['spans']) == 20
     assert not any(key[0] == 'c' and key[1:2].isdigit() for key in detect)
-    assert len(detect) < 40  # one question per code, not per code x sentence
+    assert len(detect) < 48  # One support check per span; confirmations remain demand-only.
+    assert len([key for key in detect if ':fact:' in key]) == 20
     assert len(_json(dict(state=detect_state, questions=detect, purpose='quality-review')).encode()) < JEV_MAX_INPUT_BYTES
     state, questions = confirm_call(port)
     for cid, spec in state['confirmation_rules'].items():
