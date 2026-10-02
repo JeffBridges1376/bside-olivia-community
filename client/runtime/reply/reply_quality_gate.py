@@ -15,6 +15,7 @@ from runtime.reply.reply_reviewer import (
     ReviewVerdict,
 )
 from runtime.reply.reply_reviewer import TrustedReviewEvidence
+from runtime.diagnostics.failure_context import REWRITE_ERROR_CODES
 
 
 class QualityGateStatus(StrEnum):
@@ -206,7 +207,7 @@ def run_reply_quality_gate(
             deterministic_checks=1,
             reviewer_calls=1,
             rewrite_calls=0,
-            error_code="REWRITE_FAILED",
+            error_code="REWRITE_EVIDENCE_INVALID",
         )
     try:
         rewritten = _rewrite_candidate(
@@ -218,8 +219,11 @@ def run_reply_quality_gate(
             confirmed_evidence,
         )
         if normalize_rewrite is not None:
-            rewritten = normalize_rewrite(rewritten)
-    except Exception:
+            try:
+                rewritten = normalize_rewrite(rewritten)
+            except Exception as exc:
+                raise RuntimeError("REWRITE_OUTPUT_INVALID") from exc
+    except Exception as exc:
         return QualityGateResult(
             QualityGateStatus.BLOCKED,
             candidate,
@@ -227,7 +231,7 @@ def run_reply_quality_gate(
             deterministic_checks=1,
             reviewer_calls=1,
             rewrite_calls=1,
-            error_code="REWRITE_FAILED",
+            error_code=(str(exc) if str(exc) in REWRITE_ERROR_CODES else "REWRITE_FAILED"),
             delivery_repair_disposition=initial_delivery_repair,
         )
     if not isinstance(rewritten, str) or not rewritten.strip():
@@ -238,7 +242,7 @@ def run_reply_quality_gate(
             deterministic_checks=1,
             reviewer_calls=1,
             rewrite_calls=1,
-            error_code="REWRITE_FAILED",
+            error_code="REWRITE_OUTPUT_EMPTY",
             delivery_repair_disposition=initial_delivery_repair,
         )
     if (

@@ -277,9 +277,33 @@ def test_invalid_confirmed_repair_evidence_fails_before_rewriter(
     )
 
     assert result.status is QualityGateStatus.BLOCKED
-    assert result.error_code == "REWRITE_FAILED"
+    assert result.error_code == "REWRITE_EVIDENCE_INVALID"
     assert result.rewrite_calls == 0
     assert rewriter.calls == 0
+
+
+@pytest.mark.parametrize("code,expected", [(code,code) for code in (
+    "REWRITE_INPUT_TOO_LARGE", "REWRITE_OUTPUT_INVALID", "REWRITE_PROVIDER_UNAVAILABLE")]
+    + [("private candidate sk-secret", "REWRITE_FAILED"), ("REWRITE_PRIVATE_TEXT", "REWRITE_FAILED")])
+def test_rewrite_failure_keeps_only_fixed_diagnostic_codes(code, expected):
+    class FailingRewriter:
+        def rewrite(self, *args):
+            raise RuntimeError(code)
+    reviewer = _Reviewer(_pass_review())
+    result = run_reply_quality_gate("<CONTROL>bad candidate", _context(), reviewer=reviewer, rewriter=FailingRewriter())
+    assert result.status is QualityGateStatus.BLOCKED
+    assert result.rewrite_calls == 1
+    assert result.error_code == expected
+
+
+def test_invalid_rewrite_projection_stops_before_final_review():
+    def invalid_projection(text):
+        raise ValueError('private parser output')
+    reviewer = _Reviewer(_pass_review())
+    result = run_reply_quality_gate('<CONTROL>bad candidate', _context(), reviewer=reviewer,
+        rewriter=_Rewriter('Replacement.'), normalize_rewrite=invalid_projection)
+    assert result.error_code == 'REWRITE_OUTPUT_INVALID'
+    assert not result.accepted and reviewer.calls == 1 and result.rewrite_calls == 1
 
 
 def test_candidate_bound_intimacy_claim_fails_closed_after_rewrite() -> None:

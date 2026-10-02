@@ -38,7 +38,9 @@ def test_rewriter_uses_same_projection_once_and_last_output_contract(monkeypatch
         '行，你眯吧。', _context(), (), messages())
     wire = captured[0]
     payload = json.loads(wire[-1]['content'])
-    assert payload['user_message'] == '诶嘿，我醒啦'
+    assert 'user_message' not in payload
+    assert payload['user_message_ref'] == 'last_user_message'
+    assert sum(m['content'].count('诶嘿，我醒啦') for m in wire) == 1
     assert payload['recent_dialogue'] == quality._recent_dialogue(messages())
     assert 'replacement plain-text reply' in wire[-2]['content']
     assert sum(m['content'].count('我眯半小时。') for m in wire) == 1

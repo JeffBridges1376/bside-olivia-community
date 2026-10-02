@@ -2760,6 +2760,7 @@ def test_contract_and_fixture_artifacts_are_versioned_and_sanitized() -> None:
             "LLM_PROTOCOL_ERROR": {"status": "FAILED", "retryable": False},
             "LLM_REPLY_LENGTH_INVALID": {"status": "FAILED", "retryable": False},
             "REPLY_QUALITY_BLOCKED": {"status": "FAILED", "retryable": False},
+            "REPLY_REWRITE_FAILED": {"status": "FAILED", "retryable": False},
             "PERSONA_NOT_READY": {"status": "FAILED", "retryable": False},
         },
     }

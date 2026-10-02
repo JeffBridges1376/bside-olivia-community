@@ -2875,7 +2875,10 @@ def _public_llm_error(code: str | None) -> tuple[str, bool]:
             return public, False
     if code == "PERSONA_NOT_READY":
         return "PERSONA_NOT_READY", False
-    if code in {"REPLY_QUALITY_BLOCKED", "REWRITE_FAILED"}:
+    from runtime.diagnostics.failure_context import REWRITE_ERROR_CODES
+    if code in REWRITE_ERROR_CODES | {"REPLY_REWRITE_FAILED"}:
+        return "REPLY_REWRITE_FAILED", False
+    if code == "REPLY_QUALITY_BLOCKED":
         return "REPLY_QUALITY_BLOCKED", False
     if code == "LLM_REPLY_LENGTH_INVALID":
         return "LLM_REPLY_LENGTH_INVALID", False
@@ -6093,6 +6096,9 @@ async def _generate_reply_billed(letter_id, content, *, idempotency_key=None):
 
     letter["letter_status"] = "PROCESSING"
     letter.pop('expression_context', None)
+    for field in ('quality_status', 'quality_violation_codes', 'reviewer_calls',
+                  'rewrite_calls', 'quality_error_code', 'quality_failure_stage'):
+        letter.pop(field, None)
     _persist_store_state()
     receive_eligibility = receive_eligibility_from_letter(letter)
     if isinstance(letter.get("route_preflight"), dict):
@@ -6180,6 +6186,15 @@ async def _generate_reply_billed(letter_id, content, *, idempotency_key=None):
         return False
 
     if result.quality_status is not None:
+        from runtime.diagnostics.support_bundle import project_reply_quality
+        quality = project_reply_quality({
+            'quality_status': result.quality_status,
+            'reviewer_calls': getattr(result, 'reviewer_calls', None),
+            'rewrite_calls': getattr(result, 'rewrite_calls', None),
+            'quality_error_code': result.error_code,
+        })
+        letter.update(quality)
+        # Keep the existing private state contract; exported metadata is finite.
         letter["quality_status"] = result.quality_status
         letter["quality_violation_codes"] = list(result.violation_codes)
     if result.state is not ReplyState.COMPLETED:
@@ -6189,7 +6204,9 @@ async def _generate_reply_billed(letter_id, content, *, idempotency_key=None):
         _mark_media_not_requested(letter)
         _persist_store_state()
         from runtime.diagnostics.failure_context import project_failure_context
+        from runtime.diagnostics.support_bundle import project_reply_quality
         _safe_log("letter_failed", error_code=public_code,
+                  **project_reply_quality(letter),
                   **project_failure_context({'cause_code': getattr(result, 'error_code', None)}))
         return False
     if getattr(result, 'companion_decision', None) is not None:

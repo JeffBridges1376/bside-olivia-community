@@ -162,6 +162,10 @@
         "status": "FAILED",
         "retryable": false
       },
+      "REPLY_REWRITE_FAILED": {
+        "status": "FAILED",
+        "retryable": false
+      },
       "PERSONA_NOT_READY": {
         "status": "FAILED",
         "retryable": false

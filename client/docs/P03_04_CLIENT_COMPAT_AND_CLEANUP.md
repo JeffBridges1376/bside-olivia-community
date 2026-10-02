@@ -132,7 +132,11 @@ reply_type = 0
 - `LLM_UNAVAILABLE`；
 - `LLM_PROVIDER_REJECTED`；
 - `LLM_PROTOCOL_ERROR`；
-- `REPLY_QUALITY_BLOCKED`。
+- `REPLY_QUALITY_BLOCKED`、`REPLY_REWRITE_FAILED`。原生信箱列表与详情附带可选的 `replyErrorCode`，保持轮询和失败信纸原因一致。
+
+回信修改保留冻结人格和证据，并去除当前来信的重复副本。重写独立使用文本模型预算，在 30,000 字符基线以上增加最多 8,000 字符余量，合计上限 100,000 字符；JEV 审查输入限制不变。仍最多修改一次，修改后重新检查整封回信。
+
+诊断包的任务和 runtime tail 保留有限元数据：`quality_status`、`reviewer_calls`（0–2）、`rewrite_calls`（0–1）、`quality_error_code`（固定枚举）、`quality_failure_stage`（review / rewrite_evidence / rewrite / rewrite_validation / final_review）。不导出候选正文、审查提示词或异常原文。
 
 媒体失败不能把已完成正文的 `letter_status` 改成 `5`。媒体错误只进入：
 

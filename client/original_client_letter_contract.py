@@ -285,6 +285,13 @@ def serialize_letter_summary(
         "replyType": reply_type,
     }
     silent = status == OriginalClientLetterStatus.NO_REPLY
+    if str(letter.get('letter_status', '')).upper() == 'FAILED':
+        from runtime.diagnostics.failure_context import REWRITE_ERROR_CODES
+        code = letter.get('error_code')
+        if isinstance(code, str) and code in REWRITE_ERROR_CODES | {'REPLY_REWRITE_FAILED'}:
+            payload['replyErrorCode'] = 'REPLY_REWRITE_FAILED'
+        elif code == 'REPLY_QUALITY_BLOCKED':
+            payload['replyErrorCode'] = code
     if silent:
         payload['replyDisposition'] = 'no_reply'
     if video_pending:

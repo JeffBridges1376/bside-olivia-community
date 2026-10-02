@@ -799,13 +799,19 @@ def test_generate_reply_persists_and_renders_only_canonical_text(
     assert letter["reply_text"] == canonical_text
     assert letter["letter_status"] == "COMPLETED"
     assert letter["quality_status"] == "accepted"
+    assert letter['reviewer_calls'] == 2 and letter['rewrite_calls'] == 1
     assert letter["quality_violation_codes"] == ["SYNTHETIC_FIXED"]
     assert scheduled[0][2] == canonical_text
     assert remembered == [("candidate input", canonical_text)]
 
 
+@pytest.mark.parametrize('internal_code,public_code,stage', [
+    ('REPLY_QUALITY_BLOCKED','REPLY_QUALITY_BLOCKED','review'),
+    ('REWRITE_INPUT_TOO_LARGE','REPLY_REWRITE_FAILED','rewrite'),
+    ('REWRITE_OUTPUT_INVALID','REPLY_REWRITE_FAILED','rewrite_validation'),
+])
 def test_blocked_candidate_never_reaches_storage_or_media(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, internal_code, public_code, stage,
 ) -> None:
     import local_server
 
@@ -831,7 +837,7 @@ def test_blocked_candidate_never_reaches_storage_or_media(
             PipelineResult(
                 "letter-2",
                 ReplyState.FAILED,
-                error_code="REPLY_QUALITY_BLOCKED",
+                error_code=internal_code,
                 quality_status="blocked",
                 violation_codes=("INTERNAL_CONTROL_MARKUP",),
                 reviewer_calls=1,
@@ -848,6 +854,10 @@ def test_blocked_candidate_never_reaches_storage_or_media(
     )
     assert letter["reply_text"] == ""
     assert letter["letter_status"] == "FAILED"
+    assert letter['error_code'] == public_code
+    assert letter['quality_error_code'] == internal_code
+    assert letter['quality_failure_stage'] == stage
+    assert letter['reviewer_calls'] == 1 and letter['rewrite_calls'] == 1
     assert letter["quality_status"] == "blocked"
     assert letter["media_status"] == "NOT_REQUESTED"
     assert letter.get("media_error_code") is None
