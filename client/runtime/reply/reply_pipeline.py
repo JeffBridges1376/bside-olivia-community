@@ -325,7 +325,8 @@ class ReplyPipeline:
                     source_id=metadata.get('received_source_id') or getattr(request, 'request_id', ''),
                     input_revision=metadata.get('input_revision', 0),
                     as_of=context.trusted_time.instant.isoformat(), kinds=kinds,
-                    cached=metadata.get('companion_decision'))
+                    cached=metadata.get('companion_decision'),
+                    speech_enabled=(chat_metadata or {}).get('speech_enabled') is True)
                 companion_decision = decision.record()
                 save_decision = metadata.get('save_companion_decision')
                 if callable(save_decision):
@@ -389,6 +390,16 @@ class ReplyPipeline:
                 return PipelineResult(prepared.request_id, ReplyState.FAILED,
                                       error_code='INPUT_TOO_LONG', retryable=False)
             prepared = replace(prepared, messages=messages, max_input_chars=original_budget)
+        speech_request = (companion_decision or {}).get('speech_request')
+        if speech_request and (chat_metadata or {}).get('channel') == 'qq':
+            note = '<speech_request>' + json.dumps(speech_request, ensure_ascii=False) + '</speech_request>'
+            if speech_request['continuation']:
+                note += '\n<story_continuation>' + json.dumps(
+                    (chat_metadata or {}).get('story_continuation'),ensure_ascii=False) + '</story_continuation>'
+            messages = list(_generation_messages(prepared))
+            at = next((i for i in range(len(messages)-1,-1,-1) if messages[i].get('role') == 'user'),len(messages))
+            messages.insert(at, {'role':'system','content':note})
+            prepared = replace(prepared,messages=tuple(messages))
         from .character_emotion_context import freeze_expression_context
         # Local assembly establishes provenance; later recall may legitimately
         # replace duplicated notes with source references. Freeze that final

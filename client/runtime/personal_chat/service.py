@@ -31,6 +31,7 @@ def _clear_draft(row):
                 'presentation_status', 'delivery_basis', 'voice_ready', 'quality_status', 'reviewer_calls', 'rewrite_calls',
                 'mailbox_notice_letter_id', 'decision_rejection_reason', 'semantic_shadow', 'expression_context',
                 'companion_decision', 'companion_timing', 'companion_delivery',
+                'speech_script', 'speech_intent', 'speech_status', 'speech_delivery_status',
                 'proactive_decision', 'proactive_basis', 'proactive_opportunity'):
         row.pop(key, None)
 
@@ -64,7 +65,7 @@ async def delivery_notice(row, send, persist, key, text):
 
 
 class PersonalChatService:
-    def __init__(self, rows, persist, generate, commit, bindings, *, sticker_allowed=lambda key: True, photo=None, prepare_photo=None):
+    def __init__(self, rows, persist, generate, commit, bindings, *, sticker_allowed=lambda key: True, photo=None, prepare_photo=None, speech=None):
         self.rows, self.persist = rows, persist
         self.generate, self.commit = generate, commit
         self.bindings = dict(bindings)
@@ -72,6 +73,8 @@ class PersonalChatService:
         self.photo = photo
         self.prepare_photo = prepare_photo
         self.photo_tasks = {}
+        self.speech = speech
+        self.speech_tasks = {}
         self.consumer_tasks = {}
         # One owner shares memory/world across both channels; serialize exchanges.
         self.lock = asyncio.Lock()
@@ -283,6 +286,7 @@ class PersonalChatService:
                 # not: the platform may have delivered before a crash/timeout.
                 if row.get("delivery_status") == "DELIVERED":
                     self._schedule_photo(row, send)
+                    self._schedule_speech(row, send)
                     self._schedule_commit(row)
                     await asyncio.sleep(0)
                     return
@@ -452,7 +456,15 @@ class PersonalChatService:
                     audio = None
                     row['voice_fallback'] = 'PERSONAL_CHAT_AUDIO_UPLOAD_UNAVAILABLE'
             if not (audio and callable(getattr(send, 'audio', None))):
-                if (row.get('companion_decision') is not None and row.get('companion_delivery') == 'audio_speech'
+                # Long speech is a separately persisted MP3 file. Its confirmation
+                # does not require a second, ordinary voice-bubble generation.
+                file_speech = (event.channel=='qq' and row.get('speech_script')
+                               and (row.get('companion_decision') or {}).get('speech_request'))
+                if file_speech:
+                    from .speech import validate_script, validate_intent
+                    validate_script(row['speech_script'])
+                    validate_intent(row['speech_intent'])
+                if not file_speech and (row.get('companion_decision') is not None and row.get('companion_delivery') == 'audio_speech'
                         or row.get('proactive_decision', {}).get('decision', {}).get('medium') == 'audio_speech'):
                     row.update(delivery_status='FAILED', letter_status='FAILED', error_code='JEV_PLAN_UNSUPPORTED')
                     await persist_state(self.persist)
@@ -571,6 +583,7 @@ class PersonalChatService:
         task.add_done_callback(finished)
 
     def _schedule_photo(self, row, send):
+        self._schedule_speech(row, send)
         # Media runs after the text ACK and never holds the conversation lock.
         key = row['letter_id']
         from runtime.image_reply import is_companion_image
@@ -618,6 +631,36 @@ class PersonalChatService:
             finally:
                 self.photo_tasks.pop(key, None)
         self.photo_tasks[key] = asyncio.create_task(deliver())
+
+    def _schedule_speech(self,row,send):
+        key=row['letter_id']
+        binding=self.bindings.get('qq')
+        if not binding or row.get('binding_id')!=PersonalMessage('qq',*binding,'','').binding_id:
+            return
+        if (row.get('delivery_status')!='DELIVERED' or row.get('channel')!='qq'
+                or not row.get('speech_script') or not callable(self.speech)
+                or not callable(getattr(send,'file',None)) or key in self.speech_tasks
+                or row.get('speech_delivery_status') in {'SENDING','UNKNOWN','DELIVERED'}):
+            return
+        async def deliver():
+            try:
+                await self.speech(row,send)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                if row.get('speech_delivery_status') not in {'SENDING','UNKNOWN','DELIVERED'}:
+                    row['speech_status']='FAILED'
+                    await persist_state(self.persist)
+                    await delivery_notice(row,send,self.persist,'speech_failure_notice',
+                        '这段音频暂时没能生成成功，稿子已经保留，稍后可以重试。')
+            finally:
+                self.speech_tasks.pop(key,None)
+        self.speech_tasks[key]=asyncio.create_task(deliver())
+
+    def resume_speech(self, channel, send):
+        for row in self.rows:
+            if row.get('channel')==channel:
+                self._schedule_speech(row,send)
 
     async def recover(self):
         """Recover local consumers only; never initiate an outbound resend."""

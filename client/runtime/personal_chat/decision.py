@@ -95,7 +95,7 @@ def decode(raw, *, user, now, proactive=False):
             raise ValueError("FIELDS")
         # Extra model annotations are not executable preferences. Optional media
         # metadata must not discard an otherwise valid reply.
-        data = {key: value for key, value in data.items() if key in required | {'letter_invitation', 'sticker', 'text_reason'}}
+        data = {key: value for key, value in data.items() if key in required | {'letter_invitation', 'sticker', 'text_reason', 'speech'}}
         if data.get('text_reason') not in ('speaker_unavailable', 'verbatim_text'):
             data['text_reason'] = None
         if not isinstance(data.get('sticker'), str):
@@ -130,6 +130,8 @@ def decode(raw, *, user, now, proactive=False):
         data['text'] = _MARKER.sub('', data['text']).strip()
         if '[[' in data['text'] or ']]' in data['text']:
             raise ValueError("CONTROL_MARKER")
+        from .speech import validate_script
+        data['speech'] = validate_script(data.get('speech'))
         return data
     except (ValueError, TypeError, KeyError, OverflowError) as exc:
         error = ValueError('PERSONAL_CHAT_DECISION_INVALID')

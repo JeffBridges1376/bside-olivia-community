@@ -7,6 +7,60 @@ from runtime.remote_generation import RemoteGeneration
 from runtime.cloud_service import CloudError
 
 
+def test_long_speech_download_defers_ack_until_qq_delivery(tmp_path,monkeypatch):
+    calls=[]
+    async def request(self,action,data):
+        calls.append(action)
+        if action=='capabilities':return dict(kinds=['tts'],shared_assets=[],result_acknowledgement=True)
+        assert action=='submit'
+        return dict(task_id='synthetic',status='succeeded')
+    async def download(self,task,output,**kwargs):
+        output.write_bytes(b'synthetic-mp3');return task
+    monkeypatch.setattr(RemoteGeneration,'request',request)
+    monkeypatch.setattr(RemoteGeneration,'_download',download)
+    asyncio.run(RemoteGeneration().generate('tts',dict(text='frozen-script',speech_mode='asmr'),tmp_path/'audio.mp3'))
+    assert calls==['capabilities','submit']
+
+
+@pytest.mark.parametrize('stage,resumes,resumed_id',[
+    ('speech_postprocess_failed',True,'same-order'),('speech_postprocess_failed',True,'unexpected-order'),
+    ('failed',False,None),('cancelled',False,None)])
+def test_long_speech_retries_only_cpu_export_with_original_submission(tmp_path,monkeypatch,stage,resumes,resumed_id):
+    from runtime.remote_generation import CloudError
+    submissions=[]
+    failed=dict(task_id='same-order',status='cancelled' if stage=='cancelled' else 'failed',stage=stage)
+    async def request(self,action,data):
+        if action=='capabilities':return dict(kinds=['tts'],shared_assets=[],result_acknowledgement=True)
+        assert action=='submit';submissions.append(data)
+        return dict(task_id=resumed_id,status='succeeded') if len(submissions)>1 else failed
+    async def status(self,task_id):
+        assert task_id=='same-order';return failed
+    async def download(self,task,output,**kwargs):
+        if task['status']!='succeeded':raise CloudError('GPU_TASK_FAILED',503)
+        output.write_bytes(b'synthetic-mp3');return task
+    monkeypatch.setattr(RemoteGeneration,'request',request)
+    monkeypatch.setattr(RemoteGeneration,'_status',status)
+    monkeypatch.setattr(RemoteGeneration,'_download',download)
+    async def scenario():
+        api=RemoteGeneration();data=dict(text='frozen-script',speech_mode='asmr')
+        output=tmp_path/'audio.mp3';receipt=tmp_path/'receipt.json'
+        with pytest.raises(CloudError):await api.generate('tts',data,output,receipt_path=receipt)
+        if resumes and resumed_id!='same-order':
+            with pytest.raises(CloudError,match='GPU_TASK_INVALID'):
+                await api.generate('tts',data,output,receipt_path=receipt)
+            import json
+            assert json.loads(receipt.read_text())['task_id']=='same-order'
+            assert not output.exists()
+        elif resumes:
+            result=await api.generate('tts',data,output,receipt_path=receipt)
+            assert result['task_id']=='same-order'
+        else:
+            with pytest.raises(CloudError):await api.generate('tts',data,output,receipt_path=receipt)
+    asyncio.run(scenario())
+    assert len(submissions)==(2 if resumes else 1)
+    if resumes:assert submissions[0]==submissions[1]
+
+
 @pytest.mark.parametrize('kind', ['video', 'lipsync', 'original_video', 'cover_video'])
 def test_slow_video_is_not_cancelled_by_elapsed_client_budget(tmp_path, monkeypatch, kind):
     calls = []

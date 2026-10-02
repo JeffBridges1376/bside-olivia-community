@@ -52,7 +52,8 @@ class RemoteGeneration:
         else:
             raise CloudError('GPU_REQUEST_INVALID', 400)
         try:
-            encoded = json.dumps(payload, allow_nan=False).encode() if payload is not None else None
+            encoded = json.dumps(payload, allow_nan=False, ensure_ascii=not bool(
+                payload.get('input',{}).get('speech_mode'))).encode() if payload is not None else None
         except (ValueError, TypeError):
             raise CloudError('GPU_REQUEST_INVALID', 400) from None
         if encoded is not None and len(encoded) > 32768:
@@ -135,8 +136,15 @@ class RemoteGeneration:
             if plan is not None and (not isinstance(plan,dict) or set(plan)!={'prompt','photo_type','room','time_of_day'}
                     or any(not isinstance(value,str) or len(value)>4000 for value in plan.values())):
                 raise ValueError()
+            speech=result.get('speech')
+            if speech is not None:
+                if (not isinstance(speech,dict) or speech.get('format')!='mp3' or speech.get('channels')!=2
+                        or speech.get('sample_rate')!=48000 or type(speech.get('duration_seconds')) not in (float,int)
+                        or not 10<speech['duration_seconds']<=900):
+                    raise ValueError()
             return {'task_id': result['task_id'], 'status': result['status'], 'outputs': cleaned,
-                    'stage': result.get('stage', ''), **({'media_plan':plan} if plan is not None else {})}
+                    'stage': result.get('stage', ''), **({'media_plan':plan} if plan is not None else {}),
+                    **({'speech':speech} if speech is not None else {})}
         except (ClientError, TimeoutError) as exc:
             raise connection_error(exc) from None
         except (ValueError, TypeError, UnicodeError):
@@ -199,11 +207,18 @@ class RemoteGeneration:
             temporary_receipt.replace(receipt)
         progress = getattr(self, 'progress', lambda phase, task: None)
         progress('submission', {})
-        # A known order must never go through admission/billing again. Older
-        # receipts retain their idempotency key for ambiguous submission failures.
+        # Poll known orders; retain the original submission for ambiguous failures
+        # and recovery of the same CPU export under its original idempotency key.
         task_id = saved.get('task_id')
         task = (await self._status(task_id) if task_id is not None
                 else await self.request('submit', submission))
+        if (task_id is not None and kind == 'tts' and data.get('speech_mode')
+                and task.get('status') == 'failed' and task.get('stage') == 'speech_postprocess_failed'):
+            # Resume the original CPU export, never a second GPU generation/order.
+            recovered = await self.request('submit', submission)
+            if recovered.get('task_id') != task_id:
+                raise CloudError('GPU_TASK_INVALID', 502)
+            task = recovered
         if receipt:
             temporary_receipt = receipt.with_suffix('.tmp')
             temporary_receipt.write_text(json.dumps({'fingerprint': fingerprint,
@@ -220,12 +235,13 @@ class RemoteGeneration:
             await asyncio.sleep(1)
             task = await self._status(task['task_id'])
             progress('generation', task)
-        if receipt and task['status'] in ('failed', 'cancelled'):
+        if receipt and task['status'] in ('failed', 'cancelled') and not data.get('speech_mode'):
             receipt.unlink(missing_ok=True)
         if task['status'] == 'succeeded':
             progress('download', task)
         result = await self._download(task, output, validate=validate)
-        if caps.get('result_acknowledgement') is True and kind not in ('cover_video', 'original_video'):
+        if (caps.get('result_acknowledgement') is True and kind not in ('cover_video', 'original_video')
+                and not data.get('speech_mode')):
             from runtime.gpu_cleanup import acknowledge_result
             await acknowledge_result(self, task['task_id'], output)
         return result
@@ -280,6 +296,10 @@ class RemoteGeneration:
                             if size > 2147483648: raise CloudError('GPU_OUTPUT_TOO_LARGE', 502)
                             target.write(chunk)
                     if size == 0: raise CloudError('GPU_OUTPUT_EMPTY', 502)
+            speech=task.get('speech') or {}
+            if speech.get('sha256') and (temporary.stat().st_size != speech.get('bytes')
+                    or hashlib.sha256(temporary.read_bytes()).hexdigest()!=speech['sha256']):
+                raise CloudError('GPU_OUTPUT_INVALID',502)
             if validate is not None: validate(temporary)
             temporary.replace(output)
         except (ClientError, TimeoutError) as exc: raise connection_error(exc) from None
