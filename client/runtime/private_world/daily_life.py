@@ -706,7 +706,7 @@ class DailyLifeStore:
         """Open items and items this exchange mentions, with full evidence; finished
         items only as identities, and only while recent. Every exchange sent all items
         ever recorded (109 for one user) and each update slot listed them all again,
-        so the request grew with the user's history until it could not be sent."""
+        so the request grew with every item the user ever had until it could not be sent."""
         value = {"projects": [], "shared": []}
         tokens = _query_tokens(query) | _query_tokens(related_text)
         now = now or datetime.now(timezone.utc)
