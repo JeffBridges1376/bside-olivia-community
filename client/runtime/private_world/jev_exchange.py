@@ -13,10 +13,12 @@ EXCHANGE_ERROR_CODES = frozenset({
 })
 
 
-# Exchange facts list every quote window as an ID in every question, so its
-# token count per byte is about twice that of other JEV requests. Its own
-# budget keeps it near 20k tokens; long letters use coarser quotes instead.
-EXCHANGE_MAX_INPUT_BYTES = 32 * 1024
+# Same budget as every other JEV request: a long letter is a large request.
+from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES as EXCHANGE_MAX_INPUT_BYTES
+# Every slot repeats the quote catalog. Real exchanges carry 0-3 updates and at
+# most 2 boundaries, so one request asks that many; when the classifier says they
+# do not suffice, a second request asks every slot instead of dropping anything.
+COMMON_UPDATE_SLOTS, COMMON_BOUNDARY_SLOTS = 3, 2
 
 
 def _q(instructions, criteria):
@@ -116,17 +118,33 @@ def _quotes(text, prefix, level=0):
     return {f'{prefix}{i}': quote for i, quote in enumerate(unique)}
 
 
+class _NeedsAllSlots(Exception):
+    pass
+
+
 async def extract(port, data, instructions, request_id):
+    from .daily_life import MAX_EXCHANGE_UPDATES
+    try:
+        return await _fit(port, data, instructions, request_id, COMMON_UPDATE_SLOTS, COMMON_BOUNDARY_SLOTS)
+    except _NeedsAllSlots:
+        pass
+    try:
+        return await _fit(port, data, instructions, request_id, MAX_EXCHANGE_UPDATES, 4)
+    except _NeedsAllSlots:
+        raise ValueError('JEV_EXCHANGE_UNREPRESENTABLE_UPDATE') from None
+
+
+async def _fit(port, data, instructions, request_id, update_slots, boundary_slots):
     """Coarsen quote windows until the request fits; the size check precedes the paid call."""
     for level in (0, 1, 2):
         try:
-            return await _extract(port, data, instructions, request_id, level)
+            return await _extract(port, data, instructions, request_id, level, update_slots, boundary_slots)
         except ValueError as exc:
             if level == 2 or str(exc) not in {'JEV_EXCHANGE_QUOTE_CAPACITY', 'JEV_INPUT_TOO_LARGE'}:
                 raise
 
 
-async def _extract(port, data, instructions, request_id, level):
+async def _extract(port, data, instructions, request_id, level, update_slots, boundary_slots):
     from .daily_life import MAX_EXCHANGE_UPDATES
     user = _quotes(data.get('user_letter', ''), 'u', level)
     reply = _quotes(data.get('linli_reply', ''), 'r', level)
@@ -191,9 +209,9 @@ async def _extract(port, data, instructions, request_id, level):
             '回复明确说“吃完了，碗也洗了”，必须reconsider。纯聊天、解释旧事、已经记录的相同结果不需要；只由用户问“吃完了吗”、'
             '引用他人的完成说法、假设或“等吃完再洗碗”不能判断已经完成。reconsider只启动核验，不确认完成事实。',
             {'none': '没有需处理的新变化，无需更新', 'reconsider': '有新的行动意向或开始/完成/停止/取消/失败/结果变化，需要启动核验与更新'}),
-        'capacity': _q('完整表达有效独立变更是否超12项、持续边界是否超4项、或有变更无法由候选完整表达？',
+        'capacity': _q(f'完整表达有效独立变更是否超{update_slots}项、持续边界是否超{boundary_slots}项、或有变更无法由候选完整表达？',
                        {'ok': '容量足够且可完整表达', 'unsupported': '超容量或不能完整表达'})}
-    for i in range(MAX_EXCHANGE_UPDATES):
+    for i in range(update_slots):
         for field, options in (('quote', quote_options(quotes)), ('status', statuses), ('identity', identities)):
             if field == 'identity' and not projects:
                 continue
@@ -201,7 +219,7 @@ async def _extract(port, data, instructions, request_id, level):
                 f'按slot_contract，变更{i + 1}的{field}。', options)
     actions = {'none': '空槽', 'new': '新增', **{f'{action}_{i}': f'{action}_{i}'
         for i in range(len(boundaries)) for action in ('set', 'withdraw')}}
-    for i in range(4):
+    for i in range(boundary_slots):
         questions[f'boundary_{i}_quote'] = _q(f'按slot_contract，边界{i + 1}的quote。', quote_options(reply))
         if boundaries:
             questions[f'boundary_{i}_action'] = _q(f'按slot_contract，边界{i + 1}的action。', actions)
@@ -222,8 +240,13 @@ async def _extract(port, data, instructions, request_id, level):
                 {'unknown': '不明确', **{str(i): str(i) for i in range(6)}}),
             'sleep_minute_ones': _q('通常当地入睡分钟的个位，例如07分取7、35分取5；未明确unknown。',
                 {'unknown': '不明确', **{str(i): str(i) for i in range(10)}}),
-            'utc_offset': _q('明确地点/时区的UTC分钟偏移，夏令时不确定则unknown。',
-                {'unknown': '不确定', **{str(i): str(i) for i in range(-720, 841, 15)}})})
+            # Sign, hours and minutes instead of one 106-option list.
+            'utc_sign': _q('明确地点/时区比UTC早(east)还是晚(west)，UTC本身选east；夏令时不确定则unknown。',
+                {'unknown': '不确定', 'east': 'UTC+', 'west': 'UTC-'}),
+            'utc_hours': _q('该时区UTC偏移的整小时数，例如UTC+5:30取5；不确定unknown。',
+                {'unknown': '不确定', **{str(i): str(i) for i in range(15)}}),
+            'utc_minutes': _q('该时区UTC偏移小时之外的分钟，例如UTC+5:30取30；不确定unknown。',
+                {'unknown': '不确定', **{str(i): str(i) for i in (0, 15, 30, 45)}})})
         # How each side addresses the other, kept as exact original quotes so a
         # later reply uses this user's own names instead of "用户" or a guess.
         questions.update({
@@ -235,9 +258,17 @@ async def _extract(port, data, instructions, request_id, level):
                 {'none': '无选择', **{s: s for s in ('qq', 'wechat', 'both', 'declined', 'later')}})
             questions['contact_quote'] = _q('用户明确本次渠道选择完整原句，不从回信倒推同意。', quote_options(user))
     answers = await _ask(port, state, questions, 'exchange-facts')
+    if answers['capacity'] != 'ok' and update_slots < MAX_EXCHANGE_UPDATES:
+        raise _NeedsAllSlots()
+    # Slots beyond the asked ones are empty, exactly as a "none" answer.
+    answers = {**{f'update_{i}_{field}': 'none' for i in range(MAX_EXCHANGE_UPDATES) for field in ('quote', 'status', 'identity')},
+               **{f'boundary_{i}_{field}': 'none' for i in range(4) for field in ('quote', 'action')}, **answers}
     if not proactive:
         digits = [answers['sleep_minute_' + place] for place in ('tens', 'ones')]
         answers['sleep_minute'] = 'unknown' if 'unknown' in digits else str(int(''.join(digits)))
+        offset = [answers['utc_' + part] for part in ('sign', 'hours', 'minutes')]
+        minutes = None if 'unknown' in offset else (int(offset[1]) * 60 + int(offset[2])) * (1 if offset[0] == 'east' else -1)
+        answers['utc_offset'] = 'unknown' if minutes is None or not -720 <= minutes <= 840 else str(minutes)
     if not projects:
         for i in range(MAX_EXCHANGE_UPDATES):
             answers[f'update_{i}_identity'] = 'none' if answers[f'update_{i}_quote'] == 'none' else 'new'
