@@ -116,7 +116,8 @@ BSide Olivia Community 是面向 Windows 的**非官方**陪伴复刻项目。�
 
 | 版本 | 主要变化 |
 | --- | --- |
-| **[2.0.13](https://github.com/Ornn8/bside-olivia-community/releases/tag/v2.0.13)** · 当前 | QQ 被踢下线后自动重连，不用重新扫码；信里要求语音回复时用语音回信；旧信导入不再重复。[更新说明](client/docs/releases/v2.0.13.md) |
+| **[2.1.0](https://github.com/Ornn8/bside-olivia-community/releases/tag/v2.1.0)** · 当前 | 新增 QQ 睡前故事与 ASMR 音频；更准确地想起以前约定过的事；长期使用后生活和关系不再停滞。[更新说明](client/docs/releases/v2.1.0.md) |
+| [2.0.13](https://github.com/Ornn8/bside-olivia-community/releases/tag/v2.0.13) | QQ 被踢下线后自动重连，不用重新扫码；信里要求语音回复时用语音回信；旧信导入不再重复。[更新说明](client/docs/releases/v2.0.13.md) |
 | [2.0.12](https://github.com/Ornn8/bside-olivia-community/releases/tag/v2.0.12) | 修复部分电脑启动失败；林离更常随手拍和自拍；三餐和旧信回忆恢复正常；新增信件对比整理。[更新说明](client/docs/releases/v2.0.12.md) |
 | [2.0.11](https://github.com/Ornn8/bside-olivia-community/releases/tag/v2.0.11) | 修复开启图片后普通信一直"回信中"；QQ 重启后不用重新扫码；林离不再挖苦你真诚的话。[更新说明](client/docs/releases/v2.0.11.md) |
 | [2.0.10](https://github.com/Ornn8/bside-olivia-community/releases/tag/v2.0.10) | 林离在合适的时候会重新顺手发照片；不再把聊天记录格式念出来、不再重复上一句；启动画面不再挡住其他窗口。[更新说明](client/docs/releases/v2.0.10.md) |
