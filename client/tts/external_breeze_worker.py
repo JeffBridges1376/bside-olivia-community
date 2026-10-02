@@ -100,7 +100,8 @@ _WORKER_ERRORS = frozenset({"BREEZE_RUNTIME_INVALID", "BREEZE_REFERENCE_AUDIO_IN
     "BREEZE_EMPTY_AUDIO", "BREEZE_MODEL_VARIANT_UNSUPPORTED", "BREEZE_CUDA_OUT_OF_MEMORY",
     "BREEZE_CUDA_RUNTIME_FAILED", "BREEZE_MODULE_MISSING", "BREEZE_IMPORT_FAILED",
     "BREEZE_FILE_MISSING", "BREEZE_PERMISSION_DENIED", "BREEZE_DISK_FULL",
-    "BREEZE_IO_FAILED", "BREEZE_REQUEST_INVALID", "BREEZE_RUNTIME_FAILED"})
+    "BREEZE_IO_FAILED", "BREEZE_REQUEST_INVALID", "BREEZE_RUNTIME_FAILED",
+    "BREEZE_GENERATION_INCOMPLETE"})
 _WORKER_ERRORS = _WORKER_ERRORS | {"BREEZE_ROCM_OUT_OF_MEMORY", "BREEZE_ROCM_RUNTIME_FAILED"}
 _WORKER_EXCEPTION_TYPES = frozenset({"Exception", "RuntimeError", "ValueError", "TypeError",
     "KeyError", "AttributeError", "OSError", "FileNotFoundError", "PermissionError",
@@ -434,6 +435,12 @@ def _synthesize_impl(request: dict[str, Any], output: Path, status: Path, *, cac
             progress_callback=progress,
             progress_label=None,
         )
+        # The pinned upstream returns codes even when its generation loop
+        # exhausts the budget. At the boundary it provides no EOS receipt;
+        # never publish that unverified performance as a complete WAV.
+        if limit_reached:
+            phase = "generation"
+            raise RuntimeError("BREEZE_GENERATION_INCOMPLETE")
         phase = "audio_write"
         _write_wav(
             output,
