@@ -1,4 +1,4 @@
-from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES
+from runtime.private_world.jev_exchange import EXCHANGE_MAX_INPUT_BYTES as JEV_MAX_INPUT_BYTES
 import asyncio
 
 import pytest
@@ -68,7 +68,7 @@ def test_routine_is_selected_and_not_silently_empty():
     from runtime.private_world.jev_exchange import extract
     def choose(key, q, state):
         return {'routine': 'set', 'routine_quote': 'u0', 'sleep_hour': '23',
-                'sleep_minute_tens': '3', 'sleep_minute_ones': '0', 'utc_offset': '480'}.get(key, first(key, q, state))
+                'sleep_minute_tens': '3', 'sleep_minute_ones': '0', 'utc_sign': 'east', 'utc_hours': '8', 'utc_minutes': '0'}.get(key, first(key, q, state))
     data = {'user_letter': '我住上海，通常每天23点30分睡觉。', 'linli_reply': '知道了。',
             'previous_state': {}, 'active_boundaries': [], 'origin': 'user'}
     result = asyncio.run(extract(Port(choose), data, '', 'life:r'))
@@ -82,7 +82,7 @@ def test_sleep_minute_digits_preserve_every_exact_minute(minute):
     def choose(key, q, state):
         return {'routine': 'set', 'routine_quote': 'u0', 'sleep_hour': '23',
             'sleep_minute_tens': str(minute // 10), 'sleep_minute_ones': str(minute % 10),
-            'utc_offset': '540'}.get(key, first(key, q, state))
+            'utc_sign': 'east', 'utc_hours': '9', 'utc_minutes': '0'}.get(key, first(key, q, state))
     port = Port(choose)
     result = asyncio.run(extract(port, data, '', 'life:minute'))
     assert len(port.calls) == 1
@@ -94,7 +94,7 @@ def test_unknown_sleep_minute_digit_cannot_become_zero(tens, ones):
     from runtime.private_world.jev_exchange import extract
     def choose(key, q, state):
         return {'routine': 'set', 'routine_quote': 'u0', 'sleep_hour': '23',
-            'sleep_minute_tens': tens, 'sleep_minute_ones': ones, 'utc_offset': '540'}.get(key, first(key, q, state))
+            'sleep_minute_tens': tens, 'sleep_minute_ones': ones, 'utc_sign': 'east', 'utc_hours': '9', 'utc_minutes': '0'}.get(key, first(key, q, state))
     with pytest.raises(ValueError, match='JEV_EXCHANGE_ROUTINE_EVIDENCE'):
         asyncio.run(extract(Port(choose), {'user_letter': '我通常在东京晚上十一点多睡。', 'linli_reply': '好。'}, '', 'life:unknown'))
 
@@ -358,7 +358,7 @@ def test_realistic_letter_with_existing_projects_fits_one_packet():
     state, questions, purpose = port.calls[0]
     size = len(json.dumps(dict(state=state, questions=questions, purpose=purpose), ensure_ascii=False, separators=(',', ':')).encode())
     assert size < JEV_MAX_INPUT_BYTES
-    assert len(questions) == 56  # includes three addressing quotes and the world-update gate
+    assert len(questions) == 29  # 3 update and 2 boundary slots, three addressing quotes, the world-update gate
     assert state['sources'] == {key: data[key] for key in ('user_letter', 'linli_reply')}
     assert _EXCHANGE_LIFE_PROMPT not in str(state)
     assert all(value == key for key, value in questions['update_0_quote']['criteria'].items() if key != 'none')
@@ -404,3 +404,43 @@ def test_run_on_sentence_splits_only_at_clause_marks():
     sentence = '，'.join(['今天去了河边散步看到很多人在钓鱼'] * 20) + '。'
     quotes = _quotes(sentence, 'u', 2)
     assert all(len(quote) <= 240 and sentence.find(quote) >= 0 for quote in quotes.values())
+
+
+def test_more_changes_than_common_slots_ask_every_slot_in_a_second_request():
+    from runtime.private_world.jev_exchange import extract
+    reply = '我练完琴了。信也寄了。菜买好了。碗洗了。'
+    class Overflow(Port):
+        async def ask(self, state, questions, *, purpose):
+            self.calls.append(questions)
+            statuses = {value: key for key, value in state['status_catalog'].items()}
+            if len(self.calls) == 1:
+                return {key: 'unsupported' if key == 'capacity' else first(key, q, state) for key, q in questions.items()}
+            picks = {**{f'update_{i}_quote': f'r{i}' for i in range(4)},
+                     **{f'update_{i}_status': statuses['linli_completed'] for i in range(4)}}
+            return {key: picks.get(key, 'ok' if key == 'capacity' else first(key, q, state)) for key, q in questions.items()}
+    port = Overflow(first)
+    result = asyncio.run(extract(port, {'user_letter': '好。', 'linli_reply': reply}, '', 'life:many'))
+    assert [sum(key.endswith('_quote') and key.startswith('update_') for key in q) for q in port.calls] == [3, 12]
+    assert [item['quote'] for item in result['updates']] == ['我练完琴了。', '信也寄了。', '菜买好了。', '碗洗了。']
+
+
+def test_capacity_still_unsupported_with_every_slot_fails_closed():
+    from runtime.private_world.jev_exchange import extract
+    class Always(Port):
+        async def ask(self, state, questions, *, purpose):
+            self.calls.append(questions)
+            return {key: 'unsupported' if key == 'capacity' else first(key, q, state) for key, q in questions.items()}
+    port = Always(first)
+    with pytest.raises(ValueError, match='JEV_EXCHANGE_UNREPRESENTABLE_UPDATE'):
+        asyncio.run(extract(port, {'user_letter': '好。', 'linli_reply': '我练完琴了。'}, '', 'life:full'))
+    assert len(port.calls) == 2
+
+
+@pytest.mark.parametrize('sign,hours,minutes,offset', [('east', '5', '30', 330), ('west', '3', '30', -210), ('east', '0', '0', 0)])
+def test_utc_offset_parts_compose_exact_minutes(sign, hours, minutes, offset):
+    from runtime.private_world.jev_exchange import extract
+    def choose(key, q, state):
+        return {'routine': 'set', 'routine_quote': 'u0', 'sleep_hour': '23', 'sleep_minute_tens': '0', 'sleep_minute_ones': '0',
+                'utc_sign': sign, 'utc_hours': hours, 'utc_minutes': minutes}.get(key, first(key, q, state))
+    result = asyncio.run(extract(Port(choose), {'user_letter': '我通常23点睡。', 'linli_reply': '好。'}, '', 'life:tz'))
+    assert result['routine']['utc_offset_minutes'] == offset

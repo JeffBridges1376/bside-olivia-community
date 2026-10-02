@@ -193,7 +193,8 @@ def test_service_ack_precedes_backend_world_and_daily_life_commit():
             lambda row: backend.commit(server, row), {"qq": ("100", "200")})
         await service.handle(PersonalMessage("qq", "100", "200", "1", "hello"), send)
         await asyncio.gather(*service.consumer_tasks.values())
-        assert operations.index("ack") < operations.index("world") < operations.index("daily") < operations.index("memory")
+        # Memory is committed before the slower daily-life extraction.
+        assert operations.index("ack") < operations.index("world") < operations.index("memory") < operations.index("daily")
         await service.recover()
         await asyncio.gather(*service.consumer_tasks.values())
         assert operations.count("world") == operations.count("daily") == operations.count("memory") == 1

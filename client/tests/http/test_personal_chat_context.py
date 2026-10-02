@@ -90,7 +90,7 @@ def test_consumer_failure_does_not_skip_other_state_updates(monkeypatch):
     import pytest
     with pytest.raises(RuntimeError, match='WORLD_UNAVAILABLE'):
         asyncio.run(backend.commit(None, {'delivery_status': 'DELIVERED'}))
-    assert calls == ['world', 'life', 'memory']
+    assert calls == ['world', 'memory', 'life']  # memory never waits for daily life
 
 
 def test_platform_time_survives_service_and_actual_context_adapter():
@@ -118,3 +118,20 @@ def test_platform_time_survives_service_and_actual_context_adapter():
         assert json.loads(fragments[0].text)['letters'][0]['sent_at'].endswith('+08:00')
     finally:
         CURRENT.reset(token)
+
+
+def test_daily_life_extraction_is_not_paid_for_forever():
+    import asyncio
+    from types import SimpleNamespace
+    from runtime.personal_chat import backend
+    scheduled = []
+    server = SimpleNamespace(daily_life_tasks={}, _schedule_daily_life_exchange=lambda row: scheduled.append(row['letter_id']))
+    row = {'letter_id': 'qq-turn', 'daily_life_status': 'FAILED'}
+    for _ in range(backend._LIFE_ATTEMPTS):
+        try:
+            asyncio.run(backend._commit_life(server, row))
+        except RuntimeError as error:
+            assert str(error) == 'PERSONAL_CHAT_DAILY_LIFE_UNAVAILABLE'
+    assert len(scheduled) == backend._LIFE_ATTEMPTS == row['daily_life_attempts']
+    asyncio.run(backend._commit_life(server, row))  # gives up quietly: no new paid extraction
+    assert len(scheduled) == backend._LIFE_ATTEMPTS
