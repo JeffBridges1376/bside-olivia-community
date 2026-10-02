@@ -1,4 +1,4 @@
-from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES
+from runtime.private_world.jev_exchange import EXCHANGE_MAX_INPUT_BYTES as JEV_MAX_INPUT_BYTES
 import asyncio
 
 import pytest
