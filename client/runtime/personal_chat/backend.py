@@ -642,12 +642,24 @@ async def _commit_candidates(server, row):
         await persist_chat(server)
 
 _LIFE_ATTEMPTS = 3
+# Daily-life extraction describes what she is doing now. A chat that waited this
+# long in a backlog (offline QQ, an earlier failure) would only pay to replay old
+# moments in one burst; its memory is still kept by _commit_memory.
+_LIFE_STALE_SECONDS = 6 * 3600
 
 
 async def _commit_life(server, row):
-    if row.get("daily_life_status") != "COMMITTED":
+    if row.get("daily_life_status") not in ("COMMITTED", "SKIPPED_STALE"):
         if row.get("daily_life_attempts", 0) >= _LIFE_ATTEMPTS:
             # Each attempt is a paid extraction; a reply that keeps failing is let go.
+            return
+        try:
+            received = datetime.fromisoformat(row["life_received_at"])
+        except (KeyError, TypeError, ValueError):
+            received = None
+        if received is not None and (datetime.now(received.tzinfo) - received).total_seconds() > _LIFE_STALE_SECONDS:
+            row["daily_life_status"] = "SKIPPED_STALE"
+            await persist_chat(server)
             return
         task = server.daily_life_tasks.get(f"reply:{row['letter_id']}:1")
         if task is None or task.done():

@@ -135,3 +135,28 @@ def test_daily_life_extraction_is_not_paid_for_forever():
     assert len(scheduled) == backend._LIFE_ATTEMPTS == row['daily_life_attempts']
     asyncio.run(backend._commit_life(server, row))  # gives up quietly: no new paid extraction
     assert len(scheduled) == backend._LIFE_ATTEMPTS
+
+
+def test_backlogged_chat_does_not_pay_to_replay_old_daily_life(monkeypatch):
+    import asyncio
+    from datetime import datetime, timedelta
+    from types import SimpleNamespace
+    from runtime.personal_chat import backend
+    from runtime.private_world.life_rhythm import LOCAL
+    scheduled, saved = [], []
+    async def persist(_server):
+        saved.append(True)
+    monkeypatch.setattr(backend, 'persist_chat', persist)
+    server = SimpleNamespace(daily_life_tasks={}, _schedule_daily_life_exchange=lambda row: scheduled.append(row['letter_id']))
+    old = {'letter_id': 'old', 'daily_life_status': 'PENDING',
+           'life_received_at': (datetime.now(LOCAL) - timedelta(hours=7)).isoformat()}
+    asyncio.run(backend._commit_life(server, old))
+    asyncio.run(backend._commit_life(server, old))
+    assert scheduled == [] and old['daily_life_status'] == 'SKIPPED_STALE' and saved == [True]
+    fresh = {'letter_id': 'fresh', 'daily_life_status': 'PENDING',
+             'life_received_at': (datetime.now(LOCAL) - timedelta(minutes=5)).isoformat()}
+    try:
+        asyncio.run(backend._commit_life(server, fresh))
+    except RuntimeError:
+        pass
+    assert scheduled == ['fresh']
