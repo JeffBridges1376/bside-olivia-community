@@ -19,6 +19,34 @@ from runtime.diagnostics.failure_context import REWRITE_ERROR_CODES
 
 
 _SOFT_STYLE_CODES = frozenset({'STYLE_DRIFT', 'GENERIC_COUNSELOR'})
+# Modes without a delivery length contract, where whole sentences may be dropped.
+_TRIMMABLE_MODES = frozenset({ReplyMode.TEXT_LETTER, ReplyMode.VOICE_REPLY, ReplyMode.FUTURE_IM})
+
+
+def _without_unsupported_facts(text, violations, mode):
+    """Drop exactly the sentences the final review still marks as unsupported facts.
+
+    Since the per-sentence fact review (2.1.0) about a quarter of replies were flagged,
+    and a letter whose one rewrite still cited an unsupported past detail failed as a
+    whole (9 of one user's 11 letters). Removing those sentences delivers nothing the
+    review rejected; a reply that would lose most of its text still fails."""
+    if mode not in _TRIMMABLE_MODES or not violations or any(
+            item.code != 'MEMORY_FABRICATION' or not 0 <= item.start < item.end <= len(text)
+            for item in violations):
+        return None
+    keep, cursor = [], 0
+    for start, end in sorted({(item.start, item.end) for item in violations}):
+        if start < cursor:
+            return None  # overlapping spans: do not guess what remains
+        keep.append(text[cursor:start])
+        cursor = end
+    keep.append(text[cursor:])
+    trimmed = ''.join(keep)
+    compact = lambda value: ''.join(value.split())
+    if len(compact(trimmed)) < max(20, len(compact(text)) // 2):
+        return None
+    lines = [' '.join(line.split()) for line in trimmed.splitlines()]
+    return '\n'.join(line for line in lines if line).strip() or None
 
 
 class QualityGateStatus(StrEnum):
@@ -335,7 +363,16 @@ def run_reply_quality_gate(
         ),
         tuple(item.code for item in final_review.violations),
     )
-    if (
+    trimmed = (
+        _without_unsupported_facts(rewritten, final_review.violations, reviewed_context.mode)
+        if final_deterministic.passed
+        and final_review.status is ReviewStatus.COMPLETED
+        and final_review.verdict in (ReviewVerdict.BLOCK, ReviewVerdict.REWRITE)
+        else None
+    )
+    if trimmed is not None:
+        rewritten, status = trimmed, QualityGateStatus.ACCEPTED_WITH_WARNINGS
+    elif (
         not final_deterministic.passed
         or final_review.verdict is ReviewVerdict.BLOCK
     ):
