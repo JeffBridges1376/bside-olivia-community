@@ -27,6 +27,23 @@ MAX_CHECKS = 32
 HISTORY_IMPORT_STAGES = frozenset({
     "idle", "preflight", "memory_wait", "listing", "memory", "relationship", "importing", "completed", "failed", "unknown",
 })
+_HISTORY_RELATIONSHIP_FIXED_ERROR_CODES = frozenset({
+    'HISTORY_RELATIONSHIP_FAILED', 'HISTORY_RELATIONSHIP_UNAVAILABLE',
+    'HISTORY_RELATIONSHIP_STORAGE_UNAVAILABLE',
+    'PRIVATE_WORLD_HISTORY_UNAVAILABLE', 'PRIVATE_WORLD_HISTORY_INITIALIZATION_FAILED',
+    'PRIVATE_WORLD_HISTORY_RESULT_INVALID', 'PRIVATE_WORLD_VERSION_CONFLICT',
+    'PRIVATE_WORLD_HISTORY_LOOKUP_FAILED', 'PRIVATE_WORLD_HISTORY_PREPARE_FAILED',
+    'PRIVATE_WORLD_HISTORY_WRITE_FAILED',
+    *(f'PRIVATE_WORLD_COMMAND_{suffix}' for suffix in (
+        'INVALID', 'AUDIT_INVALID', 'SOURCE_FORBIDDEN', 'APPROVAL_REQUIRED',
+        'EVIDENCE_REQUIRED', 'STORAGE_UNAVAILABLE', 'IDENTITY_CONFLICT', 'EVIDENCE_INVALID',
+    )),
+    *(f'PRIVATE_WORLD_HISTORY_LLM_{suffix}' for suffix in (
+        'INPUT_TOO_LONG', 'QUOTA_EXHAUSTED', 'TIMEOUT', 'PROTOCOL', 'UNAVAILABLE',
+        'RETRYABLE', 'REJECTED', 'AUTH_FAILED', 'USAGE_PENDING', 'REQUEST_DUPLICATE',
+        'INVALID_INPUT', 'FAILED', 'RATE_LIMITED',
+    )),
+})
 BREEZE_INSTALL_DIAGNOSTIC_CODES = frozenset({
     "BREEZE_PIP_DISK_FULL", "BREEZE_PIP_MISSING_PIP", "BREEZE_PIP_UNSUPPORTED_WHEEL",
     "BREEZE_PIP_HASH_MISMATCH", "BREEZE_PIP_WHEEL_UNAVAILABLE", "BREEZE_PIP_ACCESS_DENIED",
@@ -222,6 +239,28 @@ def project_history_import(value: object) -> dict[str, object]:
     error = source.get("error_code")
     if isinstance(error, str) and _CODE_RE.fullmatch(error):
         result["error_code"] = error
+    return result
+
+
+def project_history_relationship_failure(value: object) -> dict[str, object]:
+    """Export the current failed durable batch without its private payload."""
+    from .history_relationship import JEV_ERROR_CODES, project_history_failure_context
+    source = value if isinstance(value, Mapping) else {}
+    if source.get('status') not in ('FAILED', 'failed'):
+        return {}
+    result = {'event': 'history_relationship_failed', 'status': 'FAILED'}
+    code = source.get('error_code')
+    known = isinstance(code, str) and (
+        code in _HISTORY_RELATIONSHIP_FIXED_ERROR_CODES or
+        code.startswith('PRIVATE_WORLD_HISTORY_') and code[len('PRIVATE_WORLD_HISTORY_'):] in JEV_ERROR_CODES
+    )
+    result['error_code'] = code if known else 'HISTORY_RELATIONSHIP_FAILED'
+    for name in ('total', 'processed'):
+        count = source.get(name)
+        if type(count) is int and 0 <= count <= 1_000_000_000:
+            result[name] = count
+    if 'failure_context' in source:
+        result['failure_context'] = project_history_failure_context(source['failure_context'])
     return result
 
 
@@ -473,6 +512,10 @@ def _project_tail_record(value: object, *, runtime: bool) -> dict[str, object]:
     event = source.get("event")
     if not isinstance(event, str) or not _EVENT_RE.fullmatch(event):
         raise _invalid()
+    if runtime and event == 'history_relationship_failed':
+        record = project_history_relationship_failure({**source, 'status': 'FAILED'})
+        record['status'] = 'failed'
+        return record
     record: dict[str, object] = {"event": event}
     if "attempt" in source:
         attempt = source["attempt"]

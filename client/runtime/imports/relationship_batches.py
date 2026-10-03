@@ -7,6 +7,7 @@ import hashlib
 import json
 import sqlite3
 
+from runtime.diagnostics.history_relationship import project_history_failure_context
 from runtime.imports.historical_memory import (
     HistoricalExchange, HistoricalRelationshipAssessment, assess_historical_relationship,
     apply_historical_private_world, historical_relationship_command_id,
@@ -54,7 +55,9 @@ class RelationshipBatches:
         self.path=path;path.parent.mkdir(parents=True,exist_ok=True)
         self.running=False
         with self.connect() as db:
-            db.execute('CREATE TABLE IF NOT EXISTS batches (id INTEGER PRIMARY KEY, payload TEXT NOT NULL, state TEXT NOT NULL, assessment TEXT, error TEXT)')
+            db.execute('CREATE TABLE IF NOT EXISTS batches (id INTEGER PRIMARY KEY, payload TEXT NOT NULL, state TEXT NOT NULL, assessment TEXT, error TEXT, failure_context TEXT)')
+            if 'failure_context' not in {row[1] for row in db.execute('PRAGMA table_info(batches)')}:
+                db.execute('ALTER TABLE batches ADD COLUMN failure_context TEXT')
             db.execute('CREATE TABLE IF NOT EXISTS seen (source TEXT PRIMARY KEY)')
 
     @contextmanager
@@ -76,16 +79,24 @@ class RelationshipBatches:
                 db.execute('INSERT INTO batches(payload,state) VALUES (?,?)',(json.dumps(pending[offset:offset+5],ensure_ascii=False),'pending'))
 
     def retry(self):
-        with self.connect() as db:db.execute("UPDATE batches SET state='pending',error=NULL WHERE state='failed'")
+        with self.connect() as db:db.execute("UPDATE batches SET state='pending',error=NULL,failure_context=NULL WHERE state='failed'")
 
     def status(self):
         with self.connect() as db:
-            rows=db.execute('SELECT state,payload,error FROM batches ORDER BY id').fetchall()
-        total=sum(len(json.loads(p)) for _,p,_ in rows)
-        completed=sum(len(json.loads(p)) for s,p,_ in rows if s=='done')
-        error=next((e for s,_,e in rows if s=='failed'),None)
-        return {'status':'RUNNING' if self.running else 'FAILED' if error else 'PENDING' if completed<total else 'APPLIED',
+            rows=db.execute('SELECT state,payload,error,failure_context FROM batches ORDER BY id').fetchall()
+        total=sum(len(json.loads(p)) for _,p,_,_ in rows)
+        completed=sum(len(json.loads(p)) for s,p,_,_ in rows if s=='done')
+        failed=next((row for row in rows if row[0]=='failed'),None)
+        error=failed[2] if failed else None
+        result = {'status':'RUNNING' if self.running else 'FAILED' if failed else 'PENDING' if completed<total else 'APPLIED',
                 'total':total,'processed':completed,'batches':len(rows),'batch_size':5,'error_code':error}
+        if failed:
+            try:
+                context=json.loads(failed[3]) if failed[3] else {}
+            except (ValueError, TypeError):
+                context={}
+            result['failure_context']=project_history_failure_context(context)
+        return result
 
     async def run(self,*,gateway,persona_policy,command_service,snapshot):
         if self.running:return
@@ -108,26 +119,41 @@ class RelationshipBatches:
                     row=db.execute("SELECT id,payload,state,assessment FROM batches WHERE state!='done' ORDER BY id LIMIT 1").fetchone()
                 if row is None or row[2]=='failed':return
                 batch_id,payload,_,saved=row
-                exchanges=tuple(HistoricalExchange(**{**x,'occurred_at':datetime.fromisoformat(x['occurred_at'])}) for x in json.loads(payload))
+                stage='prepare'
+                exchange_count=0
                 try:
+                    values=json.loads(payload)
+                    exchange_count=len(values)
+                    exchanges=tuple(HistoricalExchange(**{**x,'occurred_at':datetime.fromisoformat(x['occurred_at'])}) for x in values)
                     command=historical_relationship_command_id(exchanges)
+                    stage='commit'
                     existing=await asyncio.to_thread(command_service.lookup_command,command)
                     if existing is None:
                         if saved:
+                            stage='result_validation'
                             values=json.loads(saved);values['relationship_stage']=RelationshipStage(values['relationship_stage']);values['evidence_indexes']=tuple(values['evidence_indexes'])
                             assessment=HistoricalRelationshipAssessment(**values)
                         else:
+                            stage='prepare'
                             current=snapshot()
                             previous={name:getattr(current,name) for name in ('familiarity','trust','comfort','closeness','tension')}
                             previous['relationship_stage'] = current.relationship_stage
+                            stage='gateway'
                             assessment=await assess_historical_relationship(exchanges,gateway=gateway,persona_policy=persona_policy,previous_state=previous,preserve_order=True)
+                            stage='commit'
                             with self.connect() as db:db.execute('UPDATE batches SET assessment=? WHERE id=?',(json.dumps(asdict(assessment)),batch_id))
+                        stage='commit'
                         await asyncio.to_thread(apply_historical_private_world,exchanges,assessment=assessment,command_service=command_service,preserve_order=True)
-                    with self.connect() as db:db.execute("UPDATE batches SET state='done',error=NULL WHERE id=?",(batch_id,))
+                    with self.connect() as db:db.execute("UPDATE batches SET state='done',error=NULL,failure_context=NULL WHERE id=?",(batch_id,))
                 except asyncio.CancelledError:raise
                 except Exception as exc:
                     code=getattr(exc,'code','HISTORY_RELATIONSHIP_FAILED')
                     if not isinstance(code,str) or not code.replace('_','').isalnum():code='HISTORY_RELATIONSHIP_FAILED'
-                    with self.connect() as db:db.execute("UPDATE batches SET state='failed',error=? WHERE id=?",(code,batch_id))
+                    context=project_history_failure_context(getattr(exc,'failure_context',None))
+                    context.setdefault('cause_code','UNKNOWN')
+                    context.setdefault('failure_stage',stage)
+                    context.setdefault('exception_type',project_history_failure_context({'exception_type':type(exc).__name__}).get('exception_type','OTHER'))
+                    context=project_history_failure_context({**context,'batch_id':batch_id,'exchange_count':exchange_count})
+                    with self.connect() as db:db.execute("UPDATE batches SET state='failed',error=?,failure_context=? WHERE id=?",(code,json.dumps(context),batch_id))
                     return
         finally:self.running=False

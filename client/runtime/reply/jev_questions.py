@@ -17,10 +17,19 @@ class JevQuestionsPort:
     def __init__(self, endpoint, *, token='', timeout_seconds=50):
         self.transport = JevDecisionPort(endpoint, token=token, timeout_seconds=timeout_seconds)
 
-    def _request(self, packet, *, detailed=False):
+    def _request_body(self, packet):
         from runtime.model_policy import encode_decision
         packet = encode_decision(packet, self.transport.endpoint)
-        body = _json(packet).encode('utf-8')
+        return _json(packet).encode('utf-8')
+
+    def request_size_bytes(self, state, questions, *, purpose):
+        """Measure the same encoded wire body used by ask, without provider I/O."""
+        packet = json.loads(_json(dict(state=state, questions=questions, purpose=purpose)))
+        return len(self._request_body(packet))
+
+    def _request(self, packet, *, detailed=False):
+        body = self._request_body(packet)
+        # Encoding does not alter question keys or their criteria.
         if len(body) > SEMANTIC_REQUEST_MAX_BYTES:
             raise ValueError('JEV_INPUT_TOO_LARGE')
         digest = hashlib.sha256(body).hexdigest()
