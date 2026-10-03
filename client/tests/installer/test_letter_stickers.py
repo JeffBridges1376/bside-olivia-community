@@ -109,3 +109,20 @@ def test_assets_are_valid_images_with_catalog_entries():
     for file in gifs:
         with Image.open(file) as image:
             assert image.n_frames > 1
+
+
+def test_stickered_client_without_photos_still_patches_after_failure_prop_was_added():
+    """A v4/v5 sticker client patched by the 2.1.1+ settings patch (failure code
+    first in the paper props) failed every start with PHOTO_PROPS_INVALID."""
+    from installer.patch_letter_stickers import _patch_with_failure_prop, patch_photos, FAILURE_PROP
+    source=('content:e.replyText??"",;__name:"MailBoxReplyContent",props:{;'
+            'class:ae(["mail-box-reply-content faux-bold",o(E)]);'
+            'ref:p,value:l.modelValue,readonly:A.readonly,;'
+            'n("div",mw,v(o(I)),1);null,42,uw);],2)}}});const $s=;'
+            '__name:"MailBoxContentBody";F(ks,{onVideoError:u},null,8,[]);F(ks,{onVideoError:u},null,8,[])]}),_:1},8,["disabled"])')
+    stickered=patch_source(source).replace('F(ks,{',FAILURE_PROP)
+    with pytest.raises(ValueError, match='PHOTO_PROPS_INVALID'):
+        patch_photos(stickered)
+    patched=_patch_with_failure_prop(stickered)
+    assert patched==patch_photos(patch_source(source)).replace('F(ks,{',FAILURE_PROP)
+    assert patched.count(FAILURE_PROP)==2 and _patch_with_failure_prop(patched)==patched
