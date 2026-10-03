@@ -1,4 +1,4 @@
-"""Finite historical-assessment failure metadata for durable support evidence."""
+"""Finite assessment failure metadata for durable support evidence."""
 
 from collections.abc import Mapping
 
