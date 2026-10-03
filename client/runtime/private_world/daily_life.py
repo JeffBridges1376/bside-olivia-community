@@ -98,6 +98,11 @@ def _meal_observation(meal: dict, now: datetime) -> dict:
 
 # Common conversational/time words are not evidence that a task is relevant.
 _QUERY_STOP_WORDS = set("今天 明天 昨天 晚上 现在 这次 上次 已经 还是 一下 一些 一点 我们 你们 我的 你的 她的 自己 时候 最近 然后 但是 还有 就是 觉得 可以 没有 怎么 什么 这个 那个 这件 那件".split())
+# Single-character recall uses grammatical/time words, never an activity lexicon.
+_QUERY_TOPIC_STOP_CHARS = set(''.join(_QUERY_STOP_WORDS)) | set(
+    '我你他她它们的了着过吗呢吧啊呀哦嗯是有在也都就还又再才先不没无别能会要该'
+    '让把被将和与或及而从对为来去给做打说想看好很更最时间年月日周早午晚'
+    '一二三四五六七八九十百千万零两几每各打算计划准备完成')
 
 _MEAL_WINDOWS = {
     "breakfast": (5 * 60, 11 * 60 + 30),
@@ -309,6 +314,10 @@ def _query_tokens(text: str) -> set[str]:
         else:
             tokens.add(part)
     return tokens - _QUERY_STOP_WORDS
+
+
+def _query_topic_chars(text: str) -> set[str]:
+    return set(re.findall(r"[\u3400-\u9fff]", text)) - _QUERY_TOPIC_STOP_CHARS
 
 
 class DailyLifeStore:
@@ -793,18 +802,26 @@ class DailyLifeStore:
         # first published activity, or when the life-generation model is down.
         tokens = _query_tokens(query)
         related_tokens = _query_tokens(related_text)
+        topic_chars = _query_topic_chars(query)
+        related_topic_chars = _query_topic_chars(related_text)
         def relevance(p):
             text_tokens = _query_tokens(p["title"] + " " + p.get("quote", p["detail"]))
+            title_chars = _query_topic_chars(p['title'])
             # Current question first; earlier letters may introduce an old
             # plan, so disclose that topic's current state in the same budget.
-            direct = len(tokens & text_tokens)
+            direct_words = len(tokens & text_tokens)
+            # One-character subjects may be separated from their verb in a
+            # question. Match only the durable title, not unrelated support.
+            direct = direct_words or 0.25 * len(topic_chars & title_chars)
             if (not direct and p["kind"] == "shared"
                     and p.get("actor") == "linli" and p["status"] == "awaiting_user"):
                 # Recalling her own invitation must not keep promoting it as an
                 # outstanding user obligation. Its source remains in the exchange log;
                 # current-topic recall and exchange extraction retain access.
                 return 0
-            return (1000 if direct else 0) + (direct + len(related_tokens & text_tokens)) / max(1, len(text_tokens) ** 0.5)
+            related = len(related_tokens & text_tokens) or 0.25 * len(related_topic_chars & title_chars)
+            priority = 1000 if direct_words else 100 if direct else 0
+            return priority + (direct + related) / max(1, len(text_tokens) ** 0.5)
         # UI limits must not hide old cancellations or finished threads from recall.
         projects = sorted((p for p in all_projects if relevance(p) > 0), key=lambda p: (relevance(p), p["updated_at"]), reverse=True)
         relevant_shared = next((p for p in projects if p["kind"] == "shared" and relevance(p) > 0), None)

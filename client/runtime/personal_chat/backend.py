@@ -677,27 +677,40 @@ _LIFE_STALE_SECONDS = 6 * 3600
 
 async def _commit_life(server, row):
     if row.get("daily_life_status") not in ("COMMITTED", "SKIPPED_STALE"):
-        if row.get("daily_life_attempts", 0) >= _LIFE_ATTEMPTS:
-            # Each attempt is a paid extraction; a reply that keeps failing is let go.
-            return
-        try:
-            received = datetime.fromisoformat(row["life_received_at"])
-        except (KeyError, TypeError, ValueError):
-            received = None
-        if received is not None and (datetime.now(received.tzinfo) - received).total_seconds() > _LIFE_STALE_SECONDS:
-            row["daily_life_status"] = "SKIPPED_STALE"
-            await persist_chat(server)
-            return
+        from runtime.private_world.jev_exchange import EXCHANGE_ERROR_CODES
         task = server.daily_life_tasks.get(f"reply:{row['letter_id']}:1")
         if task is None or task.done():
+            if row.get('daily_life_retry_status') == 'TERMINAL_REJECTION':
+                return
+            if row.get('daily_life_failure_reason') in EXCHANGE_ERROR_CODES:
+                # A completed semantic rejection cannot be repaired by paying to
+                # repeat the same extraction. Keep its failure and pending state.
+                row['daily_life_retry_status'] = 'TERMINAL_REJECTION'
+                await persist_chat(server)
+                return
+            if row.get("daily_life_attempts", 0) >= _LIFE_ATTEMPTS:
+                return
+            try:
+                received = datetime.fromisoformat(row["life_received_at"])
+            except (KeyError, TypeError, ValueError):
+                received = None
+            if received is not None and (datetime.now(received.tzinfo) - received).total_seconds() > _LIFE_STALE_SECONDS:
+                row["daily_life_status"] = "SKIPPED_STALE"
+                await persist_chat(server)
+                return
             row["daily_life_attempts"] = row.get("daily_life_attempts", 0) + 1
-        server._schedule_daily_life_exchange(row)
-        task = server.daily_life_tasks.get(f"reply:{row['letter_id']}:1")
+            server._schedule_daily_life_exchange(row)
+            task = server.daily_life_tasks.get(f"reply:{row['letter_id']}:1")
         if task is not None:
             # This task is owned by the daily-life runtime, not this waiter.
             await asyncio.shield(task)
         if row.get("daily_life_status") != "COMMITTED":
+            if row.get('daily_life_failure_reason') in EXCHANGE_ERROR_CODES:
+                row['daily_life_retry_status'] = 'TERMINAL_REJECTION'
+                await persist_chat(server)
             raise RuntimeError("PERSONAL_CHAT_DAILY_LIFE_UNAVAILABLE")
+        if row.pop('daily_life_retry_status', None) is not None:
+            await persist_chat(server)
 
 async def _commit_memory(server, row):
     # Mem0 is consumed by the existing canonical outbox over persisted state;
