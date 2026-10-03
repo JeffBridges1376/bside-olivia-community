@@ -2643,7 +2643,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       } catch (_error) {
         state.textContent = _error.message === "LOCAL_SONG_FFMPEG_UNAVAILABLE"
           ? "导入已停止：未找到 FFmpeg。请在本地组件中导入新版媒体工具组件，重启后重试。原视频已保留。"
-          : "导入失败，请检查路径、媒体工具和磁盘空间后重试。";
+          : `导入失败（${/^[A-Z][A-Z0-9_]{0,95}$/.test(_error.message) ? _error.message : "LOCAL_SONG_UNAVAILABLE"}），请检查路径、媒体工具和磁盘空间后重试。`;
       }
       finally { if (localSongImportPending === pending) localSongImportPending = null; importButton.disabled = false; }
     };
