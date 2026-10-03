@@ -11,6 +11,7 @@ _ID = re.compile(r"^video_reply_setting:[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 REPLY_ROUTES = ("voice_reply", "singing_video", "voice_song_video")
 DEFAULT_ROUTE_VIDEOS = {"voice_reply": False, "singing_video": True, "voice_song_video": True}
 REPLY_TIERS = ("text", "audio", "video")
+DEFAULT_IMAGE = {"enabled": True, "resolution": "1K"}
 
 def tier_preferences(tier):
     if not isinstance(tier, str) or tier not in REPLY_TIERS:
@@ -86,7 +87,8 @@ class VideoReplySettingsStore:
         with self._lock:
             if self._committed.state != 'available':
                 return {'enabled': False, 'resolution': '1K'}
-            return dict(self._document.get('settings', {}).get('image', {'enabled': False, 'resolution': '1K'}))
+            # Photos are on until the user turns them off; an explicit choice is stored and kept.
+            return dict(self._document.get('settings', {}).get('image', DEFAULT_IMAGE))
     def mutate_image(self, request_id, image):
         request = self._request(request_id)
         self._validate_image(image)
