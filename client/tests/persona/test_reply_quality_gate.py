@@ -715,8 +715,13 @@ def test_style_delivery_never_relaxes_protected_or_unknown_findings(mode, code, 
             trusted_time=TrustedTime(datetime(2026, 8, 22, tzinfo=timezone.utc)),
             future_im_enabled=mode is ReplyMode.FUTURE_IM),
         reviewer=_Reviewer(first, final), rewriter=rewriter)
-    assert result.status is QualityGateStatus.BLOCKED
-    assert not result.accepted
+    if code == 'MEMORY_FABRICATION' and mode in (ReplyMode.TEXT_LETTER, ReplyMode.VOICE_REPLY, ReplyMode.FUTURE_IM):
+        # Never relaxed: the unsupported span is removed, not delivered.
+        assert result.status is QualityGateStatus.ACCEPTED_WITH_WARNINGS
+        assert result.text == 'y' * 185
+    else:
+        assert result.status is QualityGateStatus.BLOCKED
+        assert not result.accepted
     assert result.violation_codes == (code,)
     assert result.reviewer_calls == 2
     assert result.rewrite_calls == rewriter.calls == 1
@@ -799,3 +804,30 @@ def test_im_unavailable_review_is_not_a_soft_style_warning(status):
     assert not result.accepted
     assert result.error_code == 'REVIEWER_UNAVAILABLE'
     assert result.reviewer_calls == 1 and result.rewrite_calls == 0
+
+
+def _fabrication_review(*spans):
+    return ReviewResult(ReviewStatus.COMPLETED, ReviewVerdict.REWRITE,
+                        tuple(ReviewerViolation('MEMORY_FABRICATION', 'hard', s, e) for s, e in spans),
+                        ReviewerScores(80, 80, 80, 80), IntimacyRequest.NONE, ())
+
+
+def test_final_unsupported_memory_sentence_is_dropped_instead_of_failing_the_letter() -> None:
+    final_text = '今天的雨下得很大。你上次说的那家咖啡馆我也去了。睡前喝点热牛奶，早点休息。'
+    span = final_text.index('你上次'), final_text.index('睡前')
+    result = run_reply_quality_gate(
+        '初稿。', _context(),
+        reviewer=_Reviewer(_fabrication_review((0, 3)), _fabrication_review(span)),
+        rewriter=_Rewriter(final_text))
+    assert result.status is QualityGateStatus.ACCEPTED_WITH_WARNINGS
+    assert result.text == '今天的雨下得很大。睡前喝点热牛奶，早点休息。'
+    assert result.violation_codes == ('MEMORY_FABRICATION',)
+
+
+def test_reply_that_would_lose_most_of_its_text_still_fails() -> None:
+    final_text = '你上次说的那家咖啡馆我也去了，还点了你推荐的那款。好。'
+    result = run_reply_quality_gate(
+        '初稿。', _context(),
+        reviewer=_Reviewer(_fabrication_review((0, 3)), _fabrication_review((0, final_text.index('好')))),
+        rewriter=_Rewriter(final_text))
+    assert result.status is QualityGateStatus.BLOCKED
