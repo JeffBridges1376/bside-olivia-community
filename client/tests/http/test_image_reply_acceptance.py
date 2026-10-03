@@ -13,13 +13,14 @@ from runtime.video_reply_settings import VideoReplySettingsStore, VideoReplySett
 
 
 @pytest.mark.parametrize('legacy', [False, True])
-def test_image_preference_defaults_off_and_persists_without_changing_tier(tmp_path, legacy):
+def test_image_preference_defaults_on_and_persists_without_changing_tier(tmp_path, legacy):
     if legacy:
         (tmp_path / 'video_reply_settings.json').write_text(json.dumps({'schema_version': 1, 'settings': {}, 'ledger': {}}))
         settings = VideoReplySettingsStore(tmp_path)
     else:
         settings = VideoReplySettingsStore.initialize(tmp_path)
-    assert settings.image_snapshot() == {'enabled': False, 'resolution': '1K'}
+    # Photos are the main paid feature: on until the user turns them off.
+    assert settings.image_snapshot() == {'enabled': True, 'resolution': '1K'}
     before = settings.tier_snapshot()
     value = {'enabled': True, 'resolution': '4K'}
     settings.mutate_image('video_reply_setting:image', value)
@@ -135,3 +136,9 @@ def test_photo_status_exposes_only_sanitized_failure_facts(monkeypatch):
         result = (await server.route('GET', '/toy/image/status', {}, {'letter_id': row['letter_id']}))['data']
         assert 'imageErrorCode' not in result and 'imagePhase' not in result
     asyncio.run(scenario())
+
+
+def test_explicitly_disabled_photos_stay_off(tmp_path):
+    settings = VideoReplySettingsStore.initialize(tmp_path)
+    settings.mutate_image('video_reply_setting:image-off', {'enabled': False, 'resolution': '1K'})
+    assert VideoReplySettingsStore(tmp_path).image_snapshot() == {'enabled': False, 'resolution': '1K'}
