@@ -133,6 +133,25 @@ def _move_photo_after_paper(source: str) -> str:
     return (source[:start] + component + source[end:]).replace(LEGACY_PHOTO_MARKER, PHOTO_MARKER, 1)
 
 
+# The settings patch (2.1.1) puts the reply failure code first in the paper's props.
+# The sticker and photo anchors expect their own props first, so a client whose
+# stickers were already patched but whose photos were not could no longer start
+# (CLIENT_FRONTEND_REPAIR_FAILED / PHOTO_PROPS_INVALID). Patch without it, then
+# put it back exactly where it was.
+FAILURE_PROP='F(ks,{errorCode:i.mail.errorCode,'
+
+
+def _patch_with_failure_prop(source: str) -> str:
+    count=source.count(FAILURE_PROP)
+    if count:
+        source=source.replace(FAILURE_PROP,'F(ks,{')
+    source=patch_photos(patch_source(source))
+    if count:
+        if source.count('F(ks,{')!=count: raise ValueError('STICKER_FAILURE_PROP_INVALID')
+        source=source.replace('F(ks,{',FAILURE_PROP)
+    return source
+
+
 def patch_letter_stickers(path: Path | str) -> str:
     path=Path(path)
     assets={f'assets/letter-stickers/{p.name}':p.read_bytes() for p in ASSETS.iterdir() if p.suffix in {'.png','.gif','.json','.js'}}
@@ -144,7 +163,7 @@ def patch_letter_stickers(path: Path | str) -> str:
         if MAIN not in archive.namelist():
             return 'UNSUPPORTED_CLIENT'
         source=archive.read(MAIN).decode('utf-8')
-        changed=patch_photos(patch_source(source)).encode('utf-8')
+        changed=_patch_with_failure_prop(source).encode('utf-8')
         if changed==source.encode('utf-8') and all(n in archive.namelist() and archive.read(n)==data for n,data in assets.items()):
             return 'ALREADY_PATCHED'
         with tempfile.TemporaryDirectory(prefix='.letter-stickers-',dir=path.parent) as folder:
