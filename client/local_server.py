@@ -13,6 +13,7 @@ import sys
 import os as _os
 import re as _re
 import random
+import itertools
 import sqlite3
 import time
 import uuid
@@ -242,6 +243,10 @@ def _start_history_relationships(*, retry=False):
                     persona_policy=letters_adapter.get_persona_policy(),
                     command_service=private_world_command_service,
                     snapshot=private_world_port.snapshot)
+                state = queue.status()
+                if state.get('status') == 'FAILED':
+                    # The batch keeps its code; export it so a support bundle shows why.
+                    _safe_log('history_relationship_failed', status='FAILED', error_code=state.get('error_code'))
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -369,7 +374,11 @@ def _wire_reply_mode(value: object) -> str:
     return "text" if exact == ReplyMode.TEXT_LETTER.value else "video"
 
 
-_RUNTIME_DIAGNOSTIC_EVENTS: deque[dict[str, object]] = deque(maxlen=200)
+_RUNTIME_DIAGNOSTIC_EVENTS: deque[tuple[int, dict[str, object]]] = deque(maxlen=160)
+# Plain request lines are kept apart: a few minutes of polling used to fill the
+# whole export ring and push out the failure records a support bundle needs.
+_RUNTIME_REQUEST_EVENTS: deque[tuple[int, dict[str, object]]] = deque(maxlen=40)
+_RUNTIME_EVENT_SEQUENCE = itertools.count()
 _RUNTIME_DIAGNOSTIC_EVENT_RE = _re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _RUNTIME_DIAGNOSTIC_CODE_RE = _re.compile(r"^[A-Z][A-Z0-9_]{0,95}$")
 _RUNTIME_DIAGNOSTIC_REPLY_MODES = frozenset(
@@ -401,7 +410,8 @@ def _runtime_diagnostic_record(event: object, fields: Mapping[str, object]) -> d
 def runtime_diagnostic_event_snapshot() -> tuple[dict[str, object], ...]:
     """Return a detached, bounded projection for support export only."""
 
-    return tuple(dict(record) for record in _RUNTIME_DIAGNOSTIC_EVENTS)
+    merged = sorted([*_RUNTIME_DIAGNOSTIC_EVENTS, *_RUNTIME_REQUEST_EVENTS], key=lambda item: item[0])
+    return tuple(dict(record) for _, record in merged)
 
 
 def _safe_log(event: str, **fields) -> None:
@@ -409,7 +419,8 @@ def _safe_log(event: str, **fields) -> None:
     record = {"event": event, **fields}
     projected = _runtime_diagnostic_record(event, fields)
     if projected is not None:
-        _RUNTIME_DIAGNOSTIC_EVENTS.append(projected)
+        item = (next(_RUNTIME_EVENT_SEQUENCE), projected)
+        (_RUNTIME_REQUEST_EVENTS if event in {"request", "cors_preflight"} else _RUNTIME_DIAGNOSTIC_EVENTS).append(item)
     print(json.dumps(record, ensure_ascii=False, sort_keys=True))
 
 
@@ -3752,8 +3763,12 @@ async def route(
                 await asyncio.to_thread(library.delete, body.get("id"))
             songs = await asyncio.to_thread(library.songs)
             return ok({"songs": songs, "credit": "芙桃"})
-        except LocalSongError as exc:
-            code = str(exc)
+        except (LocalSongError, OSError) as exc:
+            # A folder Windows will not let us read used to escape as a bare 500,
+            # which the settings page could only show as "导入失败".
+            code = (str(exc) if isinstance(exc, LocalSongError) else
+                    "LOCAL_SONG_PERMISSION_DENIED" if isinstance(exc, PermissionError) else "LOCAL_SONG_PATH_UNREADABLE")
+            _safe_log("local_song_failed", status="FAILED", error_code=code)
             status = 404 if code == "LOCAL_SONG_NOT_FOUND" else 400
             if code == "LOCAL_SONG_CATALOG_INVALID":
                 status = 503

@@ -558,3 +558,15 @@ def test_slow_health_probes_export_partial_bundle_without_spawning_more_workers(
             await client.close()
 
     asyncio.run(scenario())
+
+
+def test_request_lines_do_not_push_failure_records_out_of_the_export_ring():
+    import local_server
+    local_server._RUNTIME_DIAGNOSTIC_EVENTS.clear()
+    local_server._RUNTIME_REQUEST_EVENTS.clear()
+    local_server._safe_log("history_relationship_failed", status="FAILED", error_code="HISTORY_RELATIONSHIP_FAILED")
+    for _ in range(500):
+        local_server._safe_log("request", method="GET")
+    records = local_server.runtime_diagnostic_event_snapshot()
+    assert records[0] == {"event": "history_relationship_failed", "status": "FAILED", "error_code": "HISTORY_RELATIONSHIP_FAILED"}
+    assert len(records) <= 200 and sum(r["event"] == "request" for r in records) == 40

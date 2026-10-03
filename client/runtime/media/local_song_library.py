@@ -234,8 +234,13 @@ class LocalSongLibrary:
                     candidates = [Path(directory) / name for name in sorted(names)
                                   if Path(name).suffix.lower() in _VIDEO
                                   and not (Path(directory) / name).is_symlink()]
+                    def size(path):
+                        try:
+                            return path.stat().st_size
+                        except OSError:
+                            return -1  # unreadable here; reported per file when imported
                     if candidates:
-                        files.append(max(candidates, key=lambda path: path.stat().st_size))
+                        files.append(max(candidates, key=size))
                     dirs[:] = []
                     if len(files) > 5000:
                         raise LocalSongError('LOCAL_SONG_TOO_MANY_FILES')
