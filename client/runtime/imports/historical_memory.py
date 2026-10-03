@@ -26,6 +26,9 @@ from runtime.memory.conversation_memory_identity import (
     normalize_conversation_memory_user_id,
 )
 from runtime.reply.reply_context import RelationshipStage
+from runtime.diagnostics.history_relationship import (
+    HISTORY_CAUSE_CODES, JEV_ERROR_CODES, project_history_failure_context,
+)
 
 
 _ERROR_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,95}$")
@@ -150,9 +153,55 @@ def exchanges_from_legacy_payload(
 class HistoricalRelationshipError(ValueError):
     """Fixed diagnostic code without provider text or historical content."""
 
-    def __init__(self, code: str):
+    def __init__(self, code: str, *, failure_context=None):
         self.code = code
+        self.failure_context = project_history_failure_context(failure_context)
         super().__init__(code)
+
+
+def _assessment_failure(exc, metrics):
+    code = getattr(exc, 'code', None)
+    if not isinstance(code, str) or code not in HISTORY_CAUSE_CODES:
+        # JEV raises fixed ValueError identifiers, not GatewayError objects.
+        candidate = exc.args[0] if isinstance(exc, ValueError) and exc.args else None
+        code = candidate if isinstance(candidate, str) and candidate in JEV_ERROR_CODES else 'UNKNOWN'
+    context = project_history_failure_context({**metrics, 'cause_code': code,
+        'exception_type': type(exc).__name__})
+    context.setdefault('exception_type', 'OTHER')
+    if code in JEV_ERROR_CODES:
+        error = 'PRIVATE_WORLD_HISTORY_' + code
+    else:
+        suffix = {
+            'INPUT_TOO_LONG': 'INPUT_TOO_LONG',
+            'PROVIDER_QUOTA_EXHAUSTED': 'QUOTA_EXHAUSTED',
+            'PROVIDER_TIMEOUT': 'TIMEOUT', 'PROVIDER_PROTOCOL': 'PROTOCOL',
+            'PROVIDER_UNAVAILABLE': 'UNAVAILABLE', 'PROVIDER_RETRYABLE': 'RETRYABLE',
+            'PROVIDER_REJECTED': 'REJECTED', 'PROVIDER_AUTH_FAILED': 'AUTH_FAILED',
+            'PROVIDER_USAGE_PENDING': 'USAGE_PENDING',
+            'PROVIDER_REQUEST_DUPLICATE': 'REQUEST_DUPLICATE',
+            'INVALID_INPUT': 'INVALID_INPUT', 'INVALID_MESSAGES': 'INVALID_INPUT',
+            'INVALID_MESSAGE': 'INVALID_INPUT', 'INVALID_ROLE': 'INVALID_INPUT',
+            'INVALID_MESSAGE_CONTENT': 'INVALID_INPUT',
+        }.get(code, 'FAILED')
+        if getattr(exc, 'status', None) in (401, 403):
+            suffix = 'AUTH_FAILED'
+        elif getattr(exc, 'status', None) == 429 and suffix != 'QUOTA_EXHAUSTED':
+            suffix = 'RATE_LIMITED'
+        error = 'PRIVATE_WORLD_HISTORY_LLM_' + suffix
+    return HistoricalRelationshipError(error, failure_context=context)
+
+
+def _semantic_assessment_input(messages, evidence_indexes):
+    state = {'policy': messages[0]['content'], 'history': json.loads(messages[1]['content'])}
+    questions = {field: {'instructions': '依照policy和有来源的双方历史判断' + field + '，0到100的绝对值；证据不明保守，不因信件数量加分。',
+                        'criteria': {str(i): i for i in range(101)}}
+                 for field in ('familiarity', 'trust', 'comfort', 'closeness', 'tension')}
+    questions['stage'] = {'instructions': '双方原文确认的关系阶段，不凭单方表白、亲密分数或昵称推断身份或权限。',
+                          'criteria': {s:s for s in ('unknown', 'acquaintance', 'familiar', 'close')}}
+    for index in sorted(evidence_indexes):
+        questions['e' + str(index)] = {'instructions': '历史序号' + str(index) + '是否是本次关系判断的必要证据？',
+                                     'criteria': {'yes':'是','no':'否'}}
+    return state, questions
 
 
 async def assess_historical_relationship(
@@ -177,51 +226,61 @@ async def assess_historical_relationship(
         "max_input_chars",
         10_000,
     )
-    if type(max_input_chars) is not int or max_input_chars < 1_000:
+    if type(max_input_chars) is not int or max_input_chars < 1:
         max_input_chars = 10_000
-    messages, evidence_indexes = _bounded_assessment_messages(
-        ordered,
-        persona_policy,
-        max_input_chars=max_input_chars,
-        previous_state=previous_state,
-    )
+    metrics = dict(failure_stage='prepare', max_input_chars=max_input_chars,
+                   exchange_count=len(ordered))
     try:
         from runtime.reply.jev_questions import configured_questions
         semantic_port = configured_questions()
+        measure_packet = None
+        max_input_bytes = None
         if semantic_port is not None:
-            state = {'policy': messages[0]['content'], 'history': json.loads(messages[1]['content'])}
-            questions = {field: {'instructions': '依照policy和有来源的双方历史判断' + field + '，0到100的绝对值；证据不明保守，不因信件数量加分。',
-                                'criteria': {str(i): i for i in range(101)}}
-                         for field in ('familiarity', 'trust', 'comfort', 'closeness', 'tension')}
-            questions['stage'] = {'instructions': '双方原文确认的关系阶段，不凭单方表白、亲密分数或昵称推断身份或权限。',
-                                  'criteria': {s:s for s in ('unknown', 'acquaintance', 'familiar', 'close')}}
-            for index in sorted(evidence_indexes):
-                questions['e' + str(index)] = {'instructions': '历史序号' + str(index) + '是否是本次关系判断的必要证据？',
-                                                'criteria': {'yes':'是','no':'否'}}
+            from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES
+            max_input_bytes = JEV_MAX_INPUT_BYTES
+            metrics['max_input_bytes'] = max_input_bytes
+            def measure_packet(messages, indexes):
+                state, questions = _semantic_assessment_input(messages, indexes)
+                sizer = getattr(semantic_port, 'request_size_bytes', None)
+                if callable(sizer):
+                    return sizer(state, questions, purpose='historical-relationship')
+                # Test/custom finite decision ports without a wire transport.
+                from runtime.reply.companion_decision import _json
+                return len(_json(dict(state=state, questions=questions,
+                                      purpose='historical-relationship')).encode('utf-8'))
+        messages, evidence_indexes = _bounded_assessment_messages(
+            ordered, persona_policy, max_input_chars=max_input_chars,
+            previous_state=previous_state, max_input_bytes=max_input_bytes,
+            measure_packet=measure_packet,
+        )
+        metrics['input_chars'] = sum(len(message['content']) for message in messages)
+        metrics['input_bytes'] = (measure_packet(messages, evidence_indexes) if measure_packet
+            else sum(len(message['content'].encode('utf-8')) for message in messages))
+        if semantic_port is not None:
+            metrics['failure_stage'] = 'jev'
+            state, questions = _semantic_assessment_input(messages, evidence_indexes)
             choices = await semantic_port.ask(state, questions, purpose='historical-relationship')
+            metrics['failure_stage'] = 'result_validation'
             payload = {k:int(choices[k]) for k in ('familiarity', 'trust', 'comfort', 'closeness', 'tension')}
             payload.update(relationship_stage=choices['stage'],
                            evidence_indexes=[i for i in sorted(evidence_indexes) if choices['e'+str(i)] == 'yes'])
             response = SimpleNamespace(text=json.dumps(payload))
         else:
+            metrics['failure_stage'] = 'gateway'
             response = await gateway.complete(
                 messages,
                 request_id=historical_relationship_command_id(ordered),
             )
+    except HistoricalRelationshipError:
+        raise
     except Exception as exc:
-        suffix = {
-            "PROVIDER_QUOTA_EXHAUSTED": "QUOTA_EXHAUSTED",
-            "PROVIDER_TIMEOUT": "TIMEOUT",
-            "PROVIDER_PROTOCOL": "PROTOCOL",
-            "PROVIDER_UNAVAILABLE": "UNAVAILABLE",
-            "PROVIDER_RETRYABLE": "RETRYABLE",
-            "PROVIDER_REJECTED": "REJECTED",
-        }.get(getattr(exc, "code", None), "FAILED")
-        if getattr(exc, "status", None) in (401, 403):
-            suffix = "AUTH_FAILED"
-        elif getattr(exc, "status", None) == 429:
-            suffix = "RATE_LIMITED" if suffix != "QUOTA_EXHAUSTED" else suffix
-        raise HistoricalRelationshipError("PRIVATE_WORLD_HISTORY_LLM_" + suffix) from None
+        if metrics['failure_stage'] == 'result_validation':
+            context = project_history_failure_context({**metrics, 'cause_code': 'RESULT_INVALID',
+                                                       'exception_type': type(exc).__name__})
+            raise HistoricalRelationshipError('PRIVATE_WORLD_HISTORY_RESULT_INVALID',
+                                              failure_context=context) from exc
+        raise _assessment_failure(exc, metrics) from exc
+    metrics['failure_stage'] = 'result_validation'
     try:
         payload = json.loads(response.text)
         required = {
@@ -250,7 +309,10 @@ async def assess_historical_relationship(
             tuple(indexes),
         )
     except (AttributeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-        raise HistoricalRelationshipError("PRIVATE_WORLD_HISTORY_RESULT_INVALID") from None
+        context = project_history_failure_context({**metrics, 'cause_code': 'RESULT_INVALID',
+                                                   'exception_type': type(exc).__name__})
+        raise HistoricalRelationshipError("PRIVATE_WORLD_HISTORY_RESULT_INVALID",
+                                          failure_context=context) from exc
 
 
 def _bounded_assessment_messages(
@@ -259,6 +321,8 @@ def _bounded_assessment_messages(
     *,
     max_input_chars: int,
     previous_state: Mapping[str, object] | None = None,
+    max_input_bytes: int | None = None,
+    measure_packet=None,
 ) -> tuple[tuple[dict[str, str], ...], frozenset[int]]:
     instruction = (
         "\n\nYou are performing a one-time private relationship-state migration. "
@@ -299,12 +363,22 @@ def _bounded_assessment_messages(
             ensure_ascii=False,
             separators=(",", ":"),
         )
-        if len(system_content) + len(user_content) <= max_input_chars:
-            messages = (
-                {"role": "system", "content": system_content},
-                {"role": "user", "content": user_content},
-            )
+        messages = (
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_content},
+        )
+        indexes = frozenset(index + 1 for index in selected)
+        input_chars = len(system_content) + len(user_content)
+        input_bytes = (measure_packet(messages, indexes) if measure_packet
+                       else len(system_content.encode('utf-8')) + len(user_content.encode('utf-8')))
+        char_fit = input_chars <= max_input_chars
+        byte_fit = max_input_bytes is None or input_bytes <= max_input_bytes
+        if char_fit and byte_fit:
             return messages, frozenset(index + 1 for index in selected)
+        # Large policies must not crowd five bounded evidence excerpts out of JEV.
+        if char_fit and not byte_fit and persona_limit > 64:
+            persona_limit = max(64, persona_limit // 2)
+            continue
         if field_limit > 40:
             field_limit = max(40, field_limit // 2)
             continue
@@ -314,7 +388,15 @@ def _bounded_assessment_messages(
         if persona_limit > 64:
             persona_limit = max(64, persona_limit // 2)
             continue
-        raise ValueError("historical relationship input budget is too small")
+        code = 'JEV_INPUT_TOO_LARGE' if char_fit and not byte_fit else 'INPUT_TOO_LONG'
+        metrics = dict(failure_stage='prepare', cause_code=code,
+            input_chars=input_chars, max_input_chars=max_input_chars,
+            input_bytes=input_bytes, exchange_count=len(ordered))
+        if max_input_bytes is not None:
+            metrics['max_input_bytes'] = max_input_bytes
+        error = ('PRIVATE_WORLD_HISTORY_' + code if code.startswith('JEV_')
+                 else 'PRIVATE_WORLD_HISTORY_LLM_INPUT_TOO_LONG')
+        raise HistoricalRelationshipError(error, failure_context=metrics)
 
 
 def _spaced_indexes(total: int, count: int) -> tuple[int, ...]:

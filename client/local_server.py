@@ -245,8 +245,9 @@ def _start_history_relationships(*, retry=False):
                     snapshot=private_world_port.snapshot)
                 state = queue.status()
                 if state.get('status') == 'FAILED':
-                    # The batch keeps its code; export it so a support bundle shows why.
-                    _safe_log('history_relationship_failed', status='FAILED', error_code=state.get('error_code'))
+                    from runtime.diagnostics.support_bundle import project_history_relationship_failure
+                    event = project_history_relationship_failure(state)
+                    _safe_log(event.pop('event'), **event)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -261,6 +262,20 @@ def _history_relationship_status():
     if _history_relationship_task is not None and not _history_relationship_task.done():
         result['status'] = 'RUNNING'
     return result
+
+
+def _history_relationship_diagnostic_snapshot():
+    """Read failure metadata from the durable queue even after a restart."""
+    if _history_relationship_queue is None:
+        return ()
+    try:
+        from runtime.diagnostics.support_bundle import project_history_relationship_failure
+        event = project_history_relationship_failure(_history_relationship_queue.status())
+        return (event,) if event else ()
+    except Exception:
+        return ()  # A broken queue must not prevent export of other diagnostics.
+
+
 _history_memory_admin_gate = threading.Lock()
 _history_import_operations: set[asyncio.Task] = set()
 
@@ -391,6 +406,9 @@ def _runtime_diagnostic_record(event: object, fields: Mapping[str, object]) -> d
 
     if not isinstance(event, str) or not _RUNTIME_DIAGNOSTIC_EVENT_RE.fullmatch(event):
         return None
+    if event == 'history_relationship_failed':
+        from runtime.diagnostics.support_bundle import project_history_relationship_failure
+        return project_history_relationship_failure({**fields, 'status': 'FAILED'})
     record: dict[str, object] = {"event": event}
     from runtime.diagnostics.failure_context import project_failure_context
     record.update(project_failure_context(fields))
