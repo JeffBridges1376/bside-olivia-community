@@ -1,9 +1,47 @@
 """Sidecar handler for bounded choice questions. Provider Client is injected."""
 import hashlib
 import json
+import math
 import re
 
 from runtime.reply.jev_limits import JEV_MAX_INPUT_BYTES as SEMANTIC_REQUEST_MAX_BYTES
+
+
+def _decision_detail(answer, criteria):
+    """Validate native Choice metadata; legacy choices carry no invented certainty."""
+    if (not isinstance(answer, dict) or not isinstance(answer.get('choice'), str)
+            or answer['choice'] not in criteria or answer.get('type', 'choice') != 'choice'):
+        raise ValueError('invalid_provider_response')
+    choice = answer['choice']
+    detail = {'choice': choice}
+    if 'probabilities' not in answer:
+        if 'confidence' in answer or answer.get('confidence_source', 'unavailable') != 'unavailable':
+            raise ValueError('invalid_provider_response')
+        return {**detail, 'confidence_source': 'unavailable'}
+    probabilities = answer['probabilities']
+    def probability(value):
+        return type(value) in (int, float) and 0 <= value <= 1 and math.isfinite(value)
+    if (not isinstance(probabilities, dict) or set(probabilities) != set(criteria)
+            or not all(probability(value) for value in probabilities.values())
+            or abs(sum(probabilities.values()) - 1) > .02 + 1e-12):
+        raise ValueError('invalid_provider_response')
+    n = len(criteria)
+    confidence = answer.get('confidence')
+    if ('confidence' not in answer and answer.get('confidence_source') != 'unavailable'
+            and (probabilities[choice] == max(probabilities.values())
+                 or answer.get('confidence_source') in ('probability-derived', 'deterministic'))):
+        # A fallback statistic is diagnostic only; native choice remains authoritative.
+        confidence = max(0.0, (probabilities[choice] - 1 / n) / (1 - 1 / n)) if n > 1 else 1.0
+    source = answer.get('confidence_source', 'upstream' if 'confidence' in answer else
+                        'probability-derived' if confidence is not None else 'unavailable')
+    if (('confidence' in answer and not probability(confidence))
+            or source not in ('upstream', 'probability-derived', 'deterministic', 'unavailable')
+            or ((confidence is None) != (source == 'unavailable'))
+            or (source == 'upstream' and 'confidence' not in answer)
+            or (source == 'deterministic' and (n != 1 or probabilities[choice] != 1 or confidence != 1))):
+        raise ValueError('invalid_provider_response')
+    return {**detail, 'probabilities': dict(probabilities),
+            **({'confidence': confidence} if confidence is not None else {}), 'confidence_source': source}
 
 
 def decide(client, packet):
@@ -30,5 +68,10 @@ def decide(client, packet):
     fixed = {key: next(iter(q['criteria'])) for key, q in native.items() if len(q['criteria']) == 1}
     questions = {key:q for key,q in native.items() if key not in fixed}
     answers = client.ask(packet['state'], questions) if questions else {}
-    return dict(decisions={**fixed, **{key: value['choice'] for key, value in answers.items()}},
+    if not isinstance(answers, dict) or set(answers) != set(questions):
+        raise ValueError('invalid_provider_response')
+    details = {key: _decision_detail(value, native[key]['criteria']) for key, value in answers.items()}
+    details.update({key: {'choice': choice, 'probabilities': {choice: 1.0}, 'confidence': 1.0,
+                          'confidence_source': 'deterministic'} for key, choice in fixed.items()})
+    return dict(decisions={key: value['choice'] for key, value in details.items()}, decision_details=details,
                 input_digest=hashlib.sha256(encoded.encode('utf-8')).hexdigest())

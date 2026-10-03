@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -166,6 +167,7 @@ class DailyLifeRuntime:
         self.error_code: str | None = None
         self._emotion = None
         self.reply_basis_provider = None
+        self._last_exchange_diagnostics: list[dict] = []
         with self.store._db() as db:
             db.execute(f"""
                 CREATE TABLE IF NOT EXISTS {_REFRESH_RETRY_TABLE} (
@@ -174,6 +176,15 @@ class DailyLifeRuntime:
                     retry_after TEXT NOT NULL
                 )
             """)
+
+    @property
+    def last_exchange_diagnostics(self) -> list[dict]:
+        """Copied, privacy-safe phases from the most recent exchange attempt."""
+        return deepcopy(self._last_exchange_diagnostics)
+
+    def _record_exchange_diagnostic(self, event: dict) -> None:
+        self._last_exchange_diagnostics.append(deepcopy(event))
+        del self._last_exchange_diagnostics[:-3]
 
     @property
     def emotion(self):
@@ -305,6 +316,9 @@ class DailyLifeRuntime:
 
     async def _complete(self, prompt: str, data: dict, request_id: str, *, response_format: dict | None = None) -> dict:
         from runtime.reply.jev_questions import configured_questions
+        if (request_id.startswith('life:') and ':conduct' not in request_id
+                and response_format not in (LIFE_FORMAT, _DAILY_FORMAT)):
+            self._last_exchange_diagnostics.clear()
         decision_port = configured_questions()
         if decision_port is not None:
             if response_format in (LIFE_FORMAT, _DAILY_FORMAT):
@@ -315,7 +329,8 @@ class DailyLifeRuntime:
                 return await conduct(decision_port, data, prompt, request_id,
                                      conflict=prompt == _CONFLICT_CONDUCT_PROMPT)
             if request_id.startswith('life:'):
-                return await extract(decision_port, data, prompt, request_id)
+                return await extract(decision_port, data, prompt, request_id,
+                                     diagnostic_observer=self._record_exchange_diagnostic)
             raise ValueError('JEV_DAILY_LIFE_DUTY_UNSUPPORTED')
         gateway = self.gateway()
         messages = ({"role": "system", "content": prompt}, {"role": "user", "content": _json(data)})

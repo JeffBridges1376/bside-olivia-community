@@ -1,0 +1,100 @@
+[
+  {
+    "case": "metacommunication_not_task",
+    "source_run": "effect-ab-20261003-042754-557309",
+    "question_id": "update_1_quote",
+    "criteria_keys": [
+      "none",
+      "u0",
+      "r0",
+      "r1",
+      "r2"
+    ],
+    "answer": {
+      "choice": "none",
+      "probabilities": {
+        "none": 0.73,
+        "r2": 0.24,
+        "r0": 0.02,
+        "u0": 0.0,
+        "r1": 0.01
+      },
+      "confidence": 0.64
+    },
+    "failed_bounds": [
+      "confidence_formula_tolerance"
+    ]
+  },
+  {
+    "case": "completed_repair_separate_future_inspection",
+    "source_run": "effect-ab-20261003-042754-749311",
+    "question_id": "update_0_quote",
+    "criteria_keys": [
+      "none",
+      "u0",
+      "r0",
+      "r1",
+      "r2",
+      "r3",
+      "r4",
+      "ua6",
+      "ua7",
+      "ra8",
+      "ra9",
+      "ra10",
+      "ra11"
+    ],
+    "answer": {
+      "choice": "r1",
+      "probabilities": {
+        "ra9": 0.0,
+        "u0": 0.01,
+        "r3": 0.11,
+        "none": 0.16,
+        "ua6": 0.0,
+        "r2": 0.01,
+        "r0": 0.04,
+        "r4": 0.0,
+        "ua7": 0.0,
+        "ra11": 0.0,
+        "ra8": 0.01,
+        "ra10": 0.01,
+        "r1": 0.65
+      },
+      "confidence": 0.6
+    },
+    "failed_bounds": [
+      "confidence_formula_tolerance"
+    ]
+  },
+  {
+    "case": "own_offset_distinct_from_opposite_friend",
+    "source_run": "effect-ab-20261003-042754-749311",
+    "question_id": "relationship",
+    "criteria_keys": [
+      "none",
+      "meaningful_exchange",
+      "shared_experience",
+      "support_received",
+      "boundary_respected",
+      "conflict",
+      "repair"
+    ],
+    "answer": {
+      "choice": "meaningful_exchange",
+      "probabilities": {
+        "boundary_respected": 0.01,
+        "shared_experience": 0.0,
+        "support_received": 0.0,
+        "none": 0.5,
+        "repair": 0.0,
+        "conflict": 0.0,
+        "meaningful_exchange": 0.49
+      },
+      "confidence": 0.41
+    },
+    "failed_bounds": [
+      "selected_probability_maximum"
+    ]
+  }
+]

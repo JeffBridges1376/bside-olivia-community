@@ -10,12 +10,35 @@ class Port:
         self.calls = []
 
     async def ask(self, state, questions, *, purpose):
-        assert not self.calls, 'one module evaluation must use exactly one provider request'
+        assert not self.calls or purpose == 'exchange-anchored-facts', 'only selected evidence permits a dependent request'
         self.calls.append((state, questions, purpose))
-        answers = {key: self.choose(key, question, state) for key, question in questions.items()}
-        # Fixtures name the domain statuses; the wire uses a shared short-code catalog.
-        statuses = {value: key for key, value in state.get('status_catalog', {}).items()}
-        return {key: statuses.get(value, value) if key.endswith('_status') else value for key, value in answers.items()}
+        answers = {}
+        for key, question in questions.items():
+            if key.endswith('_existing_match'):
+                old = self.choose(key.removesuffix('_existing_match') + '_identity', question, state)
+                answers[key] = old if old.startswith('p') else 'none'
+            elif key.endswith('_applicability_kind'):
+                prefix = key.removesuffix('_applicability_kind')
+                status = self.choose(prefix + '_status', question, state)
+                identity = self.choose(prefix + '_identity', questions[prefix + '_existing_match'], state)
+                no_projects = not any(self.calls[0][0]['exchange']['previous_state'].values())
+                answers[key] = status.split('_', 1)[0] if status.startswith(('linli_', 'shared_')) and (
+                    identity != 'none' or no_projects) else 'none'
+            else:
+                answers[key] = first(key, question, state) if key.endswith('_evidence') else self.choose(key, question, state)
+        # Preserve existing semantic fixtures as the wire now binds evidence,
+        # carries new kind in identity, and asks plain status for that action.
+        for key, value in list(answers.items()):
+            if not key.startswith('update_'):
+                continue
+            if key.endswith('_status') and value.startswith(('linli_', 'shared_')):
+                answers[key] = value.split('_', 1)[1]
+            if key.endswith('_evidence'):
+                quote_key = key.removesuffix('_evidence') + '_quote'
+                selected = self.choose(quote_key, self.calls[0][1][quote_key], state)
+                answers[key] = selected if selected in questions[key]['criteria'] else next(
+                    ref for ref in questions[key]['criteria'] if ref != 'none')
+        return answers
 
 
 def first(key, question, state):
@@ -59,16 +82,15 @@ def test_proactive_input_cannot_claim_user_agreement():
             'active_boundaries': [], 'previous_state': {}}
     port = Port(first)
     asyncio.run(extract(port, data, '', 'life:p'))
-    criteria = port.calls[0][0]['status_catalog'].values()
-    assert 'shared_planned' not in criteria
-    assert 'shared_awaiting_user' in criteria
+    assert not any(key.endswith('_status') and key.startswith('update_') for key in port.calls[0][1])
+    assert port.calls[0][0]['exchange']['origin'] == 'proactive'
 
 
 def test_routine_is_selected_and_not_silently_empty():
     from runtime.private_world.jev_exchange import extract
     def choose(key, q, state):
         return {'routine': 'set', 'routine_quote': 'u0', 'sleep_hour': '23',
-                'sleep_minute_tens': '3', 'sleep_minute_ones': '0', 'utc_sign': 'east', 'utc_hours': '8', 'utc_minutes': '0'}.get(key, first(key, q, state))
+                'sleep_minute': '30', 'utc_offset': '480'}.get(key, first(key, q, state))
     data = {'user_letter': '我住上海，通常每天23点30分睡觉。', 'linli_reply': '知道了。',
             'previous_state': {}, 'active_boundaries': [], 'origin': 'user'}
     result = asyncio.run(extract(Port(choose), data, '', 'life:r'))
@@ -76,25 +98,25 @@ def test_routine_is_selected_and_not_silently_empty():
 
 
 @pytest.mark.parametrize('minute', range(60))
-def test_sleep_minute_digits_preserve_every_exact_minute(minute):
+def test_single_sleep_minute_choice_preserves_every_exact_minute(minute):
     from runtime.private_world.jev_exchange import extract
     data = {'user_letter': f'我通常在东京晚上23点{minute:02d}分睡觉。', 'linli_reply': '知道了。'}
     def choose(key, q, state):
         return {'routine': 'set', 'routine_quote': 'u0', 'sleep_hour': '23',
-            'sleep_minute_tens': str(minute // 10), 'sleep_minute_ones': str(minute % 10),
-            'utc_sign': 'east', 'utc_hours': '9', 'utc_minutes': '0'}.get(key, first(key, q, state))
+            'sleep_minute': str(minute),
+            'utc_offset': '540'}.get(key, first(key, q, state))
     port = Port(choose)
     result = asyncio.run(extract(port, data, '', 'life:minute'))
-    assert len(port.calls) == 1
+    assert len(port.calls) == 2
+    assert len(port.calls[1][1]['sleep_minute']['criteria']) == 61
     assert result['routine']['sleep_minute'] == 23 * 60 + minute
 
 
-@pytest.mark.parametrize('tens,ones', [('unknown', '0'), ('0', 'unknown')])
-def test_unknown_sleep_minute_digit_cannot_become_zero(tens, ones):
+def test_unknown_sleep_minute_cannot_become_zero():
     from runtime.private_world.jev_exchange import extract
     def choose(key, q, state):
         return {'routine': 'set', 'routine_quote': 'u0', 'sleep_hour': '23',
-            'sleep_minute_tens': tens, 'sleep_minute_ones': ones, 'utc_sign': 'east', 'utc_hours': '9', 'utc_minutes': '0'}.get(key, first(key, q, state))
+            'sleep_minute': 'unknown', 'utc_offset': '540'}.get(key, first(key, q, state))
     with pytest.raises(ValueError, match='JEV_EXCHANGE_ROUTINE_EVIDENCE'):
         asyncio.run(extract(Port(choose), {'user_letter': '我通常在东京晚上十一点多睡。', 'linli_reply': '好。'}, '', 'life:unknown'))
 
@@ -113,7 +135,7 @@ def test_conduct_never_gets_generated_reply():
     assert all('linli_reply' not in state for state, _, _ in port.calls)
 
 
-def test_quote_catalog_uses_shared_original_and_identity_in_same_request():
+def test_quote_catalog_uses_shared_original_then_bound_identity():
     from runtime.private_world.jev_exchange import extract
     def choose(key, q, state):
         return {'update_0_quote': 'u0', 'update_0_status': 'shared_cancelled', 'update_0_identity': 'p0'}.get(key, first(key, q, state))
@@ -125,10 +147,12 @@ def test_quote_catalog_uses_shared_original_and_identity_in_same_request():
     result = asyncio.run(extract(port, data, 'APPROVED_CONTRACT', 'life:compact'))
     assert result['updates'][0]['quote'] == data['user_letter']
     assert result['updates'][0]['id'] == 'book'
-    assert len(port.calls) == 1
-    assert port.calls[0][1]['update_0_identity']['criteria']['p0'] == 'p0'
-    assert all(len(question['instructions']) < 60 for key, question in port.calls[0][1].items()
-               if key.startswith('update_'))
+    assert len(port.calls) == 2
+    assert port.calls[1][1]['update_0_existing_match']['criteria']['p0']['id'] == 'book'
+    assert port.calls[1][1]['update_0_existing_match']['criteria']['p0']['kind'] == 'shared'
+    assert set(port.calls[1][1]['update_0_applicability_kind']['criteria']) == {'none', 'shared'}
+    assert all(data['user_letter'] in question['instructions'] for key, question in port.calls[1][1].items()
+               if key.startswith('update_0_'))
     for state, questions, purpose in port.calls:
         assert 'NOT_FOR_EXCHANGE' not in str(state)
         for key, span in state['quotes'].items():
@@ -158,14 +182,18 @@ def test_exchange_directory_drops_old_bodies_but_keeps_identity_state_and_curren
     before = copy.deepcopy(data)
     def choose(key, q, state):
         assert 'MUST_STAY_HOST' not in str(state)
-        assert state['exchange']['previous_state']['shared'][0] == {key: data['previous_state']['shared'][0][key]
-            for key in ('id', 'title', 'kind', 'actor', 'status', 'updated_at')}
+        if 'previous_state' in state['exchange']:
+            names = ('id', 'title', 'kind', 'actor', 'status') + (('updated_at',) if 'action_anchors' in state else ())
+            assert state['exchange']['previous_state']['shared'][0] == {key: data['previous_state']['shared'][0][key]
+                for key in names}
+        if key in ('update_0_identity', 'update_0_existing_match'):
+            assert q['criteria']['p0']['id'] == 'stable-book'
         assert state['exchange']['previous_observation']['note'] == '刚看完这一章。'
         assert state['sources']['user_letter'] == '书先别寄。'
         return {'update_0_quote': 'u0', 'update_0_status': 'shared_cancelled', 'update_0_identity': 'p0'}.get(key, first(key, q, state))
     port = Port(choose)
     result = asyncio.run(extract(port, data, 'APPROVED_CONTRACT', 'life:minimal'))
-    assert len(port.calls) == 1 and data == before
+    assert len(port.calls) == 2 and data == before
     assert result['updates'][0]['id'] == 'stable-book'
     assert result['updates'][0]['title'] == '寄书'
     assert result['updates'][0]['quote'] == data['user_letter']
@@ -236,6 +264,8 @@ def test_jev_canonical_evidence_keeps_multiple_independent_promises():
     data = {'user_letter': '好。', 'linli_reply': '明天寄书，后天发录音。', 'previous_state': {}, 'active_boundaries': []}
     result = asyncio.run(extract(Port(choose), data, '', 'life:separate'))
     assert {u['quote'] for u in result['updates']} == {'明天寄书，', '后天发录音。'}
+    assert {u['detail'] for u in result['updates']} == {data['linli_reply']}
+    assert {u['title'] for u in result['updates']} == {'明天寄书，', '后天发录音。'}
     assert len({u['id'] for u in result['updates']}) == 2
 
 
@@ -261,14 +291,14 @@ def test_conduct_violation_requires_existing_boundary_and_exact_user_quote():
     assert all('linli_reply' not in state for state, _, _ in port.calls)
 
 
-def test_single_request_rejects_wrong_project_kind_without_second_judgment():
+def test_existing_project_kind_is_derived_from_identity():
     from runtime.private_world.jev_exchange import extract
     port = Port(lambda key, q, state: {'update_0_quote': 'r0', 'update_0_status': 'linli_completed', 'update_0_identity': 'p0'}.get(key, first(key, q, state)))
     data = {'user_letter': '好。', 'linli_reply': '我练完了。', 'previous_state': {
         'shared': [{'id': 'ours', 'kind': 'shared', 'title': '一起练'}]}}
-    with pytest.raises(ValueError, match='JEV_EXCHANGE_IDENTITY_KIND'):
-        asyncio.run(extract(port, data, '', 'life:kind'))
-    assert len(port.calls) == 1
+    result = asyncio.run(extract(port, data, '', 'life:kind'))
+    assert result['updates'][0]['kind'] == 'shared'
+    assert len(port.calls) == 2
 
 
 def test_missing_conduct_quote_cannot_commit_an_allegation():
@@ -305,18 +335,16 @@ def test_question_quote_with_no_status_or_identity_is_not_a_world_fact():
             'previous_state': {'projects': [{'id': 'practice', 'title': '练琴', 'kind': 'linli'}]}}
     port = Port(lambda key, q, state: 'u0' if key == 'update_0_quote' else first(key, q, state))
     result = asyncio.run(extract(port, data, '', 'life:question'))
-    assert result['updates'] == [] and len(port.calls) == 1
+    assert result['updates'] == [] and len(port.calls) == 2
 
 
-@pytest.mark.parametrize('status,identity', [('none', 'p0'), ('linli_ongoing', 'none')])
-def test_only_one_missing_change_field_still_rejects_conflicting_slot(status, identity):
+def test_none_status_after_matching_identity_means_no_change():
     from runtime.private_world.jev_exchange import extract
     data = {'user_letter': '现在呢？', 'linli_reply': '我正在练琴。',
             'previous_state': {'projects': [{'id': 'practice', 'title': '练琴', 'kind': 'linli'}]}}
-    port = Port(lambda key, q, state: {'update_0_quote': 'r0', 'update_0_status': status,
-        'update_0_identity': identity}.get(key, first(key, q, state)))
-    with pytest.raises(ValueError, match='JEV_EXCHANGE_SLOT_CONFLICT'):
-        asyncio.run(extract(port, data, '', 'life:conflict'))
+    port = Port(lambda key, q, state: {'update_0_quote': 'r0', 'update_0_status': 'none',
+        'update_0_identity': 'p0'}.get(key, first(key, q, state)))
+    assert asyncio.run(extract(port, data, '', 'life:conflict'))['updates'] == []
 
 
 def test_incomplete_relationship_does_not_discard_evidenced_life_update():
@@ -334,7 +362,7 @@ def test_incomplete_relationship_does_not_discard_evidenced_life_update():
 def test_role_activity_cannot_be_sourced_from_user_guess():
     from runtime.private_world.jev_exchange import extract
     port = Port(lambda key, q, state: {'update_0_quote': 'u0', 'update_0_status': 'linli_ongoing'}.get(key, first(key, q, state)))
-    with pytest.raises(ValueError, match='JEV_EXCHANGE_IDENTITY_KIND'):
+    with pytest.raises(ValueError, match='JEV_RESPONSE_INVALID'):
         asyncio.run(extract(port, {'user_letter': '你正在练琴吧？', 'linli_reply': '你猜。'}, '', 'life:actor'))
 
 
@@ -358,7 +386,7 @@ def test_realistic_letter_with_existing_projects_fits_one_packet():
     state, questions, purpose = port.calls[0]
     size = len(json.dumps(dict(state=state, questions=questions, purpose=purpose), ensure_ascii=False, separators=(',', ':')).encode())
     assert size < JEV_MAX_INPUT_BYTES
-    assert len(questions) == 29  # 3 update and 2 boundary slots, three addressing quotes, the world-update gate
+    assert len(questions) == 17  # anchors and independent facts; routine values depend on its proof
     assert state['sources'] == {key: data[key] for key in ('user_letter', 'linli_reply')}
     assert _EXCHANGE_LIFE_PROMPT not in str(state)
     assert all(value == key for key, value in questions['update_0_quote']['criteria'].items() if key != 'none')
@@ -406,21 +434,23 @@ def test_run_on_sentence_splits_only_at_clause_marks():
     assert all(len(quote) <= 240 and sentence.find(quote) >= 0 for quote in quotes.values())
 
 
-def test_more_changes_than_common_slots_ask_every_slot_in_a_second_request():
+def test_more_changes_than_common_slots_expand_anchors_then_bind_fields():
     from runtime.private_world.jev_exchange import extract
     reply = '我练完琴了。信也寄了。菜买好了。碗洗了。'
     class Overflow(Port):
         async def ask(self, state, questions, *, purpose):
             self.calls.append(questions)
-            statuses = {value: key for key, value in state['status_catalog'].items()}
             if len(self.calls) == 1:
                 return {key: 'unsupported' if key == 'capacity' else first(key, q, state) for key, q in questions.items()}
             picks = {**{f'update_{i}_quote': f'r{i}' for i in range(4)},
-                     **{f'update_{i}_status': statuses['linli_completed'] for i in range(4)}}
+                     **{f'update_{i}_evidence': f'r{i}' for i in range(4)},
+                     **{f'update_{i}_status': 'completed' for i in range(4)},
+                     **{f'update_{i}_existing_match': 'none' for i in range(4)},
+                     **{f'update_{i}_applicability_kind': 'linli' for i in range(4)}}
             return {key: picks.get(key, 'ok' if key == 'capacity' else first(key, q, state)) for key, q in questions.items()}
     port = Overflow(first)
     result = asyncio.run(extract(port, {'user_letter': '好。', 'linli_reply': reply}, '', 'life:many'))
-    assert [sum(key.endswith('_quote') and key.startswith('update_') for key in q) for q in port.calls] == [3, 12]
+    assert [sum(key.endswith('_quote') and key.startswith('update_') for key in q) for q in port.calls] == [3, 12, 0]
     assert [item['quote'] for item in result['updates']] == ['我练完琴了。', '信也寄了。', '菜买好了。', '碗洗了。']
 
 
@@ -437,10 +467,70 @@ def test_capacity_still_unsupported_with_every_slot_fails_closed():
 
 
 @pytest.mark.parametrize('sign,hours,minutes,offset', [('east', '5', '30', 330), ('west', '3', '30', -210), ('east', '0', '0', 0)])
-def test_utc_offset_parts_compose_exact_minutes(sign, hours, minutes, offset):
+def test_single_utc_offset_choice_preserves_exact_minutes(sign, hours, minutes, offset):
     from runtime.private_world.jev_exchange import extract
     def choose(key, q, state):
-        return {'routine': 'set', 'routine_quote': 'u0', 'sleep_hour': '23', 'sleep_minute_tens': '0', 'sleep_minute_ones': '0',
-                'utc_sign': sign, 'utc_hours': hours, 'utc_minutes': minutes}.get(key, first(key, q, state))
+        return {'routine': 'set', 'routine_quote': 'u0', 'sleep_hour': '23', 'sleep_minute': '0',
+                'utc_offset': str(offset)}.get(key, first(key, q, state))
     result = asyncio.run(extract(Port(choose), {'user_letter': '我通常23点睡。', 'linli_reply': '好。'}, '', 'life:tz'))
     assert result['routine']['utc_offset_minutes'] == offset
+
+
+@pytest.mark.parametrize('literal,selected,expected', [('UTC+03:30', '-210', 210), ('UTC-08:00', '480', -480),
+                                                      ('UTC+05:45', '-345', 345), ('UTC+00:00', '0', 0)])
+def test_explicit_utc_sign_normalizes_a_known_matching_offset(literal, selected, expected):
+    from runtime.private_world.jev_exchange import extract
+    data = {'user_letter': f'我通常按{literal}当地时间23点17分睡。', 'linli_reply': '好。'}
+    def choose(key, question, state):
+        return {'routine': 'set', 'routine_quote': 'u0', 'sleep_hour': '23', 'sleep_minute': '17',
+                'utc_offset': selected, 'utc_offset_literal': 't0'}.get(key, first(key, question, state))
+    result = asyncio.run(extract(Port(choose), data, '', 'life:utc-sign'))
+    assert result['routine']['utc_offset_minutes'] == expected
+
+
+def test_explicit_utc_literal_does_not_turn_unknown_semantic_offset_into_a_fact():
+    from runtime.private_world.jev_exchange import extract
+    data = {'user_letter': '我通常按UTC+03:30当地时间23点17分睡。', 'linli_reply': '好。'}
+    def choose(key, question, state):
+        return {'routine': 'set', 'routine_quote': 'u0', 'sleep_hour': '23', 'sleep_minute': '17',
+                'utc_offset': 'unknown', 'utc_offset_literal': 't0'}.get(key, first(key, question, state))
+    with pytest.raises(ValueError, match='JEV_EXCHANGE_ROUTINE_EVIDENCE'):
+        asyncio.run(extract(Port(choose), data, '', 'life:utc-unknown'))
+
+
+@pytest.mark.parametrize('literal,selected', [
+    ('UTC+03:30', '300'),
+    ('UTC+03:30或UTC-03:30', '-210'),
+    ('UTC+25:00', '300'),
+    ('UTC+03:77', '-180'),
+    ('UTC+03.5', '-180'),
+])
+def test_utc_math_does_not_override_distinct_ambiguous_or_invalid_evidence(literal, selected):
+    from runtime.private_world.jev_exchange import extract
+    data = {'user_letter': f'我通常按{literal}当地时间23点17分睡。', 'linli_reply': '好。'}
+    def choose(key, question, state):
+        if key == 'utc_offset_literal':
+            return 't0' if literal == 'UTC+03:30' else 'none'
+        return {'routine': 'set', 'routine_quote': 'u0', 'sleep_hour': '23', 'sleep_minute': '17',
+                'utc_offset': selected}.get(key, first(key, question, state))
+    result = asyncio.run(extract(Port(choose), data, '', 'life:utc-nonliteral'))
+    assert result['routine']['utc_offset_minutes'] == int(selected)
+
+
+@pytest.mark.parametrize('letter', [
+    '我通常23点17分睡，但我不采用UTC+03:30。',
+    '家人采用UTC+03:30，我本人固定按自己的当地时间23点17分睡。',
+])
+def test_inapplicable_utc_literal_cannot_change_a_same_magnitude_offset(letter):
+    from runtime.private_world.jev_exchange import extract
+    def choose(key, question, state):
+        if key == 'utc_offset_literal':
+            assert question['criteria']['t0']['text'] == 'UTC+03:30'
+            return 'none'
+        return {'routine': 'set', 'routine_quote': 'u0', 'sleep_hour': '23', 'sleep_minute': '17',
+                'utc_offset': '-210'}.get(key, first(key, question, state))
+    port = Port(choose)
+    result = asyncio.run(extract(port, {'user_letter': letter}, '', 'life:utc-inapplicable'))
+    assert 'utc_offset_literal' in port.calls[1][1]
+    assert result['routine']['utc_offset_minutes'] == -210
+    assert len(port.calls) == 2
