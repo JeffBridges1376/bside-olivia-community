@@ -445,6 +445,7 @@ async def _generate_billed(server, event, row):
                                 'turn_is_current': turn_is_current,
                                 'record_stage_timing': record_stage_timing,
                                 'generation_attempts': row.get('generation_attempts', 1),
+                                 'last_decision_rejection_reason': row.get('decision_rejection_reason'),
                                 'companion_decision': row.get('companion_decision'),
                                 'story_continuation': next(({
                                     'source_id': 'speech:' + str(r.get('letter_id')),
@@ -482,8 +483,11 @@ async def _generate_billed(server, event, row):
             raise RuntimeError('PERSONAL_CHAT_GENERATION_TIMEOUT') from None
         companion = getattr(result, 'companion_decision', None)
         contact = getattr(result, 'proactive_decision', None)
-        if not turn_is_current() and (companion is not None or row.get('companion_decision') is not None
-                                      or getattr(result, 'error_code', None) in JEV_ERROR_CODES):
+        if not turn_is_current():
+            shadow = getattr(result, 'semantic_shadow_task', None)
+            if shadow is not None:
+                shadow.cancel()
+                await asyncio.gather(shadow, return_exceptions=True)
             return None  # The service refreshes intake before using this result.
         if companion is not None:
             await save_companion_decision(companion)
@@ -516,11 +520,11 @@ async def _generate_billed(server, event, row):
             raise RuntimeError(_generation_failure_code(result.error_code))
         if contact is not None and contact['decision']['action'] == 'defer':
             return '[[skip]]'
-        if companion is not None and row['companion_timing'] in {'wait_user', 'defer', 'no_reply'}:
-            return None
         from .decision import decode
         try:
-            decision = decode(result.text, user=event.text, now=datetime.now().timestamp(), proactive=row.get('origin') == 'proactive')
+            decision = decode(result.text, user=event.text, now=datetime.now().timestamp(),
+                              proactive=row.get('origin') == 'proactive',
+                              allow_user_silence=getattr(result, 'silence_authorized', False) is True)
         except ValueError as exc:
             # Diagnostic categories only; never persist rejected model text.
             reason = getattr(exc, 'reason', 'UNKNOWN')
@@ -534,7 +538,33 @@ async def _generate_billed(server, event, row):
             server._safe_log('personal_chat_controls_dropped', reason=decision['dropped_controls'])
         if contact is not None and decision['skip']:
             raise RuntimeError('JEV_PLAN_UNSUPPORTED')
+        if not turn_is_current():
+            return None  # Intake changed: apply neither stale controls nor silence.
+        # User controls are independently validated against this original input.
+        # They take effect even when the user asks for no outgoing reply; do not
+        # pretend that a quiet or failed outbound turn was delivered.
+        changed_controls = False
+        for kind, until in [('initiative', 'pause_until'), ('letter', 'letter_until')]:
+            if decision[kind] != 'keep':
+                row[kind + '_preference'] = decision[kind]
+                row[until] = decision[until]
+                changed_controls = True
+        if decision['followup_at'] is not None:
+            row.update(followup_at=decision['followup_at'], followup_quote=decision['evidence'])
+            changed_controls = True
+        elif decision['followup_cancel'] or decision['initiative'] == 'pause' and decision['pause_until'] is None:
+            row['followup_at'] = None
+            changed_controls = True
+        if changed_controls:
+            row['user_controls_applied'] = True
+            await persist_chat(server)
         if decision['skip']:
+            if row.get('origin') != 'proactive':
+                kind = decision['silence_kind']
+                row.update(companion_timing=kind, companion_delivery=None,
+                           silence_reason='USER_REQUESTED_WAIT' if kind == 'wait_user' else 'USER_REQUESTED_NO_REPLY')
+                await persist_chat(server)
+                return None
             return '[[skip]]'
         text, mode = decision['text'].strip(), decision['delivery']
         from .decision import repeats_recent
@@ -570,15 +600,7 @@ async def _generate_billed(server, event, row):
         from .mailbox_notice import attach_notice
         if companion is None and contact is None:
             text = attach_notice(getattr(server.store, 'letters', []), row, text)
-        for kind, until in [('initiative', 'pause_until'), ('letter', 'letter_until')]:
-            if decision[kind] != 'keep':
-                row[kind + '_preference'] = decision[kind]
-                row[until] = decision[until]
         row['letter_invitation'] = contact is None and allowed and decision.get('letter_invitation', False)
-        if decision['followup_at'] is not None:
-            row.update(followup_at=decision['followup_at'], followup_quote=decision['evidence'])
-        elif decision['followup_cancel'] or decision['initiative'] == 'pause' and decision['pause_until'] is None:
-            row['followup_at'] = None
         sticker = decision['sticker'] if decision['sticker'] in sticker_choices else None
         if sticker and companion is None and contact is None:
             row['sticker_id'] = sticker
@@ -596,6 +618,9 @@ async def _generate_billed(server, event, row):
         if getattr(result, 'reviewed_content', None) is not None:
             row['content_review'] = dict(version=1, hashes=result.reviewed_content)
         if script:
+            if ((row.get('companion_decision') or {}).get('plan', {}).get('proposal', {}).get('timing')
+                    in {'wait_user', 'defer', 'no_reply'}):
+                raise RuntimeError('JEV_PLAN_UNSUPPORTED')
             if not speech_intent or event.channel != 'qq':
                 raise ValueError('SPEECH_INTENT_INVALID')
             row.update(speech_script=script, speech_intent=speech_intent, requested_format='text',
