@@ -125,6 +125,7 @@ class PipelineResult:
     stage_cache_hits: dict[str, int] = field(default_factory=dict)
     stage_actual_calls: dict[str, int] = field(default_factory=dict)
     failure_context: dict[str, object] = field(default_factory=dict)
+    decision_dropped_media: str | None = None
 
 
 @dataclass(frozen=True)
@@ -590,7 +591,8 @@ class ReplyPipeline:
                 from runtime.personal_chat.decision import decode
                 now = datetime.fromisoformat(chat_metadata['decision_now']).timestamp()
                 options = dict(user=user_text, now=now, proactive=bool(chat_metadata.get('proactive')),
-                               allow_user_silence=bool(ordinary_chat))
+                               allow_user_silence=bool(ordinary_chat),
+                               allow_speech=bool(speech_request and chat_metadata.get('channel') == 'qq'))
                 decision = decode(clean_text, **options)
                 if reconsidered_silence and decision.get('speech'):
                     return PipelineResult(candidate.request_id, ReplyState.FAILED,
@@ -599,6 +601,9 @@ class ReplyPipeline:
                 envelope = json.loads(fenced.group(1) if fenced else clean_text)
                 if isinstance(envelope, list):
                     envelope = envelope[0]
+                if decision.get('dropped_media'):
+                    envelope.pop('speech', None)
+                    clean_text = json.dumps(envelope, ensure_ascii=False)
                 review_text = decision['text']
             except (ValueError, TypeError, KeyError) as exc:
                 return PipelineResult(candidate.request_id, ReplyState.FAILED,
@@ -748,6 +753,7 @@ class ReplyPipeline:
             companion_delivery=companion_delivery,
             silence_authorized=silence_authorized,
             proactive_decision=proactive_decision,
+            decision_dropped_media=decision.get('dropped_media') if envelope is not None else None,
         )
 
 
