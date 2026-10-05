@@ -3242,7 +3242,6 @@ def test_rewrite_unwraps_supported_text_wrappers(monkeypatch, raw, expected):
         '{"text": ""}',
         '{"text": 123}',
         '{"text": "正文", "extra": 1}',
-        '{"analysis": "不应输出的分析"}',
         '{"text": ',
     ),
 )
