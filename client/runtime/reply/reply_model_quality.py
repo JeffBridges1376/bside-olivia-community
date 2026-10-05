@@ -1051,27 +1051,35 @@ class GatewayPersonaRewriter:
         if not fact_sentences:
             fenced_depth = 0
             for _ in range(3):
-                if not rewritten.startswith("{"):
+                if rewritten.startswith("```"):
+                    # One complete, supported code block only: the body may not
+                    # contain another fence, so two adjacent blocks cannot be
+                    # spliced into one accepted payload.
                     fenced = re.fullmatch(
-                        r"```(?:json)?[ \t]*\n(?P<body>.*?)\n```[ \t]*",
+                        r"```(?:json)?[ \t]*\n(?P<body>(?:(?!```).)*)\n```[ \t]*",
                         rewritten,
                         re.S,
                     )
                     if fenced is None:
-                        break
+                        raise RuntimeError("REWRITE_OUTPUT_INVALID")
                     rewritten = fenced.group("body").strip()
                     fenced_depth += 1
                     continue
+                if not rewritten.startswith(("{", "[")):
+                    break
                 try:
                     envelope = json.loads(rewritten)
                 except ValueError:
-                    # Looks like a wrapper attempt but is not valid JSON.
+                    # Looks like a JSON wrapper but is not valid JSON: statement
+                    # text merely bracketed by the author is left alone, while a
+                    # truncated wrapper fails closed.
+                    if rewritten.startswith(("{", "[{")):
+                        raise RuntimeError("REWRITE_OUTPUT_INVALID")
+                    break
+                if isinstance(envelope, list):
+                    # Arrays are not part of the generation envelope contract.
                     raise RuntimeError("REWRITE_OUTPUT_INVALID")
                 if not isinstance(envelope, dict) or "text" not in envelope:
-                    # A bare JSON fragment inside otherwise plain prose (for example
-                    # {"example": 1}) is statement text, not a generation envelope.
-                    # The same content stripped out of a code block is an envelope
-                    # and must fail closed.
                     if fenced_depth:
                         raise RuntimeError("REWRITE_OUTPUT_INVALID")
                     break
