@@ -1049,13 +1049,26 @@ class GatewayPersonaRewriter:
         if not rewritten:
             raise RuntimeError("REWRITE_OUTPUT_EMPTY")
         if not fact_sentences:
-            try:
-                envelope = json.loads(rewritten)
-            except ValueError:
-                envelope = None
-            if (isinstance(envelope, dict) and "text" in envelope
-                    or re.fullmatch(r"```(?:json)?\s*\n.*\n```", rewritten, re.S)):
-                raise RuntimeError("REWRITE_OUTPUT_INVALID")
+            if rewritten.startswith("{") or rewritten.startswith("```"):
+                try:
+                    envelope = json.loads(rewritten)
+                except ValueError:
+                    envelope = None
+                if isinstance(envelope, dict):
+                    if set(envelope) != {"text"} or not isinstance(envelope.get("text"), str):
+                        raise RuntimeError("REWRITE_OUTPUT_INVALID")
+                    rewritten = envelope["text"].strip()
+                else:
+                    fenced = re.fullmatch(
+                        r"```(?:json)?[ \t]*\n(?P<body>.*?)\n```[ \t]*",
+                        rewritten,
+                        re.S,
+                    )
+                    if not fenced:
+                        raise RuntimeError("REWRITE_OUTPUT_INVALID")
+                    rewritten = fenced.group("body").strip()
+                if not rewritten:
+                    raise RuntimeError("REWRITE_OUTPUT_EMPTY")
         if fact_sentences:
             try:
                 return _apply_fact_sentence_edits(candidate, fact_sentences, rewritten)
