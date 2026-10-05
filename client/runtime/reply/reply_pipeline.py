@@ -448,7 +448,10 @@ class ReplyPipeline:
                     input_revision=metadata.get('input_revision', 0),
                     as_of=context.trusted_time.instant.isoformat(), kinds=kinds,
                     cached=metadata.get('companion_decision'),
-                    speech_enabled=(chat_metadata or {}).get('speech_enabled') is True))
+                    speech_enabled=(chat_metadata or {}).get('speech_enabled') is True,
+                    bedtime_offer=(context.mode is ReplyMode.FUTURE_IM and (chat_metadata or {}).get('channel') == 'qq'
+                                   and (chat_metadata or {}).get('bedtime_offer_enabled') is True
+                                   and not (chat_metadata or {}).get('proactive'))))
                 companion_decision = decision.record()
                 save_decision = metadata.get('save_companion_decision')
                 if callable(save_decision):
@@ -521,15 +524,27 @@ class ReplyPipeline:
                                       error_code='INPUT_TOO_LONG', retryable=False)
             prepared = replace(prepared, messages=messages, max_input_chars=original_budget)
         speech_request = None if reconsidered_silence else (companion_decision or {}).get('speech_request')
+        speech_note = None
         if speech_request and (chat_metadata or {}).get('channel') == 'qq':
-            note = '<speech_request>' + json.dumps(speech_request, ensure_ascii=False) + '</speech_request>'
+            speech_note = '<speech_request>' + json.dumps(speech_request, ensure_ascii=False) + '</speech_request>'
             if speech_request['continuation']:
                 from .fact_attribution import story_evidence
-                note += '\n' + story_evidence((chat_metadata or {}).get('story_continuation'))
-            messages = list(_generation_messages(prepared))
-            at = next((i for i in range(len(messages)-1,-1,-1) if messages[i].get('role') == 'user'),len(messages))
-            messages.insert(at, {'role':'system','content':note})
-            prepared = replace(prepared,messages=tuple(messages))
+                speech_note += '\n' + story_evidence((chat_metadata or {}).get('story_continuation'))
+        elif (context.mode is ReplyMode.FUTURE_IM and (chat_metadata or {}).get('structured')
+              and chat_metadata.get('channel') == 'qq' and chat_metadata.get('speech_enabled') is True
+              and not chat_metadata.get('proactive')
+              and (companion_decision or {}).get('speech_offer') in {'none', 'bedtime', 'clarify'}):
+            from runtime.personal_chat.speech import BEDTIME_OFFER_INSTRUCTION
+            speech_note = BEDTIME_OFFER_INSTRUCTION[(companion_decision or {})['speech_offer']]
+        if speech_note:
+            from .fact_attribution import finalize_reply_messages
+            try:
+                messages = finalize_reply_messages(_generation_messages(prepared), speech_note,
+                                                   max_input_chars=original_budget)
+            except ValueError:
+                return PipelineResult(prepared.request_id, ReplyState.FAILED,
+                                      error_code='INPUT_TOO_LONG', retryable=False)
+            prepared = replace(prepared,messages=messages)
         from .character_emotion_context import freeze_expression_context
         # Local assembly establishes provenance; later recall may legitimately
         # replace duplicated notes with source references. Freeze that final
