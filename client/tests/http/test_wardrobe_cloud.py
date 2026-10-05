@@ -75,7 +75,7 @@ def test_remote_photo_accepts_readonly_daily_metadata_and_legacy_tasks():
         outfit=state()['daily_outfit']
         plan={'prompt':'Synthetic portrait','photo_type':'selfie','room':'none','time_of_day':'night','daily_outfit':outfit}
         async def handler(request):
-            assert request.headers.get('X-Olivia-Wardrobe-Protocol')=='daily-v1'
+            assert request.headers.get('X-Olivia-Wardrobe-Protocol')=='daily-v2'
             return web.json_response({'task_id':'photo','status':'succeeded','media_plan':plan})
         app=web.Application();app.router.add_get('/v1/tasks/photo',handler)
         app.router.add_post('/v1/tasks/photo/cancel',handler)

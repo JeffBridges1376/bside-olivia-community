@@ -31,7 +31,7 @@ class RemoteGeneration:
         headers = {'Authorization': 'Bearer ' + self.token, 'Accept': 'application/json'}
         # Old installations require exactly four photo-plan fields. Negotiate
         # wardrobe metadata on every read/replay, including existing orders.
-        headers['X-Olivia-Wardrobe-Protocol'] = 'daily-v1'
+        headers['X-Olivia-Wardrobe-Protocol'] = 'daily-v2'
         payload = None
         if action == 'submit':
             if set(data) != {'request_id', 'kind', 'input'} or data['kind'] not in ('tts', 'cover', 'image', 'video', 'original', 'lipsync', 'separate', 'cover_video', 'original_video') or not isinstance(data['input'], dict):
@@ -174,15 +174,15 @@ class RemoteGeneration:
             raise CloudError('GPU_RESPONSE_INVALID', 502) from None
 
     async def wardrobe_image(self, look_id):
-        from runtime.wardrobe import DAILY_STYLES
-        if not isinstance(look_id,str) or not any(re.fullmatch(re.escape(s)+r'-\d{2}',look_id) for s in DAILY_STYLES[1:]):
+        from runtime.wardrobe import DAILY_LOOKS
+        if not isinstance(look_id,str) or not any(look_id in looks for looks in DAILY_LOOKS.values()):
             raise CloudError('WARDROBE_IMAGE_INVALID',400)
         if not self.url or not self.token:
             raise CloudError('GPU_NOT_CONFIGURED',503)
         try:
             async with ClientSession(timeout=ClientTimeout(total=30),trust_env=False,connector=TCPConnector(ssl=gpu_tls_context())) as session:
                 async with session.get(self.url+'/v1/wardrobe/images/'+look_id,
-                        headers={'Authorization':'Bearer '+self.token},allow_redirects=False) as response:
+                        headers={'Authorization':'Bearer '+self.token, 'X-Olivia-Wardrobe-Protocol':'daily-v2'},allow_redirects=False) as response:
                     if response.status!=200:
                         raise CloudError('WARDROBE_IMAGE_UNAVAILABLE',502)
                     raw=bytearray()
