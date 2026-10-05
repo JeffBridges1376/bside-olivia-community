@@ -58,6 +58,7 @@ PAYLOAD_EXTRA_DIRS = (
     "runtime/diagnostics",
 )
 PAYLOAD_EXTRA_FILES = (
+    "runtime/wardrobe.py",
     "runtime/model_policy.py",
     "runtime/model_policy_aliases.json",
     "runtime/chinese_calendar.py",
@@ -128,6 +129,7 @@ PAYLOAD_REQUIRED_ROOT_FILES = {
     "video_capability_install.py",
 }
 PAYLOAD_REQUIRED_RELATIVE_FILES = {
+    "runtime/wardrobe.py",
     "installer/patch_local_login.py",
     "runtime/model_policy.py",
     "runtime/model_policy_aliases.json",

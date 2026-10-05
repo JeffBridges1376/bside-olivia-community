@@ -1655,6 +1655,7 @@ def test_copy_payload_includes_runtime_packages_used_by_product_imports(
     copy_project_payload(repo_root, destination)
 
     for relative in (
+        "runtime/wardrobe.py",
         "runtime/chinese_calendar.py",
         "runtime/_chinese_calendar_data.py",
         "runtime/memory/bounded_daemon_call.py",
@@ -1684,6 +1685,7 @@ def test_packaged_backend_reply_startup_includes_photo_modules(tmp_path, monkeyp
     script = '''
 import asyncio
 import local_server as server
+import runtime.wardrobe
 from runtime.image_understanding import commit_image_memory
 from runtime.tls import client_tls_context
 import ssl
