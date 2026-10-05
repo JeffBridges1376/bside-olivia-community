@@ -438,6 +438,7 @@ async def _generate_billed(server, event, row):
                                     channel=event.channel, binding_id=event.binding_id),
                                 'structured': True, 'raw_user_text': event.text,
                                 'speech_enabled': speech_enabled,
+                                'bedtime_offer_enabled': speech_enabled,
                                 'incoming_observation_context': observation_context,
                                 'semantic_kinds': semantic_kinds,
                                 'received_source_id': f'reply:{event.exchange_id}:user',

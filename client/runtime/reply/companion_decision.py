@@ -124,11 +124,14 @@ class FrozenCompanionTurn:
     input_revision: int | str
     input_digest: str
     speech_enabled: bool = False
+    bedtime_offer: bool = False
 
     @classmethod
     def create(cls, *, messages, current_source_id, capabilities, environment,
-               forbidden_kinds, as_of, input_revision=0, speech_enabled=False):
+               forbidden_kinds, as_of, input_revision=0, speech_enabled=False, bedtime_offer=False):
         try:
+            if type(bedtime_offer) is not bool:
+                raise ValueError('invalid bedtime offer scope')
             if (type(input_revision) not in (int, str)
                     or isinstance(input_revision, int) and input_revision < 0
                     or isinstance(input_revision, str) and not 1 <= len(input_revision) <= 128):
@@ -156,12 +159,16 @@ class FrozenCompanionTurn:
                            contract=_SCHEMA['source_sha256'])
             if speech_enabled:
                 binding['speech_experience'] = True
+            if bedtime_offer:
+                if not speech_enabled:
+                    raise ValueError('bedtime offer requires speech capability')
+                binding['bedtime_offer'] = True
             digest = hashlib.sha256(_json(binding).encode('utf-8')).hexdigest()
         except (ValueError, TypeError, KeyError, ValidationError, OverflowError):
             raise CompanionDecisionError('JEV_INPUT_INVALID') from None
         if len(_json({'input': value}).encode('utf-8')) > _MAX_INPUT_BYTES:
             raise CompanionDecisionError('JEV_INPUT_TOO_LARGE')
-        return cls(encoded, tuple(sources), when, input_revision, digest, speech_enabled)
+        return cls(encoded, tuple(sources), when, input_revision, digest, speech_enabled, bedtime_offer)
 
     @property
     def input(self):
@@ -179,6 +186,7 @@ class FrozenCompanionDecision:
     metering_json: str | None = None
     profile: str = 'full'
     speech_json: str | None = None
+    speech_offer: str | None = None
 
     @classmethod
     def from_response(cls, turn, response):
@@ -186,20 +194,23 @@ class FrozenCompanionDecision:
             _validate_response(turn.input, response)
             if turn.speech_enabled and 'speech_request' not in response:
                 raise ValueError('missing speech decision')
+            if turn.bedtime_offer and 'speech_offer' not in response:
+                raise ValueError('missing bedtime decision')
             encoded = _json(response['plan'])
         except (ValueError, TypeError, KeyError, ValidationError, OverflowError):
             raise CompanionDecisionError('JEV_RESPONSE_INVALID') from None
         metering = _json({name: response[name] for name in ('usage', 'api_calls', 'latency_ms')})
         return cls(encoded, turn.input_digest, turn.source_ids, turn.input_revision, turn.as_of,
                    metering_json=metering, profile=response.get('evaluation', {}).get('profile', 'full'),
-                   speech_json=_json(_speech_request(response.get('speech_request'))) if turn.speech_enabled else None)
+                   speech_json=_json(_speech_request(response.get('speech_request'))) if turn.speech_enabled else None,
+                   speech_offer=_speech_offer(response['speech_offer']) if turn.bedtime_offer else None)
 
     @classmethod
     def from_record(cls, turn, record, *, profile='full'):
         """Restore only against the caller's freshly rebuilt complete turn."""
         try:
             fields = {'schema_version', 'plan', 'model', 'input_digest', 'source_id_map', 'input_revision', 'as_of'}
-            if (not isinstance(record, dict) or set(record) - {'metering', 'evaluation', 'speech_request'} != fields
+            if (not isinstance(record, dict) or set(record) - {'metering', 'evaluation', 'speech_request', 'speech_offer'} != fields
                     or record['schema_version'] != 'companion-decision/1' or record['model'] != MODEL
                     or record['input_digest'] != turn.input_digest or record['as_of'] != turn.as_of
                     or type(record['input_revision']) is not type(turn.input_revision)
@@ -209,6 +220,10 @@ class FrozenCompanionDecision:
             _validate_evaluation(record)
             if turn.speech_enabled and 'speech_request' not in record:
                 raise ValueError('missing speech decision')
+            if turn.bedtime_offer and 'speech_offer' not in record:
+                raise ValueError('missing bedtime decision')
+            if 'speech_offer' in record:
+                _speech_offer(record['speech_offer'])
             record_profile = record.get('evaluation', {}).get('profile', 'full')
             if profile not in ('full', 'single_delivery') or record_profile == 'single_delivery' and profile != record_profile:
                 raise ValueError('decision evaluation profile mismatch')
@@ -227,7 +242,8 @@ class FrozenCompanionDecision:
             raise CompanionDecisionError('JEV_RESPONSE_INVALID') from None
         return cls(encoded, turn.input_digest, turn.source_ids, turn.input_revision, turn.as_of,
                    metering_json=_json(metering) if metering is not None else None, profile=record_profile,
-                   speech_json=_json(_speech_request(record.get('speech_request'))) if 'speech_request' in record else None)
+                   speech_json=_json(_speech_request(record.get('speech_request'))) if 'speech_request' in record else None,
+                   speech_offer=record.get('speech_offer') if turn.bedtime_offer else None)
 
     @property
     def plan(self):
@@ -248,6 +264,8 @@ class FrozenCompanionDecision:
             result['evaluation'] = dict(profile=self.profile, not_evaluated=['control'])
         if self.speech_json is not None:
             result['speech_request'] = json.loads(self.speech_json)
+        if self.speech_offer is not None:
+            result['speech_offer'] = self.speech_offer
         return result
 
     def writer_projection(self):
@@ -339,7 +357,8 @@ class JevDecisionPort:
 
     def _packet(self, turn):
         return {'input': turn.input, **({'profile': self.profile} if self.profile != 'full' else {}),
-                **({'speech_experience': True} if turn.speech_enabled else {})}
+                **({'speech_experience': True} if turn.speech_enabled else {}),
+                **({'bedtime_offer': True} if turn.bedtime_offer else {})}
 
     def _request(self, turn):
         value = turn.input
@@ -415,10 +434,16 @@ def _speech_request(value):
     return validate_intent(value)
 
 
+def _speech_offer(value):
+    if value not in ('none', 'bedtime', 'clarify'):
+        raise ValueError('invalid bedtime decision')
+    return value
+
+
 def _validate_response(request, value):
     expected = {'schema_version', 'tasks', 'plan', 'contract_valid', 'status', 'fallback', 'action_executed',
                 'model', 'backend', 'production_approved', 'latency_ms', 'api_calls', 'usage'}
-    if (not isinstance(value, dict) or set(value) - {'evaluation', 'speech_request'} != expected
+    if (not isinstance(value, dict) or set(value) - {'evaluation', 'speech_request', 'speech_offer'} != expected
             or value['schema_version'] != 'companion-shadow/1' or value['model'] != MODEL
             or value['backend'] != 'jev' or value['contract_valid'] is not True
             or value['status'] != 'valid_contract' or value['fallback'] is not False
@@ -429,6 +454,8 @@ def _validate_response(request, value):
             or type(value['usage']['input_tokens']) is not int or value['usage']['input_tokens'] < 0):
         raise ValueError('invalid complete envelope')
     _speech_request(value.get('speech_request'))
+    if 'speech_offer' in value:
+        _speech_offer(value['speech_offer'])
     _validate_evaluation(value)
     _validate_plan(request, value['plan'])
     if _json(value['tasks']) != _json(_task_projection(value['plan'])):

@@ -59,7 +59,7 @@ async def authorize_user_silence(user_text, silence, *, port=None) -> bool:
     return answers['user_silence'] == 'authorized'
 
 
-def _decision_context(messages, required_sources=()):
+def _decision_context(messages, required_sources=(), recent_turns=1):
     """Keep conversational resolution evidence, not the writer's full read window.
 
     The newest stored decision carries unresolved media requirements. Legacy
@@ -92,8 +92,8 @@ def _decision_context(messages, required_sources=()):
         base = source.rsplit(':', 1)[0] if source.endswith((':user', ':linli')) else source
         return row['event_id'] == source or row['source'] == base or row['source'].startswith(base + ':')
 
-    latest = recent[-1]['source'] if recent else None
-    kept = [row for row in recent if row['source'] == latest
+    latest = {row['source'] for row in recent[-recent_turns:]}
+    kept = [row for row in recent if row['source'] in latest
             or any(matches(row, source) for source in required)
             or row['role'] == 'user' and not any(row['source'].startswith('reply:' + key + ':') for key in covered)]
     # Pending originals may predate the writer's bounded read window.
@@ -117,10 +117,15 @@ def _decision_context(messages, required_sources=()):
 
 
 async def prepare_decision(port, messages, user_text, *, source_id, input_revision, as_of, kinds, cached=None,
-                           required_sources=(), speech_enabled=False):
+                           required_sources=(), speech_enabled=False, bedtime_offer=False):
     from .companion_decision import FrozenCompanionTurn, FrozenCompanionDecision
     metadata = TURN_CONTEXT.get() or {}
-    recent = _decision_context(messages, (*required_sources, *metadata.get('companion_context_sources', ())))
+    reuse = isinstance(cached, dict) and cached.get('input_revision') == input_revision
+    if reuse:
+        bedtime_offer = 'speech_offer' in cached
+    sources = (*required_sources, *metadata.get('companion_context_sources', ()))
+    recent = (_decision_context(messages, sources, 4) if bedtime_offer
+              else _decision_context(messages, sources))
     if not isinstance(user_text, str) or not user_text.strip() or any(row.get('truncated') for row in recent):
         raise CompanionRuntimeError('JEV_CONTEXT_UNAVAILABLE')
     # These are the native prior-turn frames from our frozen assembly, not
@@ -137,7 +142,6 @@ async def prepare_decision(port, messages, user_text, *, source_id, input_revisi
     turns.append(dict(source_id=source_id, role='user', text=user_text))
     # Re-use the original classification instant only for this input revision.
     # The digest below still checks every original, source and capability.
-    reuse = isinstance(cached, dict) and cached.get('input_revision') == input_revision
     if reuse:
         as_of = cached.get('as_of', as_of)
         # A capability rollout must not invalidate a paid, frozen decision.
@@ -151,7 +155,7 @@ async def prepare_decision(port, messages, user_text, *, source_id, input_revisi
                 capabilities=dict(kinds=list(kinds), synchronize=False, playback_events=False,
                     compose_audio=False, compose_video=False, split_spoken_content=False),
                 environment=dict(can_read=None, can_view=None, can_listen=None), forbidden_kinds=[],
-                as_of=as_of, input_revision=input_revision, speech_enabled=speech_enabled)
+                as_of=as_of, input_revision=input_revision, speech_enabled=speech_enabled, bedtime_offer=bedtime_offer)
             break
         except CompanionDecisionError as exc:
             # Long QQ bursts can exceed one request's size or turn count. Leave out
