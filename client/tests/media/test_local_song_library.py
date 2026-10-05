@@ -214,3 +214,16 @@ def test_import_colliding_contents_get_distinct_native_ids(library, tmp_path):
     ids = [row['native_id'] for row in rows]
     assert len(set(ids)) == 2
     assert all(v.isdigit() and 1000000000 <= int(v) < 2000000000 for v in ids)
+
+
+def test_deleted_song_id_is_not_reused_by_colliding_content(library, tmp_path):
+    a = tmp_path / 'a.mp4'
+    b = tmp_path / 'b.mp4'
+    a.write_bytes(b'synthetic-song-9584')
+    b.write_bytes(b'synthetic-song-29638')
+    library.import_path(str(a))
+    row = library.songs()[0]
+    assert native_song_id(row['id']) == '1861425279'
+    library.delete(row['id'])
+    library.import_path(str(b))
+    assert library.songs()[0]['native_id'] != '1861425279'
