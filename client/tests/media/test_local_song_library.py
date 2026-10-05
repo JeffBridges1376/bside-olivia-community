@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from runtime.media.local_song_library import LocalSongLibrary, LocalSongError, native_song_id
+from runtime.media.local_song_library import LocalSongLibrary, LocalSongError, native_song_id, _assign_native_id
 
 
 @pytest.fixture
@@ -191,3 +191,26 @@ def test_native_id_derivation_is_media_independent():
     digest = 'b' * 64
     assert native_song_id(digest) == native_song_id(digest)
     assert 1000000000 <= int(native_song_id(digest)) < 2000000000
+
+def test_native_id_collision_is_resolved_not_shared():
+    a = "f86ffb7c3e57227f6039aecdb5a350946b476857fa9c2070d44278cd9eb7432b"
+    b = "55be6af6c2ca227fc2bcf081e44d4ee49edd63f6d7f4c1003182825034c879e8"
+    # synthetic-song-9584 vs synthetic-song-29638 share the raw candidate
+    assert native_song_id(a) == native_song_id(b)
+    first = _assign_native_id(a, set())
+    second = _assign_native_id(b, {first})
+    assert first != second
+
+
+def test_import_colliding_contents_get_distinct_native_ids(library, tmp_path):
+    a = tmp_path / "a.mp4"
+    b = tmp_path / "b.mp4"
+    a.write_bytes(b"synthetic-song-9584")
+    b.write_bytes(b"synthetic-song-29638")
+    library.import_path(str(a))
+    library.import_path(str(b))
+    rows = library.songs()
+    assert len(rows) == 2
+    ids = [row['native_id'] for row in rows]
+    assert len(set(ids)) == 2
+    assert all(v.isdigit() and 1000000000 <= int(v) < 2000000000 for v in ids)
