@@ -327,4 +327,4 @@ def native_song_id(song_id):
     """Return the stable, bounded numeric identifier used by the native player."""
     if not isinstance(song_id, str) or not _ID.fullmatch(song_id):
         raise LocalSongError('LOCAL_SONG_ID_INVALID')
-    return str(NATIVE_SONG_ID_BASE + (int(song_id[:8], 16) % NATIVE_SONG_ID_SPAN))
+    return str(NATIVE_SONG_ID_BASE + (int(song_id[:16], 16) % NATIVE_SONG_ID_SPAN))
