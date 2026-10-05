@@ -15,7 +15,7 @@ def test_maintenance_preview_confirm_cancel_apply_restore_and_stale_error():
     harness = r'''
 const assert = require('node:assert/strict'), all=[];
 class Element {
- constructor(tag){this.tag=tag;this.children=[];this.events={};this.value='';all.push(this)}
+ constructor(tag){this.tag=tag;this.children=[];this.events={};this.value='';this.style={};all.push(this)}
  append(...nodes){this.children.push(...nodes)}
  replaceChildren(...nodes){this.children=nodes}
  setAttribute(){} addEventListener(k,v){this.events[k]=v}
