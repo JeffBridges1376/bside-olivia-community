@@ -94,3 +94,15 @@ def test_rewrite_unwraps_pure_text_wrapper(monkeypatch, response):
     monkeypatch.setattr(quality, '_complete_text', lambda *a, **k: response)
     assert quality.GatewayPersonaRewriter(SimpleNamespace(), ROOT / 'missing.json', 2).rewrite_with_messages(
         '行，你眯吧。', _context(), (), messages()) == '醒啦'
+
+
+@pytest.mark.parametrize('response', [
+    '[{"text":"Synthetic replacement.","analysis":"SYNTHETIC_ANALYSIS"}]',
+    '[{"text":',
+    '```\nA\n```\n```\nB\n```',
+])
+def test_rewrite_rejects_unsupported_json_shells(monkeypatch, response):
+    monkeypatch.setattr(quality, '_complete_text', lambda *a, **k: response)
+    with pytest.raises(RuntimeError, match='REWRITE_OUTPUT_INVALID'):
+        quality.GatewayPersonaRewriter(SimpleNamespace(), ROOT / 'missing.json', 2).rewrite_with_messages(
+            '行，你眯吧。', _context(), (), messages())
