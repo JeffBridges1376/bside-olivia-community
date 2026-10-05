@@ -2,7 +2,14 @@
 from datetime import date
 import re
 
-DAILY_STYLES = ('original', 'mori', 'rebellious', 'dark', 'cargo', 'tie-shorts')
+# Exact IDs in the trusted 20261004-e94ffc6dd51b catalog. Original has no look.
+DAILY_LOOK_COUNTS = {'mori': 14, 'rebellious': 1, 'dark': 1, 'cargo': 1,
+                     'tie-shorts': 1, 'french': 8, 'earth': 3, 'japanese': 4,
+                     'sweet': 6, 'doll': 8}
+DAILY_STYLES = ('original', *DAILY_LOOK_COUNTS)
+LEGACY_DAILY_STYLES = DAILY_STYLES[:6]
+DAILY_LOOKS = {style: frozenset(style + f'-{i:02}' for i in range(1, count + 1))
+               for style, count in DAILY_LOOK_COUNTS.items()}
 DAILY_CATALOG = '20261004-e94ffc6dd51b'
 
 
@@ -16,8 +23,7 @@ def validate_daily_outfit(value):
     if (value['timezone']!='Asia/Shanghai' or type(value['preference_revision']) is not int
             or value['preference_revision']<1 or value['style_id'] not in DAILY_STYLES[1:]
             or value['catalog_version']!=DAILY_CATALOG
-            or not isinstance(value['look_id'],str) or value['look_id'] not in {
-                value['style_id']+f'-{i:02}' for i in range(1,15 if value['style_id']=='mori' else 2)}
+            or not isinstance(value['look_id'],str) or value['look_id'] not in DAILY_LOOKS[value['style_id']]
             or not isinstance(value['reference_sha256'],str) or not re.fullmatch(r'[a-f0-9]{64}',value['reference_sha256'])):
         raise ValueError('WARDROBE_OUTFIT_INVALID')
     return dict(value)
@@ -33,16 +39,23 @@ def validate_cloud_state(value):
             or preference['preference_revision']<0):
         raise ValueError('WARDROBE_STATE_INVALID')
     styles=value['wardrobe_styles']
-    if not isinstance(styles,list) or len(styles)!=len(DAILY_STYLES) or any(not isinstance(s,dict) for s in styles) or {s.get('style_id') for s in styles}!=set(DAILY_STYLES):
+    if (not isinstance(styles,list) or any(not isinstance(s,dict) for s in styles)
+            or len(styles) not in (len(LEGACY_DAILY_STYLES), len(DAILY_STYLES))
+            or {s.get('style_id') for s in styles} not in (set(LEGACY_DAILY_STYLES), set(DAILY_STYLES))
+            or len({s.get('style_id') for s in styles}) != len(styles)
+            or preference['style_id'] not in {s['style_id'] for s in styles}):
         raise ValueError('WARDROBE_STATE_INVALID')
     for style in styles:
-        if not all(isinstance(style.get(k),str) and len(style[k])<=1000 for k in ('label','description')) or not isinstance(style.get('looks'),list) or len(style['looks'])>14:
+        allowed_looks = DAILY_LOOKS.get(style['style_id'], frozenset())
+        if not all(isinstance(style.get(k),str) and len(style[k])<=1000 for k in ('label','description')) or not isinstance(style.get('looks'),list) or len(style['looks'])>len(allowed_looks):
             raise ValueError('WARDROBE_STATE_INVALID')
+        seen_looks = set()
         for look in style['looks']:
             if (not isinstance(look,dict) or not isinstance(look.get('look_id'),str)
-                    or not re.fullmatch(re.escape(style['style_id'])+r'-\d{2}',look['look_id'])
+                    or look['look_id'] not in allowed_looks or look['look_id'] in seen_looks
                     or not isinstance(look.get('label'),str) or len(look['label'])>200):
                 raise ValueError('WARDROBE_STATE_INVALID')
+            seen_looks.add(look['look_id'])
     outfit=validate_daily_outfit(value.get('daily_outfit'))
     if outfit and (outfit['date']!=value['date'] or outfit['style_id']!=preference['style_id'] or outfit['preference_revision']!=preference['preference_revision']):
         raise ValueError('WARDROBE_STATE_INVALID')
