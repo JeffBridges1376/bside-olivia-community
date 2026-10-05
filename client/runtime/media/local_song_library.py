@@ -61,7 +61,17 @@ class LocalSongLibrary:
 
     def songs(self):
         with _LOCK:
-            return [dict(row, native_id=native_song_id(row['id'])) for row in self._read()]
+            rows = self._read()
+            taken = {row.get('native_id') for row in rows if row.get('native_id')}
+            changed = False
+            for row in rows:
+                if not row.get('native_id'):
+                    row['native_id'] = _assign_native_id(row['id'], taken)
+                    taken.add(row['native_id'])
+                    changed = True
+            if changed:
+                self._write(rows)
+            return rows
 
     def media_path(self, song_id):
         if not isinstance(song_id, str) or not _ID.fullmatch(song_id):
@@ -195,7 +205,9 @@ class LocalSongLibrary:
             try:
                 shutil.copyfile(source, temporary)
                 os.replace(temporary, destination)
-                self._write([*rows, {'id': song_id, 'name': title.strip(), 'duration': duration, 'media_type': 'audio'}])
+                taken = {row.get('native_id') for row in rows if row.get('native_id')}
+                self._write([*rows, {'id': song_id, 'name': title.strip(), 'duration': duration,
+                                     'media_type': 'audio', 'native_id': _assign_native_id(song_id, taken)}])
             except Exception:
                 destination.unlink(missing_ok=True)
                 raise
@@ -278,7 +290,9 @@ class LocalSongLibrary:
                     target = self.root / (song_id + '.mp4')
                     temporary.replace(target)
                     try:
-                        self._write([*rows, {'id': song_id, 'name': title[:120], 'duration': duration}])
+                        taken = {row.get('native_id') for row in rows if row.get('native_id')}
+                        self._write([*rows, {'id': song_id, 'name': title[:120], 'duration': duration,
+                                             'native_id': _assign_native_id(song_id, taken)}])
                     except Exception:
                         target.unlink(missing_ok=True)
                         raise
@@ -319,12 +333,35 @@ class LocalSongLibrary:
 # 1e15 overflows it. Derive a stable numeric identifier instead, inside the
 # signed 32-bit range and clear of the low ids used by official songs. The
 # SHA256 stays the content identifier for media URLs and de-duplication.
+# Different content must never silently share a native id, so the catalog
+# persists each assignment and resolves collisions by linear probing.
 NATIVE_SONG_ID_BASE = 1000000000
 NATIVE_SONG_ID_SPAN = 1000000000
 
 
 def native_song_id(song_id):
-    """Return the stable, bounded numeric identifier used by the native player."""
+    """Return the deterministic candidate native id for a song content id."""
     if not isinstance(song_id, str) or not _ID.fullmatch(song_id):
         raise LocalSongError('LOCAL_SONG_ID_INVALID')
-    return str(NATIVE_SONG_ID_BASE + (int(song_id[:16], 16) % NATIVE_SONG_ID_SPAN))
+    return str(_native_id_candidate(song_id))
+
+
+def _native_id_candidate(song_id):
+    return NATIVE_SONG_ID_BASE + (int(song_id[:16], 16) % NATIVE_SONG_ID_SPAN)
+
+
+def _assign_native_id(song_id, taken):
+    """Return a unique native id for song_id, avoiding the given taken ids.
+
+    Starts from the deterministic candidate and probes forward, wrapping within
+    [NATIVE_SONG_ID_BASE, NATIVE_SONG_ID_BASE + NATIVE_SONG_ID_SPAN). ``taken``
+    is a set of already-assigned native ids (strings).
+    """
+    candidate = _native_id_candidate(song_id)
+    for _ in range(NATIVE_SONG_ID_SPAN):
+        if str(candidate) not in taken:
+            return str(candidate)
+        candidate += 1
+        if candidate >= NATIVE_SONG_ID_BASE + NATIVE_SONG_ID_SPAN:
+            candidate = NATIVE_SONG_ID_BASE
+    raise LocalSongError('LOCAL_SONG_ID_SPACE_EXHAUSTED')
