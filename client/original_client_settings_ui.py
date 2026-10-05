@@ -3978,7 +3978,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   const mountLetterMaintenance = (section) => {
     const box = document.createElement("details");
     box.className = "olivia-letter-maintenance";
-    box.append(text("summary", "信件对比与整理"));
+    const summaryNode = text("summary", "信件对比与整理");
+    summaryNode.style.cssText = "cursor:pointer;padding:8px 0;color:var(--tp-text-body);font-size:18px;font-weight:var(--tp-font-weight-medium)";
+    box.append(summaryNode);
     const style = text("style", `
       .olivia-letter-maintenance{margin:24px 0;border-top:1px solid #424242;padding-top:20px;color:inherit}
       .olivia-letter-maintenance summary{cursor:pointer;font-weight:600;padding:8px 0;font-size:18px}
@@ -3986,7 +3988,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       .olivia-letter-maintenance .lm-controls{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0}
       .olivia-letter-maintenance .lm-row{padding:18px 0;border-top:1px solid #424242}
       .olivia-letter-maintenance .lm-pair{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:20px;margin:12px 0}
-      .olivia-letter-maintenance .lm-copy{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7;max-height:260px;overflow:auto;margin:8px 0}
+      .olivia-letter-maintenance .lm-copy{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7;max-height:260px;overflow:auto;margin:8px 0;color:var(--tp-text-body)}
       .olivia-letter-maintenance .lm-column{min-width:0}
       .olivia-letter-maintenance label{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
       .olivia-letter-maintenance select{background:#242424;color:#eee;border:1px solid #777;border-radius:6px;padding:8px;max-width:100%}
@@ -3994,8 +3996,8 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       .olivia-letter-maintenance [hidden]{display:none!important}
       .olivia-letter-maintenance button:disabled,.olivia-letter-maintenance select:disabled{opacity:.5;cursor:default}
     `);
-    const help = text("p", "先检查，再选择要整理的信件。可以对比 .soul 或 JSON 备份、修复时间和顺序、收起重复信与失败信。整理只影响信箱显示，不改原文或长期记忆，也不调用模型；可在这里恢复。");
-    const status = text("p", "尚未检查。检查当前信箱无需选择文件。");
+    const help = text("p", "先检查，再选择要整理的信件。可以对比 .soul 或 JSON 备份、修复时间和顺序、收起重复信与失败信。整理只影响信箱显示，不改原文或长期记忆，也不调用模型；可在这里恢复。", "text-text-secondary text-body-m font-regular");
+    const status = text("p", "尚未检查。检查当前信箱无需选择文件。", "text-text-secondary text-body-m font-regular");
     status.setAttribute("aria-live", "polite");
     const controls = actions(); controls.className = "lm-controls";
     const results = document.createElement("div"), pager = actions(); pager.className = "lm-controls";
@@ -4045,14 +4047,14 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       results.replaceChildren(); selectors = [];
       for (const item of plan.items) {
         const row = document.createElement("div"); row.className = "lm-row";
-        row.append(text("strong", labels[item.kind] || item.kind));
+        row.append(text("strong", labels[item.kind] || item.kind, "text-text-body text-label-l"));
         const pair = document.createElement("div"); pair.className = "lm-pair";
         const sourceLeft = ["missing", "source_near", "ambiguous"].includes(item.kind);
         pair.append(column(item.left, sourceLeft ? "备份中的信件" : "信箱中的信件"));
         if (item.right) pair.append(column(item.right, ["same", "time"].includes(item.kind) ? "备份中的信件" : "信箱中的另一封"));
         row.append(pair);
         if (item.options.length) {
-          const label = text("label", "处理方式"), select = document.createElement("select");
+          const label = text("label", "处理方式", "text-text-secondary text-body-m"), select = document.createElement("select");
           const skip = text("option", "保持原样"); skip.value = ""; select.append(skip);
           item.options.forEach(option => { const el = text("option", option.label); el.value = option.id; select.append(el); });
           select.addEventListener("change", sync); selectors.push(select); label.append(select); row.append(label);
