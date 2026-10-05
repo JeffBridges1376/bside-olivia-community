@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from runtime.media.local_song_library import LocalSongLibrary, LocalSongError
+from runtime.media.local_song_library import LocalSongLibrary, LocalSongError, native_song_id
 
 
 @pytest.fixture
@@ -134,3 +134,60 @@ def test_missing_ffmpeg_stops_batch_and_cleans_temporary(library, tmp_path, monk
         library.import_path(str(folder))
     assert len(attempts) == 1
     assert not list(library.root.glob('*.mp4'))
+
+def test_native_song_id_is_bounded_and_stable():
+    for digest in ('a' * 64, '0' * 64, 'f' * 64, 'deadbeef' + '0' * 56):
+        value = native_song_id(digest)
+        assert isinstance(value, str) and value.isdigit()
+        assert 1000000000 <= int(value) < 2000000000
+        assert int(value) <= 2**31 - 1
+        assert native_song_id(digest) == value
+
+
+def test_native_song_id_rejects_non_sha256_values():
+    for bad in ('', 'short', '../outside', 'Z' * 64, None, 123):
+        with pytest.raises(LocalSongError):
+            native_song_id(bad)
+
+
+def test_imported_songs_expose_bounded_distinct_native_ids(library, tmp_path):
+    for index in range(5):
+        source = tmp_path / ('clip%d.mp4' % index)
+        source.write_bytes(b'clip-%d' % index)
+        library.import_path(str(source))
+    rows = library.songs()
+    assert len(rows) == 5
+    native_ids = [row['native_id'] for row in rows]
+    assert all(v.isdigit() and 1000000000 <= int(v) < 2000000000 for v in native_ids)
+    assert len(set(native_ids)) == len(native_ids)
+    # SHA256 content identifier is preserved for media URLs and de-duplication.
+    assert all(len(row['id']) == 64 for row in rows)
+
+
+def test_duplicate_import_keeps_the_same_native_id(library, tmp_path):
+    source = tmp_path / 'song.mp4'
+    source.write_bytes(b'video-duplicate')
+    assert library.import_path(str(source))['added'] == 1
+    first = library.songs()[0]['native_id']
+    copied = tmp_path / 'copy.mp4'
+    copied.write_bytes(source.read_bytes())
+    assert library.import_path(str(copied))['skipped'] == 1
+    assert library.songs()[0]['native_id'] == first
+
+
+def test_native_ids_are_order_independent_after_reopen(library, tmp_path):
+    for index in range(3):
+        source = tmp_path / ('order%d.mp4' % index)
+        source.write_bytes(b'order-%d' % index)
+        library.import_path(str(source))
+    forward = {row['id']: row['native_id'] for row in library.songs()}
+    restored = LocalSongLibrary(library.root.parent, {})
+    assert {row['id']: row['native_id'] for row in restored.songs()} == forward
+
+
+def test_native_id_derivation_is_media_independent():
+    # Audio and video share the same SHA256 derivation, so the identifier does
+    # not depend on media_type.
+    digest = 'b' * 64
+    assert native_song_id(digest) == native_song_id(digest)
+    assert 1000000000 <= int(native_song_id(digest)) < 2000000000
