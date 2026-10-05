@@ -61,7 +61,7 @@ class LocalSongLibrary:
 
     def songs(self):
         with _LOCK:
-            return self._read()
+            return [dict(row, native_id=native_song_id(row['id'])) for row in self._read()]
 
     def media_path(self, song_id):
         if not isinstance(song_id, str) or not _ID.fullmatch(song_id):
@@ -314,3 +314,17 @@ class LocalSongLibrary:
                 if temporary is not None:
                     temporary.unlink(missing_ok=True)
         return report
+
+# The native player's eventId is a bounded integer: scaling a SHA256 prefix to
+# 1e15 overflows it. Derive a stable numeric identifier instead, inside the
+# signed 32-bit range and clear of the low ids used by official songs. The
+# SHA256 stays the content identifier for media URLs and de-duplication.
+NATIVE_SONG_ID_BASE = 1000000000
+NATIVE_SONG_ID_SPAN = 1000000000
+
+
+def native_song_id(song_id):
+    """Return the stable, bounded numeric identifier used by the native player."""
+    if not isinstance(song_id, str) or not _ID.fullmatch(song_id):
+        raise LocalSongError('LOCAL_SONG_ID_INVALID')
+    return str(NATIVE_SONG_ID_BASE + (int(song_id[:8], 16) % NATIVE_SONG_ID_SPAN))
