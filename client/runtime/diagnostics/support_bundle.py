@@ -285,6 +285,11 @@ def project_reply_quality(value: Mapping[str, object]) -> dict[str, object]:
     """Finite metadata shared by letter and chat diagnostics, without drafts."""
     from .failure_context import REWRITE_ERROR_CODES
     result = {}
+    degraded = value.get('degraded_stages')
+    if isinstance(degraded, dict):
+        from runtime.reply.reply_pipeline import _TEXT_RECOVERY_CODES
+        result['degraded_stages'] = {stage: code for stage, code in degraded.items()
+            if stage in {'world', 'decision'} and isinstance(code, str) and code in _TEXT_RECOVERY_CODES}
     if value.get('quality_status') in ('not_checked', 'accepted', 'accepted_degraded', 'accepted_with_warnings', 'blocked'):
         result['quality_status'] = value['quality_status']
     from runtime.personal_chat.decision import NEUTRAL_METADATA, _CONTROL_REASONS
@@ -324,6 +329,23 @@ def project_reply_quality(value: Mapping[str, object]) -> dict[str, object]:
             'rewrite_validation' if isinstance(code, str) and code in {'REWRITE_OUTPUT_EMPTY', 'REWRITE_OUTPUT_INVALID'} else
             'rewrite' if isinstance(code, str) and code in REWRITE_ERROR_CODES else
             'final_review' if result.get('reviewer_calls') == 2 else 'review')
+    # Numeric phase evidence is shared by letters and chat. Private cached text
+    # and keys never enter diagnostic bundles through these nested maps.
+    timing = value.get('stage_timing_seconds')
+    if isinstance(timing, Mapping):
+        safe = {name: round(float(timing[name]), 4)
+                for name in ('world', 'emotion', 'interpretation', 'history', 'decision', 'writer',
+                             'silence_authorization', 'quality', 'total')
+                if type(timing.get(name)) in (int, float) and 0 <= timing[name] <= 86400}
+        if safe:
+            result['stage_timing_seconds'] = safe
+    for field in ('stage_cache_hits', 'stage_actual_calls'):
+        counts = value.get(field)
+        if isinstance(counts, Mapping):
+            safe = {name: counts[name] for name in ('writer', 'reviewer', 'rewriter')
+                    if type(counts.get(name)) is int and 0 <= counts[name] <= 100}
+            if safe:
+                result[field] = safe
     return result
 
 
@@ -346,23 +368,6 @@ def project_chat_task(value: Mapping[str, object]) -> dict[str, object]:
     }:
         result['candidate_analysis_failure_reason'] = reason
     result.update(project_reply_quality(value))
-    # Finite, numeric phase evidence only. Private cached text and keys never
-    # enter diagnostic bundles, including through a malformed nested map.
-    timing = value.get('stage_timing_seconds')
-    if isinstance(timing, Mapping):
-        safe = {name: round(float(timing[name]), 4)
-                for name in ('world', 'emotion', 'interpretation', 'history', 'decision', 'writer',
-                             'silence_authorization', 'quality', 'total')
-                if type(timing.get(name)) in (int, float) and 0 <= timing[name] <= 86400}
-        if safe:
-            result['stage_timing_seconds'] = safe
-    for field in ('stage_cache_hits', 'stage_actual_calls'):
-        counts = value.get(field)
-        if isinstance(counts, Mapping):
-            safe = {name: counts[name] for name in ('writer', 'reviewer', 'rewriter')
-                    if type(counts.get(name)) is int and 0 <= counts[name] <= 100}
-            if safe:
-                result[field] = safe
     if value.get('voice_prepare_status') in {'running', 'completed', 'timeout', 'failed', 'cancelled'}:
         result['voice_prepare_status'] = value['voice_prepare_status']
     for field in ('voice_prepare_seconds', 'voice_prepare_timeout_seconds'):
@@ -424,11 +429,12 @@ def project_chat_task(value: Mapping[str, object]) -> dict[str, object]:
                 'FIELDS', 'JSON_SYNTAX', 'VALUE_TYPE_OR_TIME', 'TEXT_OR_SKIP_TYPE',
                 'DELIVERY_OR_LISTENING', 'PREFERENCES', 'EVIDENCE_TYPE',
                 'EMPTY_OR_SKIPPED_REPLY', 'CONTROL_MARKER', 'REPEATED_REPLY',
-                'SILENCE_INVALID', 'SILENCE_UNSUPPORTED', 'SILENCE_NOT_AUTHORIZED', 'MEDIA_WITHOUT_PLAN'}:
+                'SILENCE_INVALID', 'SILENCE_UNSUPPORTED', 'SILENCE_NOT_AUTHORIZED', 'MEDIA_WITHOUT_PLAN',
+                'RECOVERY_ACTION_WITHOUT_PLAN'}:
             result['decision_rejection_reason'] = value['decision_rejection_reason']
         if type(value.get('voice_ready')) is bool:
             result['voice_ready'] = value['voice_ready']
-        if value.get('delivery_basis') in ('QQ_DEFAULT_VOICE', 'SPEAKER_UNAVAILABLE', 'VERBATIM_TEXT',
+        if value.get('delivery_basis') in ('AUXILIARY_TEXT_RECOVERY', 'QQ_DEFAULT_VOICE', 'SPEAKER_UNAVAILABLE', 'VERBATIM_TEXT',
                 'JEV_MEDIA_PLAN', 'PROACTIVE_MEDIA_PLAN', 'WECHAT_TEXT', 'TRANSPORT_UNAVAILABLE',
                 'PROVIDER_UNAVAILABLE', 'WRITER_SELECTION', 'VOICE_RENDER_FAILED', 'VOICE_RENDER_TIMEOUT'):
             result['delivery_basis'] = value['delivery_basis']

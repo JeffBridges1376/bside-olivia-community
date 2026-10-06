@@ -34,6 +34,7 @@ def _clear_draft(row):
                 'speech_script', 'speech_intent', 'speech_status', 'speech_delivery_status', 'content_review',
                 'proactive_decision', 'proactive_basis', 'proactive_opportunity', 'generation_failure_notice',
                 'generation_context_at', 'stage_timing_seconds', 'stage_actual_calls', 'stage_cache_hits',
+                'degraded_stages',
                 'voice_prepare_seconds', 'voice_prepare_status', 'voice_prepare_timeout_seconds',
                 'generation_retryable', 'generation_failure_context', 'generation_failures',
                 'silence_reason', 'skip_reason', 'user_controls_applied'):

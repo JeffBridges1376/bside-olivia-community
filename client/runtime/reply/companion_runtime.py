@@ -175,7 +175,9 @@ async def prepare_decision(port, messages, user_text, *, source_id, input_revisi
             raise CompanionRuntimeError('JEV_STORED_DECISION_INVALID') from None
     result = await port.decide(frozen)
     if result.decision is None:
-        raise CompanionRuntimeError(result.error_code or 'JEV_UNAVAILABLE')
+        error = CompanionRuntimeError(result.error_code or 'JEV_UNAVAILABLE')
+        error.failure_context = getattr(result, 'failure_context', {})
+        raise error
     return result.decision
 
 

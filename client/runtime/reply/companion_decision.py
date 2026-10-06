@@ -5,9 +5,10 @@ The checked-in schema is exported from the verified sidecar contract; no runtime
 dependency on a developer's release directory or training environment exists.
 """
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
+import http.client
 import ipaddress
 import json
 import math
@@ -15,6 +16,7 @@ from pathlib import Path
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 from jsonschema import Draft202012Validator, ValidationError
 
@@ -46,6 +48,9 @@ _SIDECAR_ERRORS = {
     'decision_timeout': 'JEV_TIMEOUT',
     'insufficient_balance': 'JEV_BALANCE_INSUFFICIENT',
     'provider_unavailable': 'JEV_UNAVAILABLE',
+    'provider_connect_failed': 'JEV_PROVIDER_CONNECT_FAILED',
+    'provider_read_failed': 'JEV_PROVIDER_READ_FAILED',
+    'provider_json_invalid': 'JEV_PROVIDER_JSON_INVALID',
     **{f'provider_http_{n}': f'JEV_PROVIDER_HTTP_{n}'
        for n in (400, 401, 403, 404, 413, 422, 429, 500, 502, 503, 504, 529)},
 }
@@ -93,7 +98,7 @@ def _http_error_code(error):
             code = _SIDECAR_ERRORS.get(reason, code)
             if reason.startswith('empty_reference_catalog:'):
                 code = 'JEV_REFERENCE_UNAVAILABLE'
-    except (ValueError, OSError, RecursionError):
+    except (ValueError, OSError, RecursionError, http.client.HTTPException):
         pass
     finally:
         error.close()
@@ -281,6 +286,7 @@ class FrozenCompanionDecision:
 class CompanionDecisionResult:
     decision: FrozenCompanionDecision | None = None
     error_code: str | None = None
+    failure_context: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if ((self.decision is None) == (self.error_code is None)
@@ -345,7 +351,8 @@ class JevDecisionPort:
         self._opener = urllib.request.build_opener(*handlers)
 
     def request_headers(self, body_digest):
-        headers = {'Content-Type': 'application/json', 'X-Olivia-Usage-Id': body_digest}
+        headers = {'Content-Type': 'application/json', 'X-Olivia-Usage-Id': body_digest,
+                   'X-Olivia-Request-Id': str(uuid.uuid4())}
         if self.endpoint.startswith('https://'):
             from .jev_billing import cloud_request_headers
             headers.update(cloud_request_headers(body_digest))
@@ -368,19 +375,43 @@ class JevDecisionPort:
             raise CompanionDecisionError('JEV_INPUT_TOO_LARGE')
         headers = self.request_headers(hashlib.sha256(body).hexdigest())
         request = urllib.request.Request(self.endpoint, data=body, headers=headers, method='POST')
-        with self._opener.open(request, timeout=self.timeout_seconds) as response:
-            if response.status != 200:
-                raise CompanionDecisionError('JEV_HTTP_ERROR')
-            if response.headers.get_content_type() != 'application/json':
-                raise CompanionDecisionError('JEV_RESPONSE_INVALID')
-            raw = response.read(_MAX_RESPONSE_BYTES + 1)
-        if len(raw) > _MAX_RESPONSE_BYTES:
-            raise CompanionDecisionError('JEV_RESPONSE_INVALID')
+        return self.json_response(request)
+
+    def json_response(self, request):
+        stage = 'request'
         try:
+            with self._opener.open(request, timeout=self.timeout_seconds) as response:
+                stage = 'http_response'
+                if response.status != 200:
+                    raise CompanionDecisionError('JEV_HTTP_ERROR')
+                if response.headers.get_content_type() != 'application/json':
+                    raise CompanionDecisionError('JEV_RESPONSE_INVALID')
+                raw = response.read(_MAX_RESPONSE_BYTES + 1)
+            if len(raw) > _MAX_RESPONSE_BYTES:
+                raise CompanionDecisionError('JEV_RESPONSE_INVALID')
+            stage = 'response_json'
             return json.loads(raw.decode('utf-8'), object_pairs_hook=_pairs,
                               parse_constant=_nonfinite)
-        except (ValueError, UnicodeError, RecursionError):
-            raise CompanionDecisionError('JEV_RESPONSE_INVALID') from None
+        except urllib.error.HTTPError as exc:
+            status, code = exc.code, _http_error_code(exc)
+            stage = 'http_response'
+            self._raise_transport_failure(request, code, stage, status, exc)
+        except CompanionDecisionError as exc:
+            self._raise_transport_failure(request, exc.code, stage, None, exc)
+        except (TimeoutError, urllib.error.URLError) as exc:
+            code = 'JEV_TIMEOUT' if isinstance(exc, TimeoutError) or isinstance(getattr(exc, 'reason', None), TimeoutError) else 'JEV_UNAVAILABLE'
+            self._raise_transport_failure(request, code, stage, None, exc)
+        except (OSError, http.client.HTTPException) as exc:
+            self._raise_transport_failure(request, 'JEV_UNAVAILABLE', stage, None, exc)
+        except (ValueError, UnicodeError, RecursionError) as exc:
+            self._raise_transport_failure(request, 'JEV_RESPONSE_INVALID', stage, None, exc)
+
+    def _raise_transport_failure(self, request, code, stage, status, exc):
+        from runtime.diagnostics.failure_context import record_jev_failure
+        failure = CompanionDecisionError(code)
+        failure.failure_context = record_jev_failure(exc, code, stage,
+            request_id=request.get_header('X-olivia-request-id'), http_status=status)
+        raise failure from exc
 
     async def decide(self, turn):
         if not isinstance(turn, FrozenCompanionTurn):
@@ -394,7 +425,8 @@ class JevDecisionPort:
             await settle_receipt(billing, hashlib.sha256(_json(self._packet(turn)).encode('utf-8')).hexdigest())
             return CompanionDecisionResult(decision=decision)
         except CompanionDecisionError as error:
-            code = error.code
+            return CompanionDecisionResult(error_code=error.code,
+                failure_context=getattr(error, 'failure_context', {}))
         except urllib.error.HTTPError as error:
             code = _http_error_code(error)
         except TimeoutError:

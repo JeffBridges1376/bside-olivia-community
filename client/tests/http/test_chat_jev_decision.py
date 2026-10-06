@@ -119,6 +119,20 @@ def ordinary_chat_result(**values):
     return result
 
 
+@pytest.mark.parametrize('record', [False, True])
+def test_auxiliary_recovery_remains_text_with_voice_and_extra_photos_enabled(monkeypatch, tmp_path, record):
+    from runtime.image_reply import secondary_photo_allowed
+    result = ordinary_chat_result(delivery='text', text_reason=None, sticker=None)
+    if not record:
+        result.companion_decision = None
+    result.degraded_stages = {'world' if record else 'decision': 'JEV_UNAVAILABLE'}
+    server, row, _, _, audio = server_fixture(monkeypatch, tmp_path, result)
+    assert asyncio.run(backend.generate(server, PersonalMessage('qq', 'b', 'u', '1', '今天怎么样？'), row))
+    assert row['requested_format'] == 'text' and not audio
+    assert row['degraded_stages'] == result.degraded_stages
+    assert not secondary_photo_allowed(row)
+
+
 @pytest.mark.parametrize('listening', ['voice_ok', 'text_only'])
 def test_qq_default_speech_does_not_depend_on_writer_opting_in_or_old_listening_preference(
         monkeypatch, tmp_path, listening):

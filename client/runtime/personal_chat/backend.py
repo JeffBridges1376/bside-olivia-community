@@ -448,6 +448,8 @@ async def _generate_billed(server, event, row):
                                 'received_source_id': f'reply:{event.exchange_id}:user',
                                 'input_revision': revision,
                                 'turn_is_current': turn_is_current,
+                                'recovery_namespace': json.dumps([event.channel, event.account_id,
+                                    event.owner_id, event.binding_id], ensure_ascii=False),
                                 'record_stage_timing': record_stage_timing,
                                 'generation_attempts': row.get('generation_attempts', 1),
                                  'last_decision_rejection_reason': row.get('decision_rejection_reason'),
@@ -510,7 +512,7 @@ async def _generate_billed(server, event, row):
         quality_fields = ('quality_status', 'reviewer_calls', 'rewrite_calls', 'decision_rejection_reason',
                           'decision_dropped_media',
                           'quality_error_code', 'quality_failure_stage', 'quality_violation_codes',
-                          'stage_timing_seconds', 'stage_cache_hits', 'stage_actual_calls')
+                          'stage_timing_seconds', 'stage_cache_hits', 'stage_actual_calls', 'degraded_stages')
         quality = project_chat_task({'channel': event.channel, **{
             field: getattr(result, field, None) for field in quality_fields},
             'quality_error_code': getattr(result, 'error_code', None),
@@ -631,7 +633,7 @@ async def _generate_billed(server, event, row):
             row.pop('sticker_id', None)
             row.pop('mailbox_notice_letter_id', None)
         from .mailbox_notice import attach_notice
-        if companion is None and contact is None:
+        if companion is None and contact is None and not row.get('degraded_stages'):
             text = attach_notice(getattr(server.store, 'letters', []), row, text)
         row['letter_invitation'] = contact is None and allowed and decision.get('letter_invitation', False)
         sticker = decision['sticker'] if decision['sticker'] in sticker_choices else None
@@ -640,6 +642,10 @@ async def _generate_billed(server, event, row):
         if not voice_available:
             mode = 'text'
             basis = voice_block
+        if row.get('degraded_stages'):
+            mode, basis = 'text', 'AUXILIARY_TEXT_RECOVERY'
+            row.pop('sticker_id', None)
+            row.pop('mailbox_notice_letter_id', None)
         row['presentation_status'] = 'VALIDATED'
         row.update(requested_format=mode, listening_preference='voice_ok', delivery_basis=basis)
         if not turn_is_current():
