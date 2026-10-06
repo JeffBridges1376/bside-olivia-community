@@ -107,7 +107,10 @@ def prepare(value):
         except Exception:
             raise ValueError('Invalid PDF') from None
     # A token allowance for admission, never a wallet hold or base64-byte price.
-    data = {'model': MODEL, 'stream': False, 'max_tokens': 2048, '_native_media': value}
+    # Gemini counts internal thoughts against its output cap. Scanned PDFs
+    # need headroom for OCR before any visible transcription can be returned.
+    output_limit = 8192 if kind == 'pdf' else 2048
+    data = {'model': MODEL, 'stream': False, 'max_tokens': output_limit, '_native_media': value}
     return data, media_tokens + 12000
 
 
@@ -116,7 +119,7 @@ async def complete(client, base, key, data, timeout_seconds=240):
     payload = {'contents': [{'role': 'user', 'parts': [
         {'inlineData': {'mimeType': value['mime_type'], 'data': value['data']}},
         {'text': PROMPTS[kind] + BOUNDARY}]}],
-        'generationConfig': {'maxOutputTokens': 2048, 'thinkingConfig': {'thinkingLevel': 'low'}}}
+        'generationConfig': {'maxOutputTokens': data['max_tokens'], 'thinkingConfig': {'thinkingLevel': 'low'}}}
     endpoint = base.rstrip('/').removesuffix('/v1') + '/v1beta/models/' + MODEL + ':generateContent'
     async with client.stream('POST', endpoint, json=payload,
             headers={'Authorization': 'Bearer ' + key}, timeout=httpx.Timeout(timeout_seconds, connect=10)) as response:

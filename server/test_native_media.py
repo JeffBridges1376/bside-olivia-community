@@ -77,5 +77,28 @@ class NativeTests(unittest.TestCase):
                 with self.assertRaises(ValueError):media.observation(failed,data)
         asyncio.run(scenario())
 
+    def test_scanned_pdf_has_room_for_provider_thoughts_before_visible_ocr(self):
+        # Production PDF receipt exhausted 2048 output tokens with thoughts
+        # included. Simulate the same cap-dependent truncation without a key.
+        from pypdf import PdfWriter
+        writer=PdfWriter();writer.add_blank_page(200,200)
+        raw=BytesIO();writer.write(raw)
+        data,budget=media.prepare(request(raw.getvalue(),'pdf','application/pdf'))
+        async def scenario():
+            async def handle(req):
+                cap=json.loads(req.content)['generationConfig']['maxOutputTokens']
+                finished=cap>=2500
+                return httpx.Response(200,json={
+                    'candidates':[{'finishReason':'STOP' if finished else 'MAX_TOKENS',
+                        'content':{'parts':[{'text':'NOTEBOOK Z9P2 / Quantity: 17'}] if finished else []}}],
+                    'usageMetadata':{'promptTokenCount':650,'thoughtsTokenCount':2400 if finished else 2048,
+                        'candidatesTokenCount':100 if finished else 0,'totalTokenCount':3150 if finished else 2698}})
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+                result=await media.complete(client,'https://example.invalid/v1','synthetic',data)
+                self.assertEqual(media.observation(result,data)['summary'],'NOTEBOOK Z9P2 / Quantity: 17')
+                self.assertEqual(result['usage']['completion_tokens'],2500)
+                self.assertGreaterEqual(budget,result['usage']['total_tokens'])
+        asyncio.run(scenario())
+
 
 if __name__=='__main__':unittest.main()
