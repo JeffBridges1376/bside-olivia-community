@@ -1287,4 +1287,4 @@ def test_new_media_files_are_not_allowed_in_the_public_repository(tmp_path):
         path.write_bytes(b'x')
     findings = scan.scan_large_files(tmp_path, allowed + blocked)
     assert sorted(item.split(':')[0] for item in findings) == sorted(
-        str(path.relative_to(tmp_path)).replace('\', '/') for path in blocked)
+        path.relative_to(tmp_path).as_posix() for path in blocked)
