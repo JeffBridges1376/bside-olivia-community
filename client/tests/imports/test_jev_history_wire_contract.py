@@ -32,8 +32,9 @@ def upstream_choice_contract(monkeypatch):
                    for description in question['criteria'].values()):
                 raise ProviderRejected()
             return {key: {'type': 'choice', 'choice':
-                         'unknown' if key == 'stage' else 'yes' if key.startswith('e') else '20'}
-                    for key in questions}
+                         'unknown' if key == 'stage' else 'yes' if key.startswith('e')
+                         else '20' if '20' in question['criteria'] else 'up_small'}
+                    for key, question in questions.items()}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
