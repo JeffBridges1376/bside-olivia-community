@@ -71,3 +71,27 @@ Run `python -m unittest discover -s server -p test_relay_pricing.py` to check cu
 model rates, pending receipt compatibility and refusal of changed cloud sources.
 `test_relay_pricing_billing.py` verifies idempotent settlement of old and new receipts
 using the staged service sources and an isolated Django test database.
+
+## Explicit upstream failures
+
+`install_upstream_retry.py <staged-service-root>` prepares retries on the reviewed
+ASGI chat relay and Responses bridge. It checks the existing cloud source hashes
+before writing staged files and performs no deployment or database migration.
+All selectable chat models use the same rule: at most three attempts within the
+existing request deadline, with bounded backoff and Retry-After handling.
+
+Retries require an explicit provider error without generated content or reported
+consumption. Temporary HTTP errors and failed Responses envelopes are eligible;
+invalid requests, authentication/balance failures, unknown usage and interrupted
+output are terminal. Native media observations and web-search operations retain
+their existing rules. The same reservation and frozen billing terms are reused;
+only the successful result settles consumption. Exhausted explicit rejections
+settle zero and use the existing terminal error contract so older clients do not
+repeat the cloud retry loop. A key is checked again before each retry.
+
+Run `python -m unittest discover -s server -p test_upstream_retry.py` for synthetic
+HTTP/stream checks. `test_upstream_retry_billing.py` exercises the staged live Relay
+against an isolated Django test database, including all ten models in streaming
+and non-streaming modes, duplicate submissions, cancellation, revocation, and
+unknown usage after a rejected attempt. These are fault simulations, not live
+provider generation or client-device acceptance.
