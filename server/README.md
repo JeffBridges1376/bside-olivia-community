@@ -58,3 +58,16 @@ and the staged live service sources; it must never point at a production databas
 
 These checks use synthetic fixtures. A supplier call proves the adapter request and
 response work for that fixture; it does not prove real QQ user/device acceptance.
+
+## Model billing configuration
+
+`install_relay_pricing.py <staged-service-root>` prepares the reviewed model pricing
+revision after checking both cloud source hashes. Model selection continues to use
+Sonnet 5.5 as its multiplier baseline. Existing receipts retain their frozen price
+version, rate divisor and minimum charge. This preparation performs no deployment,
+database migration or client release.
+
+Run `python -m unittest discover -s server -p test_relay_pricing.py` to check current
+model rates, pending receipt compatibility and refusal of changed cloud sources.
+`test_relay_pricing_billing.py` verifies idempotent settlement of old and new receipts
+using the staged service sources and an isolated Django test database.
