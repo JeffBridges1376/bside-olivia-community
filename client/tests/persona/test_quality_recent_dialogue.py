@@ -106,3 +106,28 @@ def test_rewrite_rejects_unsupported_json_shells(monkeypatch, response):
     with pytest.raises(RuntimeError, match='REWRITE_OUTPUT_INVALID'):
         quality.GatewayPersonaRewriter(SimpleNamespace(), ROOT / 'missing.json', 2).rewrite_with_messages(
             '行，你眯吧。', _context(), (), messages())
+
+
+@pytest.mark.parametrize('response', [
+    '```json\n[ {"text":"Synthetic replacement.","analysis":"SYNTHETIC_ANALYSIS"}\n```',
+    '```json\n[\n{"text":"Synthetic replacement.","analysis":"SYNTHETIC_ANALYSIS"}\n```',
+    '```json\n[ "SYNTHETIC_ANALYSIS"\n```',
+    '```json\n[ 123,\n```',
+    json.dumps({'text': json.dumps({'analysis': 'SYNTHETIC_ANALYSIS'})}),
+    json.dumps({'text': json.dumps({'delivery': 'voice'})}),
+])
+def test_unwrapped_body_cannot_retain_an_invalid_json_shell(monkeypatch, response):
+    monkeypatch.setattr(quality, '_complete_text', lambda *a, **k: response)
+    with pytest.raises(RuntimeError, match='REWRITE_OUTPUT_INVALID'):
+        quality.GatewayPersonaRewriter(SimpleNamespace(), ROOT / 'missing.json', 2).rewrite_with_messages(
+            'Synthetic draft.', _context(), (), messages())
+
+
+@pytest.mark.parametrize('response', [
+    json.dumps({'text': '[今天还不错]'}),
+    '```\n[今天还不错]\n```',
+])
+def test_unwrapped_plain_bracketed_text_remains_compatible(monkeypatch, response):
+    monkeypatch.setattr(quality, '_complete_text', lambda *a, **k: response)
+    assert quality.GatewayPersonaRewriter(SimpleNamespace(), ROOT / 'missing.json', 2).rewrite_with_messages(
+        'Synthetic draft.', _context(), (), messages()) == '[今天还不错]'

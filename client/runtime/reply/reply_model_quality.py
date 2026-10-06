@@ -1049,7 +1049,7 @@ class GatewayPersonaRewriter:
         if not rewritten:
             raise RuntimeError("REWRITE_OUTPUT_EMPTY")
         if not fact_sentences:
-            fenced_depth = 0
+            wrapper_depth = 0
             for _ in range(3):
                 if rewritten.startswith("```"):
                     # One complete, supported code block only: the body may not
@@ -1063,7 +1063,7 @@ class GatewayPersonaRewriter:
                     if fenced is None:
                         raise RuntimeError("REWRITE_OUTPUT_INVALID")
                     rewritten = fenced.group("body").strip()
-                    fenced_depth += 1
+                    wrapper_depth += 1
                     continue
                 if not rewritten.startswith(("{", "[")):
                     break
@@ -1073,20 +1073,22 @@ class GatewayPersonaRewriter:
                     # Looks like a JSON wrapper but is not valid JSON: statement
                     # text merely bracketed by the author is left alone, while a
                     # truncated wrapper fails closed.
-                    if rewritten.startswith(("{", "[{")):
+                    if (rewritten.startswith("{")
+                            or re.match(r'\[\s*(?:[\[{"0-9-]|true\b|false\b|null\b)', rewritten)):
                         raise RuntimeError("REWRITE_OUTPUT_INVALID")
                     break
                 if isinstance(envelope, list):
                     # Arrays are not part of the generation envelope contract.
                     raise RuntimeError("REWRITE_OUTPUT_INVALID")
                 if not isinstance(envelope, dict) or "text" not in envelope:
-                    if fenced_depth:
+                    if wrapper_depth:
                         raise RuntimeError("REWRITE_OUTPUT_INVALID")
                     break
                 if (set(envelope) != {"text"}
                         or not isinstance(envelope.get("text"), str)):
                     raise RuntimeError("REWRITE_OUTPUT_INVALID")
                 rewritten = envelope["text"].strip()
+                wrapper_depth += 1
             else:
                 raise RuntimeError("REWRITE_OUTPUT_INVALID")
             if not rewritten:
