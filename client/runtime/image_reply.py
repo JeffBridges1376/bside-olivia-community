@@ -410,6 +410,14 @@ async def _prepare_once(server, row, content, text, *, channel='letter', on_read
         if identity == 'None': raise ValueError('IMAGE_ID_INVALID')
         photo_id = hashlib.sha256((channel+':'+identity).encode()).hexdigest()[:32]
         caps = await api.request('capabilities', {})
+        # A delisted model must not create new work, but a frozen receipt must
+        # remain recoverable without turning an existing task into a new charge.
+        if 'model' in settings and not row.get('image_receipt_required'):
+            media_root = server._media_root() if callable(getattr(server, '_media_root', None)) else server._state_root() / 'media'
+            receipt = (media_root / ('photo-' + photo_id + '.png')).with_suffix('.task.json') if media_root is not None else None
+            if receipt is None or not receipt.is_file():
+                from runtime.video_reply_settings import require_image_model
+                require_image_model(settings, caps)
         if caps.get('server_media_planning') is True and ('image_plan' not in row or row.get('image_server_planned')):
             from runtime.wardrobe import style_for, DEFAULT_STYLE
             style = style_for(settings)
@@ -464,6 +472,7 @@ async def _prepare_once(server, row, content, text, *, channel='letter', on_read
         row['image_dependency_available'] = True
         payload = {k:v for k,v in plan.items() if k != 'attach'}
         payload['resolution'] = settings['resolution']
+        if 'model' in settings: payload['model'] = settings['model']
         name = 'photo-' + photo_id + '.png'
         media_root = server._media_root() if callable(getattr(server, '_media_root', None)) else server._state_root() / 'media'
         if media_root is None: raise ValueError('IMAGE_STORAGE_UNAVAILABLE')
@@ -539,12 +548,18 @@ async def _server_photo(server, row, content, text, api, photo_id, settings, pro
     if row['image_server_request']['incoming'] != content or row['image_server_request']['reply'] != text:
         raise ValueError('IMAGE_GENERATION_BINDING_CHANGED')
     payload = {'media_request':row['image_server_request'],'resolution':settings['resolution']}
+    if 'model' in settings: payload['model'] = settings['model']
     name = 'photo-'+photo_id+'.png'
     media_root = server._media_root() if callable(getattr(server,'_media_root',None)) else server._state_root()/'media'
     if media_root is None:
         raise ValueError('IMAGE_STORAGE_UNAVAILABLE')
     path = media_root/name
     receipt = path.with_suffix('.task.json')
+    fingerprint = hashlib.sha256(json.dumps([api.url, hashlib.sha256(api.token.encode()).hexdigest(),
+                                'image', payload, {}], sort_keys=True).encode()).hexdigest()
+    if row.setdefault('image_generation_binding', fingerprint) != fingerprint:
+        raise ValueError('IMAGE_GENERATION_BINDING_CHANGED')
+    _check_receipt(receipt, fingerprint, payload, row.get('image_receipt_required', False))
     row['image_server_planned'] = True
     server._persist_store_state()
     def validate(output):

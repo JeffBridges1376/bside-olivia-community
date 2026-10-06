@@ -12,6 +12,41 @@ REPLY_ROUTES = ("voice_reply", "singing_video", "voice_song_video")
 DEFAULT_ROUTE_VIDEOS = {"voice_reply": False, "singing_video": True, "voice_song_video": True}
 REPLY_TIERS = ("text", "audio", "video")
 DEFAULT_IMAGE = {"enabled": True, "resolution": "1K"}
+_IMAGE_MODEL_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$')
+
+
+def image_model_capability(capabilities):
+    """The cloud advertises only tested models with approved retail prices."""
+    image = capabilities.get('image') if isinstance(capabilities, dict) else None
+    if not isinstance(image, dict) or 'models' not in image:
+        return None  # Old servers keep their existing default-image behavior.
+    models, seen = [], set()
+    items = image['models']
+    if not isinstance(items, list) or len(items) > 32:
+        return {'models': []}
+    for item in items:
+        if (not isinstance(item, dict) or not isinstance(item.get('id'), str)
+                or not _IMAGE_MODEL_ID.fullmatch(item['id']) or item['id'] in seen
+                or not isinstance(item.get('display_name'), str) or not 1 <= len(item['display_name'].strip()) <= 80
+                or not isinstance(item.get('resolutions'), list) or not item['resolutions']
+                or any(value not in ('1K', '2K', '4K') for value in item['resolutions'])
+                or len(set(item['resolutions'])) != len(item['resolutions'])):
+            return {'models': []}
+        seen.add(item['id'])
+        models.append({key: deepcopy(item[key]) for key in ('id', 'display_name', 'resolutions')})
+    result = {'models': models}
+    if isinstance(image.get('default_model'), str) and image['default_model'] in seen:
+        result['default_model'] = image['default_model']
+    return result
+
+
+def require_image_model(image, capabilities):
+    if 'model' not in image:
+        return
+    catalog = image_model_capability(capabilities)
+    if not catalog or not any(item['id'] == image['model'] and image.get('resolution') in item['resolutions']
+                              for item in catalog['models']):
+        raise VideoReplySettingsError('IMAGE_MODEL_UNAVAILABLE', status=503)
 
 def tier_preferences(tier):
     if not isinstance(tier, str) or tier not in REPLY_TIERS:
@@ -133,8 +168,10 @@ class VideoReplySettingsStore:
             return {'status': 'APPLIED', 'image': dict(image)}
     @staticmethod
     def _validate_image(image):
-        if (not isinstance(image, dict) or set(image) != {'enabled', 'resolution'}
-                or type(image['enabled']) is not bool or image['resolution'] not in ('1K', '2K', '4K')):
+        if (not isinstance(image, dict) or not {'enabled', 'resolution'} <= set(image)
+                or set(image) - {'enabled', 'resolution', 'model'}
+                or type(image['enabled']) is not bool or image['resolution'] not in ('1K', '2K', '4K')
+                or ('model' in image and (not isinstance(image['model'], str) or not _IMAGE_MODEL_ID.fullmatch(image['model'])))):
             raise VideoReplySettingsError('VIDEO_REPLY_SETTING_PAYLOAD_INVALID', status=400)
     def tier_snapshot(self):
         routes, videos = self.routes_snapshot(), self.videos_snapshot()
