@@ -93,11 +93,12 @@ def test_letter_silence_contract_is_unchanged(timing):
     assert result.companion_timing == timing and not engine.requests
 
 
-def test_jev_failure_is_explicit_and_does_not_use_old_interpreter():
+def test_jev_transport_failure_recovers_text_without_old_interpreter_or_fake_decision():
     old = Interpreter()
     result, engine = run(Port(error='JEV_UNAVAILABLE'), interpreter=old)
-    assert result.state is ReplyState.FAILED and result.error_code == 'JEV_UNAVAILABLE'
-    assert not old.seen and not engine.requests
+    assert result.state is ReplyState.COMPLETED and result.companion_decision is None
+    assert result.degraded_stages == {'decision': 'JEV_UNAVAILABLE'}
+    assert not old.seen and len(engine.requests) == 1
 
 
 def test_complex_media_not_silently_reduced_to_text():

@@ -10,6 +10,7 @@ import os
 import time
 from collections import OrderedDict
 import re
+import random
 from datetime import datetime
 from typing import Any, Mapping, Protocol
 
@@ -44,6 +45,24 @@ from runtime.reply.prompt_budget import PromptBudgetExceeded
 _CHARACTER_REPLY_HISTORY_LIMIT = 1200
 _CHARACTER_REPLY_PREFIX = "character_reply: "
 _PERSONA_NOT_READY = "PERSONA_NOT_READY"
+_TEXT_RECOVERY_CODES = frozenset({
+    'JEV_UNAVAILABLE', 'JEV_TIMEOUT', 'JEV_WORLD_SELECTION_UNAVAILABLE',
+    'JEV_PROVIDER_CONNECT_FAILED', 'JEV_PROVIDER_READ_FAILED', 'JEV_PROVIDER_JSON_INVALID',
+    *(f'JEV_PROVIDER_HTTP_{n}' for n in (429, 500, 502, 503, 504, 529)),
+    'JEV_HTTP_429', 'JEV_HTTP_503',
+})
+_TEXT_RECOVERY_NOTE = (
+    '本轮部分辅助理解或世界资料暂不可用，缺失信息保持未知。当前用户原话、核心人格、'
+    '已有可信关系与原话证据仍有效，不能据此清空关系或否认已有约定。'
+    '只用可核对的资料自然回应或澄清，不推断午饭、活动、天气等缺失事实。'
+    '本轮只有文字回应权限，没有有效媒体或控制计划。用户要求的媒体尚未完成，'
+    '不得声称已经制作、发送或兑现；偏好、未来任务和记忆不得改变，也不能承诺稍后主动发送。'
+)
+_TEXT_RECOVERY_OUTPUT = (
+    '\n本轮恢复路径只输出文字：delivery="text",text_reason=null,skip=false,sticker=null，'
+    'listening、initiative、letter均为keep，pause_until、letter_until、followup_at均为null，'
+    'evidence为空。不包含speech或silence，不邀请写信。这里只回应或澄清，不执行任何动作。'
+)
 
 
 class _PersonaNotReadyError(RuntimeError):
@@ -126,6 +145,7 @@ class PipelineResult:
     stage_actual_calls: dict[str, int] = field(default_factory=dict)
     failure_context: dict[str, object] = field(default_factory=dict)
     decision_dropped_media: str | None = None
+    degraded_stages: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -153,6 +173,7 @@ class ReplyPipeline:
         current_turn_interpreter: CurrentTurnInterpreterPort | None = None,
         companion_decision_port: object | None = None,
         silence_authorization_port: object | None = None,
+        recovery_root=None,
     ) -> None:
         self.orchestrator = orchestrator
         self.companion_decision_port = companion_decision_port
@@ -180,22 +201,26 @@ class ReplyPipeline:
             and runtime_rewriter is not None
             else rewriter
         )
-        # Runtime-only, bounded to interrupted chat turns. Never serialize model
-        # bodies or typed quality results into rows or diagnostic bundles.
+        # Typed quality results remain in memory; private writer candidates may
+        # survive restarts outside rows and diagnostic bundles.
         self._stage_recoveries = OrderedDict()
+        from .stage_recovery import WriterRecoveryStore
+        self._writer_store = WriterRecoveryStore(recovery_root) if recovery_root is not None else None
 
     @staticmethod
     def _recovery_key(metadata):
         source, revision = metadata.get('received_source_id'), metadata.get('input_revision')
+        namespace = metadata.get('recovery_namespace', '')
         if (metadata.get('proactive') or not isinstance(source, str) or not source
-                or type(revision) is not int or not callable(metadata.get('turn_is_current'))):
+                or type(revision) is not int or revision < 0 or not isinstance(namespace, str)
+                or not callable(metadata.get('turn_is_current'))):
             return None
-        return source, revision
+        return source, revision, metadata.get('recovery_namespace', '')
 
-    def _forget_recovery(self, key):
+    def _forget_recovery(self, key, *, preserve_writer=False):
         entry = self._stage_recoveries.pop(key, None)
         if entry is not None:
-            entry[1].invalidate()
+            entry[1].invalidate(preserve_writer=preserve_writer)
 
     def _recover_stages(self, metadata, fingerprint):
         from .stage_recovery import StageRecovery
@@ -206,26 +231,32 @@ class ReplyPipeline:
             return None
         now = time.monotonic()
         for old, (created, _) in tuple(self._stage_recoveries.items()):
-            if now - created > 300 or old[0] == key[0] and old != key:
-                self._forget_recovery(old)
+            if now - created > 300 or old[0] == key[0] and old[2] == key[2] and old != key:
+                self._forget_recovery(old, preserve_writer=now - created > 300)
         guard = metadata['turn_is_current']
         if not guard():
             self._forget_recovery(key)
             return None
         entry = self._stage_recoveries.get(key)
-        recovery = entry[1] if entry is not None else StageRecovery(fingerprint, guard)
+        from .stage_recovery import canonical_hash
+        storage_key = canonical_hash(key) if isinstance(key[2], str) and key[2] else None
+        recovery = entry[1] if entry is not None else StageRecovery(fingerprint, guard,
+            writer_store=self._writer_store if storage_key is not None else None, storage_key=storage_key)
         recovery.bind_input(fingerprint, guard)
         self._stage_recoveries[key] = now, recovery
         self._stage_recoveries.move_to_end(key)
         while len(self._stage_recoveries) > 16:
-            self._forget_recovery(next(iter(self._stage_recoveries)))
+            self._forget_recovery(next(iter(self._stage_recoveries)), preserve_writer=True)
         return recovery
 
     async def run(self, request: object, context: ReplyContext) -> PipelineResult:
         from runtime.personal_chat.presentation import CURRENT
-        metadata = (CURRENT.get() or {}) if isinstance(context, ReplyContext) and context.mode is ReplyMode.FUTURE_IM else {}
+        from .companion_runtime import TURN_CONTEXT
+        metadata = ((CURRENT.get() or {}) if context.mode is ReplyMode.FUTURE_IM else
+                    (TURN_CONTEXT.get() or {}) if context.mode is ReplyMode.TEXT_LETTER else {}) if isinstance(context, ReplyContext) else {}
         key = self._recovery_key(metadata)
         timings = {}
+        degraded = {}
         started = time.perf_counter()
         async def measure(name, work):
             begin = time.perf_counter()
@@ -234,7 +265,7 @@ class ReplyPipeline:
             finally:
                 timings[name] = round(timings.get(name, 0) + time.perf_counter() - begin, 4)
         try:
-            result = await self._run(request, context, measure)
+            result = await self._run(request, context, measure, degraded, metadata)
         except BaseException:
             self._forget_recovery(key)
             raise
@@ -252,16 +283,19 @@ class ReplyPipeline:
         # A rejected candidate needs fresh generation. Only a failed provider
         # stage may reuse its successful prefix within the existing two attempts.
         if result.error_code not in recoverable or metadata.get('generation_attempts', 1) >= 2:
-            self._forget_recovery(key)
-        return replace(result, stage_timing_seconds=timings)
+            self._forget_recovery(key, preserve_writer=result.error_code in recoverable)
+        return replace(result, stage_timing_seconds=timings, degraded_stages=degraded)
 
-    async def _run(self, request: object, context: ReplyContext, measure) -> PipelineResult:
+    async def _run(self, request: object, context: ReplyContext, measure, degraded, receipt_metadata) -> PipelineResult:
         if not isinstance(context, ReplyContext):
             raise TypeError("ReplyContext is required")
         sticker_choices = allowed_stickers(context.private_behavior)
         if context.mode is ReplyMode.TEXT_LETTER:
+            from .stage_recovery import canonical_hash
+            seed = canonical_hash(self._recovery_key(receipt_metadata)) if self._recovery_key(receipt_metadata) is not None else None
             sticker_choices = weighted_candidates(
                 sticker_choices, context.sticker_history, limit=32,
+                rng=random.Random(seed) if seed is not None else None,
             )
         sticker_note = (LETTER_PRESENTATION_INSTRUCTION + '\n' + selection_instruction(sticker_choices)) if context.mode is ReplyMode.TEXT_LETTER else ""
         generation_note = sticker_note
@@ -306,7 +340,12 @@ class ReplyPipeline:
                 return PipelineResult(getattr(request, 'request_id', ''), ReplyState.FAILED,
                                       error_code='JEV_CONFIG_INVALID')
         use_companion = interpret_turn and companion_port is not None
-        parallel_preparation = context.mode is ReplyMode.FUTURE_IM and not (chat_metadata or {}).get('proactive')
+        parallel_preparation = context.mode in {ReplyMode.TEXT_LETTER, ReplyMode.FUTURE_IM} and not (chat_metadata or {}).get('proactive')
+        text_recovery_allowed = (parallel_preparation and isinstance(user_text, str) and bool(user_text.strip())
+                                 and (context.mode is ReplyMode.TEXT_LETTER or (chat_metadata or {}).get('structured')))
+        if callable((chat_metadata or {}).get('turn_is_current')) and not chat_metadata['turn_is_current']():
+            return PipelineResult(getattr(request, 'request_id', ''), ReplyState.FAILED,
+                                  error_code='JEV_INPUT_SUPERSEDED')
         ordinary_chat = (context.mode is ReplyMode.FUTURE_IM
                          and (chat_metadata or {}).get('structured')
                          and not (chat_metadata or {}).get('proactive'))
@@ -338,7 +377,13 @@ class ReplyPipeline:
                 if isinstance(generation_request, ReplyRequest) and generation_request.messages is None:
                     select_life = getattr(adapter, 'prepare_daily_life_fragments', None)
                     if callable(select_life) and getattr(adapter, 'daily_life', None) is not None:
-                        return await select_life(generation_request.content or '', now=context.trusted_time.instant)
+                        try:
+                            return await select_life(generation_request.content or '', now=context.trusted_time.instant)
+                        except WorldSelectionError as error:
+                            if not text_recovery_allowed or str(error) not in _TEXT_RECOVERY_CODES:
+                                raise
+                            degraded['world'] = str(error)
+                            return ()  # Never reload an old world through the sync adapter.
 
             async def interpret_safely():
                 try:
@@ -460,6 +505,12 @@ class ReplyPipeline:
                     except Exception:
                         raise CompanionRuntimeError('JEV_DECISION_NOT_SAVED') from None
                 companion_timing, companion_delivery = delivery_for(decision, kinds=kinds)
+                if degraded and (companion_delivery not in {None, 'text'}
+                                 or companion_decision.get('speech_request')):
+                    # Missing world context cannot turn a valid requested media
+                    # plan into a completed text reply. Keep its requirements.
+                    return PipelineResult(getattr(request, 'request_id', ''), ReplyState.FAILED,
+                        error_code=degraded['world'], companion_decision=companion_decision, retryable=True)
                 if companion_timing in {'wait_user', 'defer', 'no_reply'}:
                     if not ordinary_chat:
                         return PipelineResult(getattr(request, 'request_id', ''), ReplyState.COMPLETED,
@@ -476,15 +527,32 @@ class ReplyPipeline:
                     delivery=('letter_image' if context.mode is ReplyMode.TEXT_LETTER
                               and companion_delivery == 'image' else
                               # Apply the QQ speech default without changing requested media.
-                              'voice_default' if (context.mode is ReplyMode.FUTURE_IM and companion_delivery == 'text'
+                              'voice_default' if (not degraded and context.mode is ReplyMode.FUTURE_IM and companion_delivery == 'text'
                                                   and (chat_metadata or {}).get('structured')
                                                   and (chat_metadata or {}).get('channel') == 'qq'
                                                   and 'audio_speech' in kinds and not media_locked(decision.plan))
                               else companion_delivery)),
                     max_input_chars=original_budget-len(generation_note)-2)
             except CompanionRuntimeError as error:
+                if not text_recovery_allowed or str(error) not in _TEXT_RECOVERY_CODES or companion_decision is not None:
+                    return PipelineResult(getattr(request, 'request_id', ''), ReplyState.FAILED,
+                        error_code=str(error), companion_decision=companion_decision,
+                        failure_context=getattr(error, 'failure_context', {}))
+                degraded['decision'] = str(error)
+        if degraded:
+            # This is an application-owned text/clarification lane, not a fabricated
+            # Jev decision. Unknown media/control requirements gain no authority.
+            companion_timing, companion_delivery = 'now', 'text'
+            from .fact_attribution import finalize_reply_messages
+            try:
+                prepared = replace(prepared, messages=finalize_reply_messages(
+                    _generation_messages(prepared), _TEXT_RECOVERY_NOTE,
+                    max_input_chars=original_budget-len(generation_note)-len(_TEXT_RECOVERY_OUTPUT)-2))
+            except ValueError:
                 return PipelineResult(getattr(request, 'request_id', ''), ReplyState.FAILED,
-                    error_code=str(error), companion_decision=companion_decision)
+                                      error_code='INPUT_TOO_LONG')
+            if ordinary_chat:
+                generation_note += _TEXT_RECOVERY_OUTPUT
         if isinstance(prepared, ReplyRequest) and prepared.messages:
             from .character_emotion_context import project_emotion
             prepared = replace(prepared, messages=project_emotion(prepared.messages, emotion_view,
@@ -523,14 +591,14 @@ class ReplyPipeline:
                 return PipelineResult(prepared.request_id, ReplyState.FAILED,
                                       error_code='INPUT_TOO_LONG', retryable=False)
             prepared = replace(prepared, messages=messages, max_input_chars=original_budget)
-        speech_request = None if reconsidered_silence else (companion_decision or {}).get('speech_request')
+        speech_request = None if degraded or reconsidered_silence else (companion_decision or {}).get('speech_request')
         speech_note = None
         if speech_request and (chat_metadata or {}).get('channel') == 'qq':
             speech_note = '<speech_request>' + json.dumps(speech_request, ensure_ascii=False) + '</speech_request>'
             if speech_request['continuation']:
                 from .fact_attribution import story_evidence
                 speech_note += '\n' + story_evidence((chat_metadata or {}).get('story_continuation'))
-        elif (context.mode is ReplyMode.FUTURE_IM and (chat_metadata or {}).get('structured')
+        elif (not degraded and context.mode is ReplyMode.FUTURE_IM and (chat_metadata or {}).get('structured')
               and chat_metadata.get('channel') == 'qq' and chat_metadata.get('speech_enabled') is True
               and not chat_metadata.get('proactive')
               and (companion_decision or {}).get('speech_offer') in {'none', 'bedtime', 'clarify'}):
@@ -554,12 +622,19 @@ class ReplyPipeline:
         expression_context = freeze_expression_context(getattr(request, 'request_id', ''),
             context.trusted_time.instant, world=world, emotion=adopted.get('emotion'))
         from .stage_recovery import canonical_hash
+        provider_binding = (getattr(adapter, 'config', None),
+            tuple((type(port).__module__, type(port).__qualname__, getattr(port, 'config', None),
+                   getattr(getattr(port, 'adapter', None), 'config', None),
+                   getattr(getattr(port, 'gateway', None), 'config', None),
+                   getattr(getattr(getattr(port, '_transport', None), 'gateway', None), 'config', None)) for port in
+                  (self.orchestrator, self.reviewer, self.rewriter)),
+            os.environ.get('OLIVIA_JEV_DECISION_URL', ''), os.environ.get('OLIVIA_REPLY_REVIEW_ENABLED', ''))
         fingerprint = canonical_hash(_generation_messages(prepared), context.to_dict(),
             preparation.trusted_evidence, preparation.persona_snapshot,
             getattr(prepared, 'max_input_chars', None), getattr(prepared, 'gateway_scope', None),
-            id(self.orchestrator), id(self.reviewer), id(self.rewriter))
-        recovery = self._recover_stages(chat_metadata or {}, fingerprint) if context.mode is ReplyMode.FUTURE_IM else None
-        if callable((chat_metadata or {}).get('turn_is_current')) and not chat_metadata['turn_is_current']():
+            provider_binding)
+        recovery = self._recover_stages(receipt_metadata, fingerprint)
+        if callable(receipt_metadata.get('turn_is_current')) and not receipt_metadata['turn_is_current']():
             return PipelineResult(getattr(request, 'request_id', ''), ReplyState.FAILED,
                                   error_code='JEV_INPUT_SUPERSEDED')
         candidate = recovery.get_writer(getattr(prepared, 'request_id', None)) if recovery is not None else None
@@ -616,6 +691,15 @@ class ReplyPipeline:
                 envelope = json.loads(fenced.group(1) if fenced else clean_text)
                 if isinstance(envelope, list):
                     envelope = envelope[0]
+                if degraded:
+                    from runtime.personal_chat.decision import NEUTRAL_METADATA
+                    required = {**NEUTRAL_METADATA, 'text_reason': None, 'sticker': None}
+                    if (not isinstance(envelope, dict) or any(envelope.get(k) != v for k, v in required.items())
+                            or envelope.get('speech') is not None or 'silence' in envelope
+                            or envelope.get('letter_invitation') is True):
+                        return PipelineResult(candidate.request_id, ReplyState.FAILED,
+                            error_code='PERSONAL_CHAT_DECISION_INVALID',
+                            decision_rejection_reason='RECOVERY_ACTION_WITHOUT_PLAN')
                 if decision.get('dropped_media'):
                     envelope.pop('speech', None)
                     clean_text = json.dumps(envelope, ensure_ascii=False)

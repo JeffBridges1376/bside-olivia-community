@@ -449,6 +449,10 @@ def _safe_log(event: str, **fields) -> None:
     print(json.dumps(record, ensure_ascii=False, sort_keys=True))
 
 
+from runtime.diagnostics.failure_context import set_failure_logger
+set_failure_logger(_safe_log)
+
+
 def _diagnostic_code(prefix: str, exc: Exception) -> str:
     name = type(exc).__name__.upper()
     name = _re.sub(r"[^A-Z0-9]+", "_", name).strip("_") or "ERROR"
@@ -531,6 +535,7 @@ def apply_runtime_llm_config(
             rewriter=rewriter or UnavailableRewriter(),
             discover_runtime_ports=False,
             current_turn_interpreter=_runtime_current_turn_interpreter(quality_orchestrator),
+            recovery_root=_conversation_state_root() or _local_data_root(),
         )
     except Exception:
         raise
@@ -1931,6 +1936,7 @@ reply_pipeline = ReplyPipeline(
     reply_engine,
     reviewer=NullReviewer(),
     rewriter=UnavailableRewriter(),
+    recovery_root=_conversation_state_root() or _local_data_root(),
 )
 
 # ---------------------------------------------------------------------------
@@ -6152,8 +6158,10 @@ async def _run_reply_pipeline_for_letter(
     )
     from runtime.reply.companion_runtime import TURN_CONTEXT
     input_revision = letter.get('input_revision', 0)
+    def turn_is_current():
+        return letter.get('input_revision', 0) == input_revision and letter.get('content', content) == content
     async def save_companion_decision(record):
-        if letter.get('input_revision', 0) != input_revision or letter.get('content', content) != content:
+        if not turn_is_current():
             raise RuntimeError('JEV_INPUT_SUPERSEDED')
         letter['companion_decision'] = record
         _persist_store_state()
@@ -6165,7 +6173,8 @@ async def _run_reply_pipeline_for_letter(
                        + (['audio_speech'] if exact_mode in {ReplyMode.TEXT_LETTER.value, 'voice_reply'}
                           and (letter.get('reply_routes') or {}).get('voice_reply') is True else []),
         input_revision=input_revision, companion_decision=letter.get('companion_decision'),
-        save_companion_decision=save_companion_decision))
+        save_companion_decision=save_companion_decision, turn_is_current=turn_is_current,
+        recovery_namespace=_memory_config.user_id))
     try:
         reply_input = reply_input_override
         if reply_input is None:
@@ -6199,6 +6208,15 @@ async def _run_reply_pipeline_for_letter(
             letters_adapter.build_reply_context(ReplyMode(exact_mode)),
             letter.get('image_reply_settings', {}),
         )
+        if exact_mode == ReplyMode.TEXT_LETTER.value:
+            from runtime.reply.reply_context import TrustedTime
+            if letter.get('generation_context_at'):
+                try:
+                    context = replace(context, trusted_time=TrustedTime(
+                        datetime.fromisoformat(letter['generation_context_at']), source=context.trusted_time.source))
+                except (ValueError, TypeError):
+                    letter.pop('generation_context_at', None)
+            letter.setdefault('generation_context_at', context.trusted_time.instant.isoformat())
         if exact_mode == ReplyMode.TEXT_LETTER.value:
             from original_client_letter_contract import _published
             context = replace(context, sticker_history=tuple(
@@ -6349,6 +6367,10 @@ async def _generate_reply_billed(letter_id, content, *, idempotency_key=None):
             'reviewer_calls': getattr(result, 'reviewer_calls', None),
             'rewrite_calls': getattr(result, 'rewrite_calls', None),
             'quality_error_code': result.error_code,
+            'degraded_stages': getattr(result, 'degraded_stages', {}),
+            'stage_timing_seconds': getattr(result, 'stage_timing_seconds', {}),
+            'stage_cache_hits': getattr(result, 'stage_cache_hits', {}),
+            'stage_actual_calls': getattr(result, 'stage_actual_calls', {}),
         })
         letter.update(quality)
         # Keep the existing private state contract; exported metadata is finite.
@@ -6364,8 +6386,11 @@ async def _generate_reply_billed(letter_id, content, *, idempotency_key=None):
         from runtime.diagnostics.support_bundle import project_reply_quality
         _safe_log("letter_failed", error_code=public_code,
                   **project_reply_quality(letter),
-                  **project_failure_context({'cause_code': getattr(result, 'error_code', None)}))
+                  **project_failure_context({**getattr(result, 'failure_context', {}),
+                      'cause_code': getattr(result, 'error_code', None)}))
         return False
+    if getattr(result, 'degraded_stages', None):
+        letter['image_status'] = 'SKIPPED'
     if getattr(result, 'companion_decision', None) is not None:
         letter['companion_decision'] = result.companion_decision
         letter['companion_timing'] = result.companion_timing

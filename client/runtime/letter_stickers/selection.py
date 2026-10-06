@@ -46,7 +46,7 @@ def asset_filename(sticker_id):
     return _files()[sticker_id]
 
 
-def weighted_candidates(allowed, history, *, limit, appeared=None):
+def weighted_candidates(allowed, history, *, limit, appeared=None, rng=None):
     """Keep the existing recency/count lottery; Linli chooses the final image."""
     available = list(allowed)
     counts = {key: history.count(key) for key in available}
@@ -56,7 +56,7 @@ def weighted_candidates(allowed, history, *, limit, appeared=None):
                * (0.1 if key in JOJO_STICKERS else 1.0) for key in available}
     selected = []
     for _ in range(min(limit, len(available))):
-        key = random.choices(available, weights=[weights[item] for item in available])[0]
+        key = (rng or random).choices(available, weights=[weights[item] for item in available])[0]
         selected.append(key)
         available.remove(key)
     return tuple(selected)

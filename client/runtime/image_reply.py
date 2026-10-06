@@ -69,6 +69,8 @@ def secondary_photo_allowed(row):
     When JEV planned the medium the user asked for, that plan owns delivery. On a
     plain turn (no media requested) the photo planner decides, as before 2.0.
     """
+    if row.get('degraded_stages'):
+        return False  # Auxiliary recovery grants only a reviewed text response.
     record = row.get('companion_decision')
     if not record or is_companion_image(row):
         return True

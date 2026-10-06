@@ -5,6 +5,7 @@ import sqlite3
 import uuid
 
 _RECENT_FAILURES = deque(maxlen=40)
+_FAILURE_LOGGER = None
 
 DAILY_LIFE_STAGES = {'initialization', 'read', 'request', 'response', 'render'}
 DAILY_LIFE_ENDPOINTS = {'daily_life', 'daily_life_history', 'companion_status'}
@@ -64,6 +65,8 @@ CODES |= {'PROVIDER_USAGE_PENDING', 'PROVIDER_REQUEST_DUPLICATE', 'PROVIDER_AUTH
 KINDS = {"TimeoutError", "TypeError", "ValueError", "AttributeError", "RuntimeError", "ClientConnectorError", "ClientConnectorCertificateError", "ClientConnectorSSLError", "ServerDisconnectedError", "ClientPayloadError", "OTHER"}
 DETAILS = {"invalid_json", "invalid_response_shape", "missing_tools", "invalid_tool_entry", "invalid_tool_name", "invalid_tool_arguments"}
 KINDS.add('ClientConnectorDNSError')
+KINDS |= {'URLError', 'HTTPError', 'RemoteDisconnected', 'IncompleteRead',
+          'ConnectionResetError', 'ConnectionRefusedError', 'JSONDecodeError', 'UnicodeDecodeError'}
 DETAILS |= {'structured_truncated', 'structured_validation_failed', 'tool_truncated',
             'unexpected_tool', 'invalid_tool_schema', 'invalid_tool_count', 'unsupported_tool_fallback',
             'unsupported_response_format', 'unsupported_tools', 'unsupported_tool_choice',
@@ -179,3 +182,21 @@ def record_failure(exc):
 
 def failure_snapshot():
     return tuple(dict(item) for item in _RECENT_FAILURES)
+
+
+def set_failure_logger(logger):
+    global _FAILURE_LOGGER
+    _FAILURE_LOGGER = logger
+
+
+def record_jev_failure(exc, code, stage, *, request_id=None, http_status=None):
+    safe = project_failure_context({'cause_code': code, 'failure_stage': stage,
+        'exception_type': type(exc).__name__, 'provider_request_id': request_id,
+        'http_status': http_status, 'failure_detail': 'invalid_json' if stage == 'response_json' else None})
+    _RECENT_FAILURES.append({'event': 'provider_failure', **safe})
+    if callable(_FAILURE_LOGGER):
+        try:
+            _FAILURE_LOGGER('jev_request_failed', **safe)
+        except Exception:
+            pass  # Diagnostics cannot replace the original transport failure.
+    return safe
