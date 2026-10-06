@@ -196,12 +196,17 @@ _STAGE_ORDER = ('unknown', 'acquaintance', 'familiar', 'close', 'committed')
 # Ordered import judges how far each batch moves the running state. Scoring a
 # five-letter batch from zero kept everyday batches low while a single explicit
 # line could still lift the stage, e.g. stage "close" with every score low.
-_STEPS = {'same': 0, 'up_small': 5, 'up': 12, 'up_big': 25}
+# Old letters alone must not fill the relationship either: history moves each
+# score only toward a ceiling inside the "medium" band (70 is "high" and, on
+# three scores, contact eligibility), with smaller steps the closer it gets.
+# Live correspondence keeps its own growth above it.
+HISTORY_CEILING = 60
+_STEPS = {'same': 0.0, 'up_small': 0.1, 'up': 0.2, 'up_big': 0.35}
 _STEP_CRITERIA = {
     'same': '本批没有新的相关证据，或只是平常往来：保持 previous_state 的值',
-    'up_small': '本批有少量相关证据，略有加深（约 +5）',
-    'up': '本批有明确的相关证据，明显加深（约 +12）',
-    'up_big': '本批有大量、持续的直接证据，大幅加深（约 +25）',
+    'up_small': '本批有少量相关证据，略有加深',
+    'up': '本批有明确的相关证据，明显加深',
+    'up_big': '本批有大量、持续的直接证据，大幅加深',
 }
 _FIELD_MEANING = {
     'familiarity': '熟悉：彼此了解生活、习惯与往来的程度',
@@ -246,7 +251,8 @@ def _semantic_scores(choices, previous_state):
     previous = _previous_scores(previous_state)
     if previous is None:
         return {field: int(choices[field]) for field in _SCORE_FIELDS}
-    return {field: min(100, previous[field] + _STEPS[choices[field]]) for field in _SCORE_FIELDS}
+    return {field: previous[field] + max(0, round(_STEPS[choices[field]] * (HISTORY_CEILING - previous[field])))
+            for field in _SCORE_FIELDS}
 
 
 def _semantic_stage(choice, previous_state):

@@ -64,14 +64,14 @@ def test_all_no_evidence_batches_complete_and_recover_without_state_changes(tmp_
     # A later supported batch still commits normally after an abstention.
     async def supported(state, questions, *, purpose):
         port.calls.append(state)
-        # Ordered batches judge the change from the running state (here +12).
+        # Ordered batches judge the change from the running state, toward the history ceiling.
         return {key: 'familiar' if key == 'stage' else 'yes' if key.startswith('e') else 'up'
                 for key in questions}
     port.ask = supported
     queue.enqueue(archive_exchanges(rows(8)))
     run()
     assert queue.status()['processed'] == 8 and len(port.calls) == 3
-    assert ledger.snapshot().trust == min(100, before.trust + 12)
+    assert ledger.snapshot().trust == before.trust + max(0, round(0.2 * (60 - before.trust)))
 
 
 @pytest.mark.parametrize('invalid', ['outside', 'duplicate', 'too_many'])
