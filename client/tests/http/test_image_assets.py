@@ -22,10 +22,10 @@ def _async_test(func):
 @_async_test
 async def test_lazy_r2_download_survives_restart_and_refreshes_expired_ticket(tmp_path, monkeypatch):
     raw = b'\x89PNG\r\n\x1a\n' + b'synthetic image'
-    entry = dict(filename='linli-01.png', sha256=hashlib.sha256(raw).hexdigest(),
+    entry = dict(filename='mori-01.png', sha256=hashlib.sha256(raw).hexdigest(),
                  size_bytes=len(raw), content_type='image/png',
-                 key=f'distribution/olivia-images/stickers/{hashlib.sha256(raw).hexdigest()}/linli-01.png')
-    monkeypatch.setattr(assets, '_catalog', lambda: {'stickers': {'linli-01': entry}})
+                 key=f'distribution/olivia-images/wardrobe/{hashlib.sha256(raw).hexdigest()}/mori-01.png')
+    monkeypatch.setattr(assets, '_catalog', lambda: {'wardrobe': {'mori-01': entry}})
     calls = []
     async def ticket(request):
         calls.append('ticket')
@@ -35,24 +35,24 @@ async def test_lazy_r2_download_survives_restart_and_refreshes_expired_ticket(tm
         calls.append('r2')
         return web.Response(status=403) if calls.count('r2') == 1 else web.Response(body=raw)
     app = web.Application()
-    app.router.add_get('/v1/components/images/stickers/linli-01', ticket)
+    app.router.add_get('/v1/components/images/wardrobe/mori-01', ticket)
     app.router.add_get('/r2', download)
     client = TestClient(TestServer(app))
     await client.start_server()
     monkeypatch.setattr(assets, '_validate_download_url', lambda url, _: None)
     try:
         assert calls == []  # Import/catalog inspection never preloads images.
-        paths = await asyncio.gather(*(assets.ensure_image(tmp_path, 'stickers', 'linli-01',
+        paths = await asyncio.gather(*(assets.ensure_image(tmp_path, 'wardrobe', 'mori-01',
                     base_url=str(client.make_url(''))) for _ in range(5)))
         assert len(set(paths)) == 1 and paths[0].read_bytes() == raw
         assert calls == ['ticket', 'r2', 'ticket', 'r2']
         assert paths[0].is_relative_to(tmp_path / 'image-assets')
         # A new instance/server may be unavailable; durable cache still works.
         await client.close()
-        assert await assets.ensure_image(tmp_path, 'stickers', 'linli-01', base_url='http://127.0.0.1:1') == paths[0]
+        assert await assets.ensure_image(tmp_path, 'wardrobe', 'mori-01', base_url='http://127.0.0.1:1') == paths[0]
         paths[0].write_bytes(b'corrupt')
         with pytest.raises(CloudError):
-            await assets.ensure_image(tmp_path, 'stickers', 'linli-01', base_url='http://127.0.0.1:1')
+            await assets.ensure_image(tmp_path, 'wardrobe', 'mori-01', base_url='http://127.0.0.1:1')
         assert not list(tmp_path.rglob('*.tmp'))
     finally:
         await client.close()

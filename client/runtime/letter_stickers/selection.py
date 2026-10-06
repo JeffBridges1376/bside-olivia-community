@@ -11,7 +11,8 @@ NEW_STICKERS = range(109, 273)
 JOJO_STICKERS = frozenset(f'linli-{i:03d}' for i in range(229, 253))
 
 
-def allowed_stickers(view, *, channel='letter'):
+def allowed_stickers(view, *, channel='letter', installed=()):
+    # QQ also offers the optional styles, but only those the user installed as packs.
     value=lambda key:getattr(getattr(view,key,None),'value',getattr(view,key,None))
     familiar=value('familiarity') in {'medium','high'} or value('relationship_stage') in {'familiar','close','committed'}
     ids=set(BASE)
@@ -23,7 +24,7 @@ def allowed_stickers(view, *, channel='letter'):
             if all(value(key)=='high' for key in ('closeness','trust','comfort')):
                 ids.update(range(73,109))
     if channel == 'qq':
-        ids.update(NEW_STICKERS)
+        ids.update(i for i in NEW_STICKERS if f'linli-{i:03d}' in installed)
     return tuple(f'linli-{i:02d}' for i in sorted(ids))
 
 

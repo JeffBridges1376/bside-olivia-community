@@ -910,6 +910,9 @@ const statusPayload = (status) => ({
   if (endpoint.pathname === "/toy/generation/action") {
     return {ok:true,json:async()=>({route:"local",url:"",has_key:false})};
   }
+  if (endpoint.pathname === "/toy/sticker-packs") {
+    return {ok:true,json:async()=>({code:0,data:{folder:"C:/fixture/sticker-packs",packs:[]}})};
+  }
   mutationPaths.push(endpoint.pathname);
   return { ok: true, json: async () => ({ status: "APPLIED", request_id: "memory.lifecycle.1", affected_count: 0 }) };
 };
