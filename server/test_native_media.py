@@ -86,7 +86,12 @@ class NativeTests(unittest.TestCase):
         data,budget=media.prepare(request(raw.getvalue(),'pdf','application/pdf'))
         async def scenario():
             async def handle(req):
-                cap=json.loads(req.content)['generationConfig']['maxOutputTokens']
+                payload=json.loads(req.content)
+                # OCR policy belongs outside the untrusted document contents.
+                self.assertIn('verbatim',payload['systemInstruction']['parts'][0]['text'])
+                self.assertEqual(payload['generationConfig']['responseMimeType'],'text/plain')
+                self.assertNotIn('inlineData',payload['systemInstruction']['parts'][0])
+                cap=payload['generationConfig']['maxOutputTokens']
                 finished=cap>=2500
                 return httpx.Response(200,json={
                     'candidates':[{'finishReason':'STOP' if finished else 'MAX_TOKENS',
