@@ -4346,8 +4346,28 @@ async def route(
 
     if p == "/toy/settings/reply-routes":
         from runtime.wardrobe import catalog
+        from runtime.video_reply_settings import image_model_capability, require_image_model
+        async def image_capability():
+            from runtime.remote_generation import RemoteGeneration
+            from runtime.cloud_service import CloudError
+            try:
+                api = RemoteGeneration(_os.environ.get('OLIVIA_GPU_API_URL', ''), _os.environ.get('OLIVIA_GPU_API_KEY', ''))
+                if not api.url or not api.token:
+                    return None
+                return image_model_capability(await asyncio.wait_for(api.request('capabilities', {}), 3))
+            except (CloudError, TimeoutError):
+                return None
         try:
             if method == "POST":
+                if 'image' in body:
+                    VideoReplySettingsStore._validate_image(body['image'])
+                    image = body['image']
+                    saved = video_reply_settings_store.image_snapshot()
+                    retaining_saved = (image.get('model') == saved.get('model') and image['resolution'] == saved['resolution']
+                                       and (image['enabled'] is False or saved['enabled'] is True))
+                    if 'model' in image and not retaining_saved:
+                        capability = await image_capability()
+                        require_image_model(image, {'image': capability} if capability is not None else {})
                 if set(body) == {'request_id', 'wardrobe'}:
                     return ok(video_reply_settings_store.mutate_wardrobe(body['request_id'], body['wardrobe']))
                 if set(body) == {"request_id", "tier", "image"}:
@@ -4359,7 +4379,9 @@ async def route(
                 if set(body) not in ({"request_id", "routes"}, {"request_id", "routes", "videos"}):
                     return err(400, "VIDEO_REPLY_SETTING_PAYLOAD_INVALID", {})
                 return ok(video_reply_settings_store.mutate_routes(body["request_id"], body["routes"], body.get("videos")))
+            capability = await image_capability()
             return ok({"state": "available", "image": video_reply_settings_store.image_snapshot(),
+                       **({'image_capability': capability} if capability is not None else {}),
                        "wardrobe": video_reply_settings_store.wardrobe_snapshot(), "wardrobe_styles": catalog(),
                        "tier": video_reply_settings_store.tier_snapshot(), "tier_configured": video_reply_settings_store.saved_tier() is not None,
                        "routes": video_reply_settings_store.routes_snapshot(), "videos": video_reply_settings_store.videos_snapshot(),
