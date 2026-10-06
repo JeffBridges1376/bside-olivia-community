@@ -340,6 +340,10 @@ async def _generate_billed(server, event, row):
     from runtime.image_understanding import understand_incoming, incoming_context
     await understand_incoming(server, event, row)
     observation_context = incoming_context(row)
+    from runtime import incoming_media
+    await incoming_media.understand_incoming(server, event, row)
+    if event.media:
+        observation_context += incoming_media.incoming_context(row)
     content = event.text + observation_context
     source = server._CURRENT_LETTER_MEMORY_SOURCE.set(f"reply:{event.exchange_id}:1")
     receipt = server._CURRENT_LETTER_RECEIPT.set(datetime.fromisoformat(row["life_received_at"]))
@@ -354,10 +358,18 @@ async def _generate_billed(server, event, row):
     from .speech import supported as speech_supported
     speech_enabled = event.channel == 'qq' and await speech_supported(os.environ)
     row['voice_ready'] = voice_available
+    daily_worker = getattr(server, '_daily_video_worker', None)
+    if 'daily_video_candidates' not in row:
+        row['daily_video_candidates'] = (daily_worker.candidates()
+            if event.channel == 'qq' and daily_worker is not None else [])
+        await persist_chat(server)
+    daily_candidates = row['daily_video_candidates'] if event.channel == 'qq' else []
     semantic_kinds = ['text'] + (['audio_speech'] if voice_available else [])
     if (event.channel == 'qq' and row.get('image_available') and row['image_reply_settings'].get('enabled')
             and os.environ.get('OLIVIA_GPU_API_URL') and os.environ.get('OLIVIA_GPU_API_KEY')):
         semantic_kinds.append('image')
+    if daily_candidates:
+        semantic_kinds.append('video_speech')
     context = adapter.build_reply_context(ReplyMode.FUTURE_IM, future_im_enabled=True)
     # A generation retry belongs to the same received turn. Keep its trusted
     # time stable; all other context/evidence is still rebuilt and hash-checked.
@@ -373,7 +385,10 @@ async def _generate_billed(server, event, row):
     from runtime.image_reply import photo_reply_context
     context = photo_reply_context(context, row['image_reply_settings'], channel=event.channel)
     from .stickers import choices
-    sticker_choices = choices(server.store.personal_chats, context.private_behavior, channel=event.channel)
+    from runtime.letter_stickers.packs import installed as installed_packs
+    sticker_choices = choices(server.store.personal_chats, context.private_behavior, channel=event.channel,
+                              installed=installed_packs(getattr(server, '_local_data_root', lambda: None)())
+                              if event.channel == 'qq' else ())
     delayed_delivery = False
     try:
         sent_at = datetime.fromisoformat(row['user_sent_at']) if row.get('user_sent_at') else None
@@ -438,11 +453,15 @@ async def _generate_billed(server, event, row):
                                     channel=event.channel, binding_id=event.binding_id),
                                 'structured': True, 'raw_user_text': event.text,
                                 'speech_enabled': speech_enabled,
+                                'bedtime_offer_enabled': speech_enabled,
+                                'daily_video_candidates': daily_candidates,
                                 'incoming_observation_context': observation_context,
                                 'semantic_kinds': semantic_kinds,
                                 'received_source_id': f'reply:{event.exchange_id}:user',
                                 'input_revision': revision,
                                 'turn_is_current': turn_is_current,
+                                'recovery_namespace': json.dumps([event.channel, event.account_id,
+                                    event.owner_id, event.binding_id], ensure_ascii=False),
                                 'record_stage_timing': record_stage_timing,
                                 'generation_attempts': row.get('generation_attempts', 1),
                                  'last_decision_rejection_reason': row.get('decision_rejection_reason'),
@@ -505,7 +524,7 @@ async def _generate_billed(server, event, row):
         quality_fields = ('quality_status', 'reviewer_calls', 'rewrite_calls', 'decision_rejection_reason',
                           'decision_dropped_media',
                           'quality_error_code', 'quality_failure_stage', 'quality_violation_codes',
-                          'stage_timing_seconds', 'stage_cache_hits', 'stage_actual_calls')
+                          'stage_timing_seconds', 'stage_cache_hits', 'stage_actual_calls', 'degraded_stages')
         quality = project_chat_task({'channel': event.channel, **{
             field: getattr(result, field, None) for field in quality_fields},
             'quality_error_code': getattr(result, 'error_code', None),
@@ -534,7 +553,8 @@ async def _generate_billed(server, event, row):
                               proactive=row.get('origin') == 'proactive',
                               allow_user_silence=getattr(result, 'silence_authorized', False) is True,
                               allow_speech=bool(event.channel == 'qq'
-                                  and (row.get('companion_decision') or {}).get('speech_request')))
+                                   and (row.get('companion_decision') or {}).get('speech_request')),
+                               daily_video_candidates=daily_candidates)
         except ValueError as exc:
             # Diagnostic categories only; never persist rejected model text.
             reason = getattr(exc, 'reason', 'UNKNOWN')
@@ -609,6 +629,8 @@ async def _generate_billed(server, event, row):
             delivery = row['companion_delivery']
             if delivery not in semantic_kinds:
                 raise RuntimeError('JEV_PLAN_UNSUPPORTED')
+            if delivery == 'video_speech' and not decision.get('daily_video_request'):
+                raise RuntimeError('JEV_PLAN_UNSUPPORTED')
             mode = 'voice' if delivery == 'audio_speech' else 'text'
             basis = 'JEV_MEDIA_PLAN'
             from runtime.reply.companion_runtime import media_locked
@@ -626,7 +648,7 @@ async def _generate_billed(server, event, row):
             row.pop('sticker_id', None)
             row.pop('mailbox_notice_letter_id', None)
         from .mailbox_notice import attach_notice
-        if companion is None and contact is None:
+        if companion is None and contact is None and not row.get('degraded_stages'):
             text = attach_notice(getattr(server.store, 'letters', []), row, text)
         row['letter_invitation'] = contact is None and allowed and decision.get('letter_invitation', False)
         sticker = decision['sticker'] if decision['sticker'] in sticker_choices else None
@@ -635,10 +657,17 @@ async def _generate_billed(server, event, row):
         if not voice_available:
             mode = 'text'
             basis = voice_block
+        if row.get('degraded_stages'):
+            mode, basis = 'text', 'AUXILIARY_TEXT_RECOVERY'
+            row.pop('sticker_id', None)
+            row.pop('mailbox_notice_letter_id', None)
         row['presentation_status'] = 'VALIDATED'
         row.update(requested_format=mode, listening_preference='voice_ok', delivery_basis=basis)
         if not turn_is_current():
             return text  # The service merges new input before any draft is sent.
+        if decision.get('daily_video_request'):
+            if companion is None or row.get('companion_delivery') == 'video_speech':
+                row.update(daily_video_request=decision['daily_video_request'], daily_video_status='PENDING_ACK')
         from runtime.reply.character_emotion_context import store_expression_context
         store_expression_context(row, getattr(result, 'expression_context', None), text)
         speech_intent = (row.get('companion_decision') or {}).get('speech_request')
@@ -952,6 +981,8 @@ def selected_channels(server):
 def install_personal_chat(app, server):
     from .setup import install_setup_routes
     install_setup_routes(app, server)
+    from .daily_video import install_routes
+    install_routes(app, server, _RUNTIME)
 
     async def start(application):
         configured = os.environ.get("OLIVIA_PERSONAL_CHAT_CONFIG")
@@ -1007,12 +1038,17 @@ def install_personal_chat(app, server):
                 from runtime.letter_stickers.selection import allowed_stickers
                 try:
                     context = server.letters_adapter.build_reply_context(ReplyMode.FUTURE_IM, future_im_enabled=True)
-                    return key in allowed_stickers(context.private_behavior, channel='qq')
+                    from runtime.letter_stickers.packs import installed
+                    return key in allowed_stickers(context.private_behavior, channel='qq',
+                                                   installed=installed(server._local_data_root()))
                 except Exception:
                     return False
+            from runtime.image_assets import ensure_image
             service = PersonalChatService(server.store.personal_chats, lambda: persist_chat(server),
                 lambda event, row: generate(server, event, row), lambda row: recoverable_commit(server, row), bindings,
-                sticker_allowed=sticker_allowed, photo=lambda row, send: deliver_photo(server, row, send),
+                sticker_allowed=sticker_allowed,
+                sticker_asset=lambda key: ensure_image(server._local_data_root(), 'stickers', key),
+                photo=lambda row, send: deliver_photo(server, row, send),
                 prepare_photo=lambda row, send: prepare_chat_photo(server, row, send),
                 speech=lambda row, send: deliver_speech(server,row,send))
             from .probe import ProbeJournal
@@ -1020,6 +1056,16 @@ def install_personal_chat(app, server):
             runtime = {"stop": stop_event, "tasks": [], "service": service, "status": {},
                        "errors": {}, "roundtrips": {}, "last_seen_at": {}, "journal": journal,
                        "delivery_health": {}, "e2e_verified_at": {}, "connection_tests": {}}
+            if 'qq' in bindings:
+                from .daily_video import DailyVideoWorker
+                from .daily_video_author import author_preparation
+                from runtime.remote_generation import RemoteGeneration
+                runtime['daily_video'] = DailyVideoWorker(server._state_root() / 'media' / 'daily-video',
+                    service, bindings['qq'],
+                    lambda: RemoteGeneration(os.environ.get('OLIVIA_GPU_API_URL', ''), os.environ.get('OLIVIA_GPU_API_KEY', '')),
+                    lambda: getattr(getattr(server, 'daily_life_runtime', None), 'store', None),
+                    author_candidate=lambda candidate: author_preparation(server, candidate))
+                server._daily_video_worker = runtime['daily_video']
             if 'qq' in config:
                 from .setup import _qq_binding_fingerprint
                 runtime['qq_binding_fingerprint'] = _qq_binding_fingerprint(config['qq'], token)
@@ -1139,7 +1185,11 @@ def install_personal_chat(app, server):
 
             handle.ingest = ingest
             handle.pending = lambda channel: service.pending(channel) if channel in selected_channels(server) else ()
-            handle.ready = service.resume_speech
+            def ready(channel, send):
+                service.resume_speech(channel, send)
+                if runtime.get('daily_video') is not None:
+                    runtime['daily_video'].bind(channel, send)
+            handle.ready = ready
 
             async def run(name, factory):
                 def on_state(state):
@@ -1203,6 +1253,8 @@ def install_personal_chat(app, server):
                 # Listener liveness does not depend on slow/failed extraction.
                 for name, factory in jobs:
                     runtime["tasks"].append(asyncio.create_task(run(name, factory)))
+                if runtime.get('daily_video') is not None:
+                    runtime['tasks'].append(asyncio.create_task(runtime['daily_video'].monitor()))
                 await _recover_chat_loop(server, runtime)
             async def proactive_loop():
                 while not stop_event.is_set():
@@ -1230,6 +1282,10 @@ def install_personal_chat(app, server):
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        if runtime.get('daily_video') is not None:
+            await runtime['daily_video'].close()
+            if getattr(server, '_daily_video_worker', None) is runtime['daily_video']:
+                server._daily_video_worker = None
         tasks = [*runtime['service'].photo_tasks.values(), *runtime['service'].speech_tasks.values(),
                  *getattr(runtime['service'], 'consumer_tasks', {}).values()]
         for task in tasks:

@@ -152,6 +152,9 @@ def _project_health(value: object) -> dict[str, object]:
             projected[name] = project_history_import(check)
             continue
         entry: dict[str, object] = {"state": _status(check.get("state"))}
+        if name == 'daily_life':
+            from runtime.diagnostics.failure_context import project_daily_life_failure
+            entry.update(project_daily_life_failure(check))
         if "error_code" in check:
             entry["error_code"] = _code(check["error_code"])
         if name == "video_offline_action":
@@ -282,6 +285,11 @@ def project_reply_quality(value: Mapping[str, object]) -> dict[str, object]:
     """Finite metadata shared by letter and chat diagnostics, without drafts."""
     from .failure_context import REWRITE_ERROR_CODES
     result = {}
+    degraded = value.get('degraded_stages')
+    if isinstance(degraded, dict):
+        from runtime.reply.reply_pipeline import _TEXT_RECOVERY_CODES
+        result['degraded_stages'] = {stage: code for stage, code in degraded.items()
+            if stage in {'world', 'decision'} and isinstance(code, str) and code in _TEXT_RECOVERY_CODES}
     if value.get('quality_status') in ('not_checked', 'accepted', 'accepted_degraded', 'accepted_with_warnings', 'blocked'):
         result['quality_status'] = value['quality_status']
     from runtime.personal_chat.decision import NEUTRAL_METADATA, _CONTROL_REASONS
@@ -321,6 +329,23 @@ def project_reply_quality(value: Mapping[str, object]) -> dict[str, object]:
             'rewrite_validation' if isinstance(code, str) and code in {'REWRITE_OUTPUT_EMPTY', 'REWRITE_OUTPUT_INVALID'} else
             'rewrite' if isinstance(code, str) and code in REWRITE_ERROR_CODES else
             'final_review' if result.get('reviewer_calls') == 2 else 'review')
+    # Numeric phase evidence is shared by letters and chat. Private cached text
+    # and keys never enter diagnostic bundles through these nested maps.
+    timing = value.get('stage_timing_seconds')
+    if isinstance(timing, Mapping):
+        safe = {name: round(float(timing[name]), 4)
+                for name in ('world', 'emotion', 'interpretation', 'history', 'decision', 'writer',
+                             'silence_authorization', 'quality', 'total')
+                if type(timing.get(name)) in (int, float) and 0 <= timing[name] <= 86400}
+        if safe:
+            result['stage_timing_seconds'] = safe
+    for field in ('stage_cache_hits', 'stage_actual_calls'):
+        counts = value.get(field)
+        if isinstance(counts, Mapping):
+            safe = {name: counts[name] for name in ('writer', 'reviewer', 'rewriter')
+                    if type(counts.get(name)) is int and 0 <= counts[name] <= 100}
+            if safe:
+                result[field] = safe
     return result
 
 
@@ -343,23 +368,6 @@ def project_chat_task(value: Mapping[str, object]) -> dict[str, object]:
     }:
         result['candidate_analysis_failure_reason'] = reason
     result.update(project_reply_quality(value))
-    # Finite, numeric phase evidence only. Private cached text and keys never
-    # enter diagnostic bundles, including through a malformed nested map.
-    timing = value.get('stage_timing_seconds')
-    if isinstance(timing, Mapping):
-        safe = {name: round(float(timing[name]), 4)
-                for name in ('world', 'emotion', 'interpretation', 'history', 'decision', 'writer',
-                             'silence_authorization', 'quality', 'total')
-                if type(timing.get(name)) in (int, float) and 0 <= timing[name] <= 86400}
-        if safe:
-            result['stage_timing_seconds'] = safe
-    for field in ('stage_cache_hits', 'stage_actual_calls'):
-        counts = value.get(field)
-        if isinstance(counts, Mapping):
-            safe = {name: counts[name] for name in ('writer', 'reviewer', 'rewriter')
-                    if type(counts.get(name)) is int and 0 <= counts[name] <= 100}
-            if safe:
-                result[field] = safe
     if value.get('voice_prepare_status') in {'running', 'completed', 'timeout', 'failed', 'cancelled'}:
         result['voice_prepare_status'] = value['voice_prepare_status']
     for field in ('voice_prepare_seconds', 'voice_prepare_timeout_seconds'):
@@ -421,11 +429,12 @@ def project_chat_task(value: Mapping[str, object]) -> dict[str, object]:
                 'FIELDS', 'JSON_SYNTAX', 'VALUE_TYPE_OR_TIME', 'TEXT_OR_SKIP_TYPE',
                 'DELIVERY_OR_LISTENING', 'PREFERENCES', 'EVIDENCE_TYPE',
                 'EMPTY_OR_SKIPPED_REPLY', 'CONTROL_MARKER', 'REPEATED_REPLY',
-                'SILENCE_INVALID', 'SILENCE_UNSUPPORTED', 'SILENCE_NOT_AUTHORIZED', 'MEDIA_WITHOUT_PLAN'}:
+                'SILENCE_INVALID', 'SILENCE_UNSUPPORTED', 'SILENCE_NOT_AUTHORIZED', 'MEDIA_WITHOUT_PLAN',
+                'RECOVERY_ACTION_WITHOUT_PLAN'}:
             result['decision_rejection_reason'] = value['decision_rejection_reason']
         if type(value.get('voice_ready')) is bool:
             result['voice_ready'] = value['voice_ready']
-        if value.get('delivery_basis') in ('QQ_DEFAULT_VOICE', 'SPEAKER_UNAVAILABLE', 'VERBATIM_TEXT',
+        if value.get('delivery_basis') in ('AUXILIARY_TEXT_RECOVERY', 'QQ_DEFAULT_VOICE', 'SPEAKER_UNAVAILABLE', 'VERBATIM_TEXT',
                 'JEV_MEDIA_PLAN', 'PROACTIVE_MEDIA_PLAN', 'WECHAT_TEXT', 'TRANSPORT_UNAVAILABLE',
                 'PROVIDER_UNAVAILABLE', 'WRITER_SELECTION', 'VOICE_RENDER_FAILED', 'VOICE_RENDER_TIMEOUT'):
             result['delivery_basis'] = value['delivery_basis']
@@ -550,6 +559,9 @@ def _project_tail_record(value: object, *, runtime: bool) -> dict[str, object]:
     event = source.get("event")
     if not isinstance(event, str) or not _EVENT_RE.fullmatch(event):
         raise _invalid()
+    if runtime and event in {'daily_life_failed', 'daily_life_frontend_failed'}:
+        from runtime.diagnostics.failure_context import project_daily_life_failure
+        return {'event': event, **project_daily_life_failure(source)}
     if runtime and event == 'history_relationship_failed':
         record = project_history_relationship_failure({**source, 'status': 'FAILED'})
         record['status'] = 'failed'
@@ -757,7 +769,7 @@ def build_diagnostic_bundle(source: Mapping[str, object]) -> bytes:
             "features": ["capability_tiers", "offline_components", "delivery_projection", "audio_download",
                          "natural_voice_chunks", "worker_progress", "waveform_styles", "reply_route_preview_diagnostics",
                          "history_relationship_failure_codes", "route_failure_context", "history_recall_delivery",
-                         "reply_quality_violation_codes"],
+                         "reply_quality_violation_codes", "daily_life_failure_stages"],
         }),
         "summary.json": _json_bytes(summary),
         "health.json": _json_bytes(health),

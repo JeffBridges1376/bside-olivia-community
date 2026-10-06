@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import base64
 from pathlib import Path
 
 
-SETTINGS_UI_VERSION = "p03.original-settings-manage.v57"
+SETTINGS_UI_VERSION = "p03.original-settings-manage.v58"
 
 BOOTSTRAP_JAVASCRIPT = r'''(() => {
   "use strict";
@@ -193,7 +192,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         this.setOpen(false);
         if(['SKIPPED','NOT_REQUESTED'].includes(data?.imageStatus)){this.replaceChildren();return;}
         if(data?.imageStatus==='FAILED'){
-          const reasons={GPU_NOT_CONFIGURED:'请先连接 Olivia 账户。',GPU_AUTH_FAILED:'照片服务验证失败，请检查 Olivia 账户。',GPU_INSUFFICIENT_BALANCE:'云端余额不足，请检查云服务余额。',GPU_BILLING_CONSENT_REQUIRED:'请先在设置中确认使用云端服务。',IMAGE_DEPENDENCY_MISSING:'照片组件不完整，请更新或修复客户端。'};
+          const reasons={GPU_NOT_CONFIGURED:'请先连接 Olivia 账户。',GPU_AUTH_FAILED:'照片服务验证失败，请检查 Olivia 账户。',GPU_INSUFFICIENT_BALANCE:'云端余额不足，请检查云服务余额。',GPU_BILLING_CONSENT_REQUIRED:'请先在设置中确认使用云端服务。',IMAGE_DEPENDENCY_MISSING:'照片组件不完整，请更新或修复客户端。',IMAGE_WARDROBE_UNAVAILABLE:'照片服务暂不支持所选穿衣风格。请在衣橱选回原版日常后重试。',IMAGE_WARDROBE_NOT_APPLIED:'照片服务未确认这次换装，请稍后重试。'};
           const code=/^[A-Z][A-Z0-9_]{0,95}$/.test(data.imageErrorCode||'')?data.imageErrorCode:'';
           this.textContent='照片这次没能附上。'+(reasons[code]||'');this.title=code;return;
         }
@@ -396,6 +395,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       : path === MEMORY_PATH ? 45000
       : path === STATUS_PATH || path === PROACTIVE_STATUS_PATH ? 15000 : 5000;
     const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+    let failureStage = 'request', httpStatus;
     try {
       const response = await fetch(endpoint, {
         method: "GET",
@@ -404,6 +404,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         headers: { "Accept": "application/json" },
         signal: controller.signal,
       });
+      httpStatus = response.status; failureStage = 'response';
       const responseBody = await response.json();
       const payload = (path === VIDEO_REPLY_SETTINGS_PATH
           || path === LOCAL_LETTER_IMPORT_PATH
@@ -436,12 +437,18 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         : payload && ["READY", "PAUSED", "UNAVAILABLE"].includes(payload.status);
       if (!response.ok || !valid) {
         const error = new Error("unavailable");
+        failureStage = response.ok ? 'response' : 'request';
         error.code = payload && typeof payload.error_code === "string"
           ? payload.error_code
           : "COMPANION_READ_UNAVAILABLE";
         throw error;
       }
       return payload;
+    } catch (error) {
+      if (path === DAILY_LIFE_PATH || path === STATUS_PATH) {
+        error.dailyLifeStage = failureStage; error.httpStatus = httpStatus;
+      }
+      throw error;
     } finally {
       window.clearTimeout(timeout);
     }
@@ -558,6 +565,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       ? 300000
       : 8000;
     const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+    let failureStage = 'request', httpStatus;
     try {
       const response = await fetch(endpoint, {
         method: "POST",
@@ -571,10 +579,15 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         body: JSON.stringify(body),
         signal: controller.signal,
       });
+      httpStatus = response.status;
       let responseBody = null;
       try {
         responseBody = await response.json();
       } catch (_error) {
+        if (path === DAILY_LIFE_PATH) {
+          failureStage = 'response';
+          throw _error;
+        }
         responseBody = null;
       }
       const payload = (path === VIDEO_REPLY_SETTINGS_PATH
@@ -586,6 +599,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         : responseBody;
       if (!response.ok || !payload || typeof payload.status !== "string") {
         const error = new Error("mutation-unavailable");
+        failureStage = response.ok ? 'response' : 'request';
         error.code = payload && typeof payload.error_code === "string"
           ? payload.error_code
           : "COMPANION_MUTATION_UNAVAILABLE";
@@ -595,9 +609,24 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         throw error;
       }
       return payload;
+    } catch (error) {
+      if (path === DAILY_LIFE_PATH) {
+        error.dailyLifeStage = failureStage; error.httpStatus = httpStatus;
+      }
+      throw error;
     } finally {
       window.clearTimeout(timeout);
     }
+  };
+
+  const reportDailyLifeFailure = (error, stage, endpoint = 'daily_life', method = 'GET') => {
+    const kinds = ['Error','TypeError','SyntaxError','RangeError','ReferenceError','AbortError'];
+    const body = {endpoint, method, failure_stage: error?.dailyLifeStage || stage,
+      exception_type: kinds.includes(error?.name) ? error.name : 'OTHER'};
+    if (Number.isInteger(error?.httpStatus) && error.httpStatus >= 100 && error.httpStatus <= 599) body.http_status = error.httpStatus;
+    // Only finite metadata reaches the loopback backend; diagnostics never
+    // replace the original error or include its message, stack, URL or payload.
+    void requestMutation(DAILY_LIFE_PATH + '/diagnostic', body).catch(() => {});
   };
 
   const requestSetup = async (path, body = null) => {
@@ -1517,12 +1546,15 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const show = async (index) => {
         if (pending || !alive() || !archive.isConnected) return;
         pending = true;
+        let failureStage = 'request';
         feedback.textContent = "读取历史片段…";
         try {
           const before = cursors[index];
           const result = await requestJson(DAILY_LIFE_PATH, {history: 1, before});
           if (!alive() || !archive.isConnected) return;
+          failureStage = 'response';
           if (result.schema_version !== "olivia.daily-life.history.v1" || !Array.isArray(result.moments)) throw new Error("DAILY_LIFE_INVALID");
+          failureStage = 'render';
           const navigation = document.createElement("div");
           navigation.style.cssText = "display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:12px";
           const previous = button("上一页", () => show(page - 1));
@@ -1536,6 +1568,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
           feedback.textContent = result.moments.length ? "每页最多 8 条，按时间从新到旧。" : "还没有历史片段。";
           loaded = true;
         } catch (_error) {
+          reportDailyLifeFailure(_error, failureStage, 'daily_life_history');
           feedback.replaceChildren(text("span", "历史暂时没能读取，已显示的内容仍然保留。 ", "text-text-secondary text-caption-m"), button("重试读取历史", () => show(index)));
         } finally { pending = false; }
       };
@@ -1903,19 +1936,26 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       if (busy || !alive()) return;
       busy = true;
       let refreshing = false;
+      let failureStage = 'request', method = refresh ? 'POST' : 'GET';
       if (refresh && relationship.open) relationship.refresh();
       try {
         let payload = await (refresh ? requestMutation(DAILY_LIFE_PATH, {}) : requestJson(DAILY_LIFE_PATH));
         if (!alive()) return;
+        failureStage = 'render';
         draw(payload);
         if (!attempted && payload.stale && !payload.refreshing && !payload.error_code) {
           attempted = true;
+          failureStage = 'request'; method = 'POST';
           payload = await requestMutation(DAILY_LIFE_PATH, {});
           if (!alive()) return;
+          failureStage = 'render';
           draw(payload);
         }
         refreshing = payload.refreshing;
       } catch (_error) {
+        const stage = _error.message === 'DAILY_LIFE_INVALID' ? 'response' : failureStage;
+        if (failureStage === 'render') _error.httpStatus = 200;
+        reportDailyLifeFailure(_error, stage, 'daily_life', method);
         if (alive()) {
           status.textContent = "近况暂时无法读取，请稍后重试。";
           if (panel.children.length <= 2) panel.replaceChildren(heading, status, button("重试", () => load()));
@@ -2022,7 +2062,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     box.setAttribute("data-olivia-relay-models", "");
     box.style.cssText = "display:grid;gap:12px;margin:24px 0;min-width:0";
     const title = text("h3", "回信模型", "text-text-title text-title-m");
-    const description = text("p", "以 Gemini 3.8 Flash 为 1 倍。输入和输出分别计费，实际消费取决于用量；短请求可能受最低计费规则影响。", "text-text-secondary text-body-m");
+    const description = text("p", "以 Claude Sonnet 5.5 为 1 倍。输入和输出分别计费，实际消费取决于用量；短请求可能受最低计费规则影响。", "text-text-secondary text-body-m");
     const list = document.createElement("fieldset");
     list.style.cssText = "margin:0;padding:0;border:0;min-width:0";
     const legend = text("legend", "选择回信模型");
@@ -2067,11 +2107,19 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         radios.push(radio);
         const name = text("span", item.display_name, "text-text-title text-body-m");
         name.style.cssText = "overflow-wrap:anywhere;line-height:1.5";
+        const detail = document.createElement("span");
+        detail.style.cssText = "display:grid;gap:4px;min-width:0";
+        detail.append(name);
+        if (item.description) {
+          const intro = text("span", item.description, "text-text-secondary text-body-m");
+          intro.style.cssText = "font-size:13px;line-height:1.65;overflow-wrap:anywhere";
+          detail.append(intro);
+        }
         const ratio = value => Number(value).toLocaleString("zh-CN", {maximumFractionDigits:2});
         const ratios = text("span", `输入 ${ratio(item.input_multiplier)}× · 输出 ${ratio(item.output_multiplier)}×`, "text-text-secondary text-body-m");
         ratios.className += " olivia-model-multipliers";
         ratios.style.cssText = "font-variant-numeric:tabular-nums;font-size:13px;line-height:1.5";
-        row.append(radio, name, ratios); list.append(row);
+        row.append(radio, detail, ratios); list.append(row);
       }
       status.textContent = rows.length ? "选择后点击「使用所选模型」，下一次发送生效。" : "暂无可用模型，请稍后重新打开账户页面。";
     }).catch(() => { status.textContent = "模型列表读取失败，请稍后重新打开账户页面。"; });
@@ -2143,7 +2191,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       const countdown = text("p", "", "text-text-secondary text-body-m");
       countdown.setAttribute("aria-live", "off");
       const qr = document.createElement("img");
-      qr.src = "__OLIVIA_WECHAT_PAYMENT_QR__";
+      qr.src = new URL('/toy/images/ui/wechat-payment', apiBase).href;
       qr.alt = "微信收款码，收款人 Ornn，请按订单显示金额付款";
       qr.style.cssText = "display:block;width:280px;max-width:100%;height:auto;margin:12px auto;border-radius:12px";
       const paid = text("p", `请用微信扫描下方收款码，准确支付 ${amount}（含小数），请勿取整。到账余额 ¥${credit}。`, "text-text-secondary text-body-m");
@@ -2786,6 +2834,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   // The lite client's mailbox is the original /collection view. Keep both
   // destinations inside the main window: desktop widgets can be off-screen.
   const WORLD_ROUTE = '#/world';
+  const WARDROBE_ROUTE = '#/world/wardrobe';
   const mountWorldPage = (page) => {
     page.dataset.oliviaWorldPage='';page.setAttribute('aria-label','世界');
     const style=document.createElement('style');style.textContent=`
@@ -2838,10 +2887,13 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
       @media(max-width:580px){.olivia-world-columns{grid-template-columns:1fr}.olivia-world-aside{padding:20px 0 0;border-left:0;border-top:1px solid #383a3e}.olivia-world-tabs{gap:20px}.olivia-world-heading{align-items:flex-start}.olivia-world-heading .olivia-world-line{align-items:flex-start}[data-world-main]{padding:18px}.olivia-world-meta{gap:8px}}
     `;
     const header=document.createElement('header');header.className='olivia-world-header';header.append(text('h1','世界'));
+    const wardrobeEntry=button('衣橱',()=>openWardrobe());wardrobeEntry.setAttribute('data-olivia-wardrobe-entry','');
+    wardrobeEntry.setAttribute('aria-label','打开林离的衣橱');header.append(wardrobeEntry);
     const panel=document.createElement('section');panel.dataset.worldMain='';
     page.replaceChildren(style,header,panel);
     panel.append(text('p','正在读取林离的生活……'));
-    void requestJson(STATUS_PATH).then(payload=>{if(page.isConnected)return renderPrivateWorldPanel(panel,payload.capabilities?.private_world)}).catch(()=>{
+    void requestJson(STATUS_PATH).then(payload=>{if(page.isConnected)return renderPrivateWorldPanel(panel,payload.capabilities?.private_world)}).catch(error=>{
+      reportDailyLifeFailure(error, 'request', 'companion_status');
       if(page.isConnected)panel.replaceChildren(text('p','近况暂时无法读取。'),button('重试',()=>mountWorldPage(page)));
     });
   };
@@ -2860,9 +2912,9 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
   };
   const mountMainNavigation = () => {
     const route = window.location.hash.split("?")[0];
-    const world=window.location.hash===WORLD_ROUTE;
+    const world=route===WORLD_ROUTE||route===WARDROBE_ROUTE;
     let nav = document.querySelector("[data-olivia-main-navigation]");
-    if (route !== "#/studio" && route !== "#/collection" && route !== WORLD_ROUTE) {
+    if (route !== "#/studio" && route !== "#/collection" && !world) {
       nav?.remove();
       return;
     }
@@ -3589,10 +3641,11 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     let quote={paid:false};
     const originalCharge=!preview.requires_cover_audio&&['singing_video','voice_song_video','musical_video'].includes(preview.reply_mode);
     try{if(preview.reply_mode!=='text_letter')quote=await requestSetup('/toy/generation/action',{action:'billing_quote',video:preview.video_enabled===true,original:originalCharge});}
-    catch(error){error.config=config;error.message=error.code==='GPU_CLIENT_UPDATE_REQUIRED'?'请重启客户端以更新原创收费确认。草稿已保留。':error.code==='GPU_INSUFFICIENT_BALANCE'?'Olivia 可用余额不足。语音或翻唱需预留 ¥1，原创单曲需预留 ¥3，视频需预留 ¥5，请先充值。草稿已保留。':'无法核对云端生成费用，请检查云端连接后重试。草稿已保留。';throw error;}
+    catch(error){error.config=config;error.message=error.code==='GPU_CLIENT_UPDATE_REQUIRED'?'请重启客户端以更新原创收费确认。草稿已保留。':error.code==='GPU_INSUFFICIENT_BALANCE'?'Olivia 可用余额不足，无法预留本次生成费用，请先充值。草稿已保留。':'无法核对云端生成费用，请检查云端连接后重试。草稿已保留。';throw error;}
     if(quote.paid){
       const cap=(quote.max_charge_cents/100).toFixed(2);
-      const priceDetail=originalCharge?'原创音乐按时长定价 ¥2–3，含小幅随机浮动，最终不超过 ¥3；视频另含视频费用，以本次总上限为准。':'成功后按实际占用结算。';
+      const musicPrice=quote.original_music_retail_price;
+      const priceDetail=originalCharge?(musicPrice?`原创单曲每首 ¥${(musicPrice.min_cents/100).toFixed(2)}–${(musicPrice.max_cents/100).toFixed(2)}，提交时锁定随机报价；视频另含视频费用，以本次总上限为准。`:'原创音乐按时长定价 ¥2–3，含小幅随机浮动，最终不超过 ¥3；视频另含视频费用，以本次总上限为准。'):'成功后按实际占用结算。';
       if(!await confirmAction(`本次云端生成将从 Olivia 余额预留 ¥${cap}，本次最多收费 ¥${cap}。${priceDetail}多余预留释放；失败全退。回信文字另按 Token 计费。确认寄出？`)){
         throw Object.assign(new Error('已取消发送，草稿保留。'),{config,code:'ERR_CANCELED',__CANCEL__:true});
       }
@@ -3713,21 +3766,41 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const choices = document.createElement("div"); choices.setAttribute("role", "radiogroup"); choices.setAttribute("aria-label", "回信能力档位");
     const labels = {text:"纯文字",audio:"文字＋声音",video:"文字＋声音＋视频"};
     const descriptions = {text:"通过文字回信。",audio:"可回复文字，也可用说话、唱歌或两者组合的音频。",video:"文字、声音和视频都可使用，由本次内容决定。"};
-    let selected = null, busy = false, imageEnabled = false, imageResolution = '1K';
+    let selected = null, busy = false, imageEnabled = false, imageResolution = '1K', imageModel = '', imageCapability = null;
     const imageControls = document.createElement('div'); imageControls.style.cssText='display:flex;gap:8px;align-items:center;flex-wrap:wrap';
     const imageToggle = button('图片',()=>{if(busy)return;imageEnabled=!imageEnabled;void persist();});
     imageToggle.setAttribute('aria-label','允许林离回复图片');
     const imageSizes = document.createElement('select'); imageSizes.setAttribute('aria-label','图片分辨率');
-    for(const value of ['1K','2K','4K']){const option=document.createElement('option');option.value=value;option.textContent=value;imageSizes.append(option);}
     imageSizes.addEventListener('change',()=>{imageResolution=imageSizes.value;void persist();});
-    imageControls.append(imageToggle,imageSizes);
-    const imageHelp=text('p','图片仅云端生成，可随文字或语音回信，也适用于 QQ，每次最多 1 张。1K／2K／4K 基准价为 ¥0.50／¥0.80／¥1.10，每单随机浮动 ±10%（¥0.45–0.55／¥0.72–0.88／¥0.99–1.21）。提交时锁定并预留本单价格，重试不变价，失败释放预留。不进行图片质检；用于记忆的图片识别仍按中转用量计费。实际像素随构图变化。','text-text-secondary text-caption-m');
+    const imageModelLabel=document.createElement('label');imageModelLabel.append(text('span','图片模型'));
+    const imageModels=document.createElement('select');imageModels.setAttribute('aria-label','图片模型');imageModelLabel.append(imageModels);
+    const modelResolutions=()=>imageCapability?.models?.find(item=>item.id===(imageModel||imageCapability.default_model))?.resolutions||['1K','2K','4K'];
+    const fillOptions=(select,items,value)=>{
+      select.textContent='';
+      for(const item of items){const option=document.createElement('option');option.value=item.id;option.textContent=item.label;option.disabled=item.disabled===true;select.append(option);}
+      select.value=value;
+    };
+    imageModels.addEventListener('change',()=>{
+      imageModel=imageModels.value;
+      const resolutions=modelResolutions();if(!resolutions.includes(imageResolution))imageResolution=resolutions[0];
+      void persist();
+    });
+    imageControls.append(imageToggle,imageModelLabel,imageSizes);
+    const imageHelp=text('p','图片仅云端生成，可随文字或语音回信，也适用于 QQ，每次最多 1 张。费用按模型和分辨率确定，每单小幅随机浮动。提交时锁定并预留本单报价，重试不变价，失败释放预留。用于记忆的图片识别另按中转用量计费。实际像素随构图变化。','text-text-secondary text-caption-m');
     const nodes = {};
     const detail = text("p", "", "text-text-secondary text-body-m font-regular");
     const status = text("p", "正在读取设置…", "text-text-secondary text-caption-m font-regular"); status.setAttribute("role", "status");
     const render = () => {
       imageToggle.disabled=busy || selected===null;imageToggle.setAttribute('aria-pressed',String(imageEnabled));
-      imageSizes.hidden=!imageEnabled;imageSizes.disabled=busy;imageSizes.value=imageResolution;imageHelp.hidden=!imageEnabled;
+      const models=imageCapability?.models||[];
+      imageModelLabel.hidden=!imageEnabled||models.length===0;imageModels.disabled=busy||selected===null;
+      const options=[{id:'',label:'服务默认'},...models.map(item=>({id:item.id,label:item.display_name}))];
+      if(imageModel&&!models.some(item=>item.id===imageModel))options.push({id:imageModel,label:'当前模型暂不可用',disabled:true});
+      fillOptions(imageModels,options,imageModel);
+      const resolutions=modelResolutions(),sizes=resolutions.map(id=>({id,label:id}));
+      if(!resolutions.includes(imageResolution))sizes.push({id:imageResolution,label:imageResolution+'（当前模型不可用）',disabled:true});
+      fillOptions(imageSizes,sizes,imageResolution);
+      imageSizes.hidden=!imageEnabled;imageSizes.disabled=busy||selected===null;imageHelp.hidden=!imageEnabled;
       Object.entries(nodes).forEach(([key,node])=>{
         node.disabled=busy || selected===null; node.setAttribute("aria-checked",String(selected===key));
       });
@@ -3741,7 +3814,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     // Every choice saves immediately; a failed save restores what is stored.
     const persist=async()=>{
       busy=true;render();
-      try { await routeRequest("/toy/settings/reply-routes",{request_id:videoReplyRequestId(),tier:selected,image:{enabled:imageEnabled,resolution:imageResolution}});
+      try { await routeRequest("/toy/settings/reply-routes",{request_id:videoReplyRequestId(),tier:selected,image:{enabled:imageEnabled,resolution:imageResolution,...(imageModel?{model:imageModel}:{})}});
         status.textContent="已保存。已接收的信件继续按原设置处理。";busy=false;render(); }
       catch (_) { busy=false;await hydrate();status.textContent="没有保存成功，已恢复为原来的设置，请重试。"; }
     };
@@ -3750,6 +3823,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
         const result=await routeRequest("/toy/settings/reply-routes");
         selected=result.tier || (Object.values(result.routes||{}).some(Boolean) ? "video" : "text");
         imageEnabled=result.image?.enabled===true;imageResolution=result.image?.resolution||'1K';
+        imageModel=result.image?.model||'';imageCapability=result.image_capability||null;
         if(!labels[selected]) throw Error("invalid tier");
         status.textContent=result.tier_configured===false ? "当前沿用旧设置，点选一个档位即统一生效。" : "";
       } catch (_) { selected=null;status.textContent="设置读取失败，请稍后重新打开设置页。"; }
@@ -3759,13 +3833,215 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     refreshVideoReplySetting=()=>container.isConnected ? hydrate() : Promise.resolve(); void hydrate();
   };
 
+  const wardrobeStyle = () => {
+    const style=document.createElement('style');style.textContent=`
+      [data-olivia-wardrobe-page]{width:100%;height:100%;min-height:0;display:flex;flex-direction:column;gap:20px;color:#e9e3d8;-webkit-app-region:no-drag}
+      .ow-breadcrumb{display:flex;gap:14px;align-items:center;min-height:40px;flex-shrink:0;font-size:14px;color:#bcb5aa}
+      .ow-breadcrumb a{display:inline-flex;gap:8px;align-items:center;color:#e9e3d8;text-decoration:none;padding:8px 0}
+      .ow-breadcrumb svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.6}
+      [data-olivia-wardrobe]{--ow-paper:#e4d8c3;--ow-muted:#b9b1a5;box-sizing:border-box;background:#1b1c1e;color:#e9e3d8;padding:28px 36px;min-height:0;overflow-y:auto;overflow-x:hidden;flex:1;border-radius:12px}
+      [data-olivia-wardrobe] *{box-sizing:border-box}
+      [data-olivia-wardrobe] h1,[data-olivia-wardrobe] h2,[data-olivia-wardrobe] p{margin:0}
+      .ow-heading{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;padding-bottom:22px;border-bottom:1px solid #49443c}
+      .ow-heading h1{font-size:32px;font-weight:500;line-height:1.4;letter-spacing:.02em}
+      .ow-heading p{font-size:14px;line-height:1.8;color:var(--ow-muted);margin-top:10px;max-width:52ch}
+      .ow-current{font-size:13px;line-height:1.7;color:var(--ow-muted);text-align:right;min-width:120px;padding-top:5px}
+      .ow-current strong{display:block;font-size:16px;font-weight:500;color:var(--ow-paper);margin-top:4px}
+      .ow-interior{display:grid;grid-template-columns:220px minmax(0,1fr);gap:40px;margin-top:24px}
+      .ow-rail{display:flex;flex-direction:column;gap:0;position:relative;align-self:start}
+      [data-olivia-wardrobe] button{font:inherit;cursor:pointer;-webkit-app-region:no-drag}
+      [data-olivia-wardrobe] .ow-style{display:flex;align-items:center;gap:14px;width:100%;min-height:64px;padding:10px 12px;background:transparent;color:#c4bcae;text-align:left;border:0;border-bottom:1px solid #3c3b37;border-radius:0}
+      .ow-style svg{width:26px;height:26px;flex-shrink:0;fill:none;stroke:currentColor;stroke-width:1.35;stroke-linecap:round;stroke-linejoin:round}
+      .ow-style strong{display:block;font-size:16px;font-weight:500;line-height:1.6}
+      .ow-style small{display:block;font-size:11px;color:#a9a297;line-height:1.5;min-height:16px}
+      [data-olivia-wardrobe] .ow-style[aria-selected=true]{background:var(--ow-paper);color:#29251e}
+      .ow-style[aria-selected=true] small{color:#5c5447}
+      [data-olivia-wardrobe] .ow-style:hover:not(:disabled):not([aria-selected=true]){background:#272725;color:#eee7dc}
+      .ow-look{min-width:0;padding-top:8px}
+      .ow-look-header{display:flex;justify-content:space-between;gap:20px;align-items:center}
+      .ow-look h2{font-size:30px;line-height:1.4;font-weight:500;letter-spacing:.02em;color:var(--ow-paper)}
+      .ow-swatches{display:flex;gap:7px;flex-shrink:0}
+      .ow-swatches span{width:22px;height:22px;border-radius:50%;outline:1px solid #fff2;outline-offset:2px}
+      .ow-description{font-size:14px;color:var(--ow-muted);line-height:1.8;margin-top:14px!important;max-width:55ch;min-height:44px}
+      .ow-pieces{margin:26px 0 0;padding:0}
+      .ow-piece{display:grid;grid-template-columns:80px minmax(0,1fr);gap:18px;padding:18px 0;border-top:1px solid #3c3b37}
+      .ow-piece dt{font-size:12px;line-height:1.9;color:var(--ow-muted)}
+      .ow-piece dd{margin:0;font-size:16px;line-height:1.6;color:#e9e3d8;overflow-wrap:anywhere}
+      .ow-today{margin-top:18px!important;font-size:13px;line-height:1.8;color:var(--ow-paper)}
+      .ow-gallery{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-top:22px}
+      .ow-gallery:has(.ow-garment:only-child){grid-template-columns:minmax(0,320px)}
+      .ow-garment{margin:0;min-width:0}.ow-garment img{display:block;width:100%;aspect-ratio:3/4;object-fit:contain;background:#f7f6f2;border-radius:8px}
+      .ow-garment figcaption{padding-top:9px;color:var(--ow-muted);font-size:12px;line-height:1.6;overflow-wrap:anywhere}
+      .ow-image-error{aspect-ratio:3/4;display:flex;align-items:center;justify-content:center;background:#292927;color:var(--ow-muted);font-size:13px;border-radius:8px;padding:12px}
+      @media(max-width:900px){.ow-gallery{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}}
+      .ow-footer{margin-top:20px;padding-top:20px;border-top:1px solid #49443c;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+      [data-olivia-wardrobe] .ow-apply{background:var(--ow-paper);color:#28241f;border:0;border-radius:8px;padding:12px 26px;min-height:46px;font-size:15px;font-weight:600}
+      [data-olivia-wardrobe] .ow-apply:hover:not(:disabled){background:#f0e4cf}
+      [data-olivia-wardrobe] .ow-apply:disabled{background:#33312c;color:#ccc2b0;cursor:default}
+      .ow-footer p{font-size:12px;line-height:1.8;color:var(--ow-muted);max-width:42ch}
+      .ow-feedback{display:flex;align-items:center;gap:18px;margin-top:20px;min-height:24px}
+      .ow-feedback p{font-size:13px;line-height:1.8;color:#d4c8b5}
+      [data-olivia-wardrobe] .ow-retry{padding:8px 12px;color:var(--ow-paper);background:transparent;border:1px solid #6d6558;border-radius:8px;flex-shrink:0}
+      [data-olivia-wardrobe] button:focus-visible,.ow-breadcrumb a:focus-visible{outline:2px solid #e4d8c3;outline-offset:4px}
+      [data-olivia-wardrobe] .ow-style:disabled{opacity:.55;cursor:wait}
+      [data-olivia-wardrobe] [hidden]{display:none!important}
+      @media(max-width:900px){[data-olivia-wardrobe]{padding:26px}.ow-interior{grid-template-columns:180px minmax(0,1fr);gap:26px}.ow-heading h1{font-size:28px}.ow-look h2{font-size:26px}}
+      @media(max-width:650px){[data-olivia-wardrobe]{padding:24px 20px}.ow-heading{gap:12px;flex-direction:column;padding-bottom:20px}.ow-current{text-align:left;padding:0;display:flex;gap:12px;align-items:center}.ow-current strong{margin:0;font-size:14px}.ow-interior{grid-template-columns:1fr;gap:24px;margin-top:20px}.ow-rail{flex-direction:row;overflow-x:auto;padding:0 0 8px;scrollbar-width:thin}.ow-rail .ow-style{width:auto;flex-shrink:0;padding:10px 14px;min-height:60px;border-bottom:0}.ow-style svg{width:20px;height:20px}.ow-style strong{font-size:14px}.ow-look{padding:0}.ow-pieces{margin-top:18px}.ow-piece{padding:18px 0;grid-template-columns:64px minmax(0,1fr);gap:12px}.ow-look h2{font-size:25px}.ow-feedback{align-items:flex-start}}
+    `;return style;
+  };
+
+  const STICKER_PACK_PAGE = "175.24.191.6/installers/stickers.html";
+  const mountStickerPacks = (section) => {
+    const row = document.createElement("div");
+    row.className = "olivia-group-row";
+    const copy = document.createElement("div");
+    copy.className = "flex flex-col gap-1";
+    const state = text("span", "表情包：正在读取……", "text-text-body text-body-m");
+    const detail = text("span", "", "text-text-secondary text-body-m");
+    copy.append(state, detail);
+    const stickerPackRequest = async (action) => {
+      const response = await fetch(new URL("/toy/sticker-packs" + action, apiBase), {
+        method: action ? "POST" : "GET", cache: "no-store", credentials: "omit",
+        headers: { "Accept": "application/json", "Content-Type": "application/json", [CONFIRM_HEADER]: CONFIRM_VALUE },
+        ...(action ? { body: "{}" } : {}),
+      });
+      const result = await response.json();
+      const data = result && result.data;
+      if (!response.ok || !data || !Array.isArray(data.packs)) throw new Error("STICKER_PACK_FOLDER_UNAVAILABLE");
+      return data;
+    };
+    const render = (data) => {
+      const ready = data.packs.filter((pack) => pack.installed === pack.total).map((pack) => pack.name);
+      state.textContent = ready.length
+        ? `表情包：线稿（自带）、${ready.join("、")}`
+        : "表情包：线稿（自带）";
+      detail.textContent = `更多风格可在 ${STICKER_PACK_PAGE} 下载，解压到表情包文件夹后，林离在 QQ 里就会使用。文件夹：${data.folder}`;
+    };
+    const open = button("打开表情包文件夹", async () => {
+      try { render(await stickerPackRequest("/open")); }
+      catch (_error) { detail.textContent = "无法打开表情包文件夹，请稍后重试。"; }
+    });
+    row.append(copy, open);
+    section.append(row);
+    stickerPackRequest("").then(render).catch(() => { state.textContent = "表情包：线稿（自带）"; });
+  };
+
+  const mountWardrobeSetting = (section) => {
+    const panel=document.createElement('section');panel.setAttribute('data-olivia-wardrobe','');
+    const heading=document.createElement('header');heading.className='ow-heading';
+    const intro=document.createElement('div');intro.append(text('h1','林离的衣橱'),text('p','你指定喜欢的风格，具体搭配交给林离。'));
+    const current=document.createElement('div');current.className='ow-current';current.append(text('span','当前风格'));
+    const currentLabel=text('strong','读取中');current.append(currentLabel);heading.append(intro,current);
+    const interior=document.createElement('div');interior.className='ow-interior';
+    const rail=document.createElement('div');rail.className='ow-rail';rail.setAttribute('role','tablist');rail.setAttribute('aria-label','穿衣风格');rail.setAttribute('aria-orientation','vertical');
+    const compact=window.matchMedia('(max-width:650px)');
+    const syncOrientation=()=>rail.setAttribute('aria-orientation',compact.matches?'horizontal':'vertical');
+    compact.addEventListener('change',syncOrientation);syncOrientation();
+    panel._wardrobeCleanup=()=>compact.removeEventListener('change',syncOrientation);
+    const look=document.createElement('section');look.className='ow-look';look.id='olivia-wardrobe-look';look.setAttribute('role','tabpanel');look.setAttribute('aria-label','搭配详情');
+    const lookHeader=document.createElement('div');lookHeader.className='ow-look-header';
+    const title=text('h2','正在打开衣橱');const swatches=document.createElement('div');swatches.className='ow-swatches';swatches.setAttribute('aria-hidden','true');lookHeader.append(title,swatches);
+    const description=text('p','','ow-description');const pieces=document.createElement('dl');pieces.className='ow-pieces';
+    const today=text('p','','ow-today');const gallery=document.createElement('div');gallery.className='ow-gallery';gallery.setAttribute('aria-label','风格参考搭配');
+    const footer=document.createElement('div');footer.className='ow-footer';
+    const apply=button('正在读取',()=>{void persist();});apply.className='ow-apply';
+    footer.append(apply,text('p','选定风格后立即生效。已经提交的生成任务保留原穿搭。'));
+    look.append(lookHeader,description,today,footer,gallery,pieces);interior.append(rail,look);
+    const feedback=document.createElement('div');feedback.className='ow-feedback';
+    const status=text('p','正在读取衣橱…');status.setAttribute('role','status');
+    const retry=button('重新读取',()=>{void load();});retry.className='ow-retry';retry.hidden=true;feedback.append(status,retry);
+    let selected=null,preview=null,busy=false,styles=[],daily=null;const tabs=[];
+    const render=()=>{
+      const saved=styles.find(style=>style.style_id===selected),outfit=styles.find(style=>style.style_id===preview);
+      currentLabel.textContent=saved?.label||'尚未读取';
+      for(const tab of tabs){tab.disabled=busy;tab.setAttribute('aria-selected',String(tab.dataset.style===preview));tab.tabIndex=tab.dataset.style===preview?0:-1;tab.querySelector('small').textContent=tab.dataset.style===selected?'已选择':tab.dataset.style===preview?'正在查看':'';}
+      if(outfit){
+        look.setAttribute('aria-labelledby','ow-style-'+outfit.style_id);
+        title.textContent=outfit.label;description.textContent=outfit.description;pieces.replaceChildren();swatches.replaceChildren();
+        gallery.replaceChildren();
+        const chosen=styles.flatMap(style=>style.looks||[]).find(item=>item.look_id===daily?.look_id);
+        today.textContent=daily?'今天的穿搭：'+(chosen?.label||daily.look_id):selected==='original'?'今天沿用原版日常。':'林离会在下一张人物照片中挑选今天的搭配。';
+        for(const item of outfit.looks||[]){
+          const figure=document.createElement('figure');figure.className='ow-garment';
+          const image=document.createElement('img');image.alt=item.label;image.loading='lazy';image.src=item.image_url;
+          image.addEventListener('error',()=>{image.replaceWith(text('span','参考图暂未加载，请重新读取。','ow-image-error'));},{once:true});
+          const caption=text('figcaption',item.label+(daily?.look_id===item.look_id?' · 今日穿搭':''));figure.append(image,caption);gallery.append(figure);
+        }
+        gallery.hidden=!(outfit.looks||[]).length;
+        for(const [i,value] of (outfit.pieces||[]).entries()){const row=document.createElement('div');row.className='ow-piece';row.append(text('dt',['上装','下装','鞋履与配饰'][i]||'搭配'),text('dd',value));pieces.append(row);}
+        for(const color of outfit.colors||[]){if(!/^#[0-9a-f]{6}$/i.test(color))continue;const swatch=document.createElement('span');swatch.style.backgroundColor=color;swatches.append(swatch);}
+      }
+      apply.disabled=busy||selected===null||preview===selected;
+      apply.textContent=busy?'正在保存…':preview===selected&&selected!==null?'已指定此风格':'指定这个风格';retry.disabled=busy;
+    };
+    const browse=value=>{preview=value;render();};
+    rail.addEventListener('keydown',event=>{
+      if(!['ArrowRight','ArrowLeft','ArrowDown','ArrowUp','Home','End'].includes(event.key)||busy||!tabs.length)return;
+      event.preventDefault();const index=tabs.findIndex(tab=>tab.dataset.style===preview);
+      const next=event.key==='Home'?0:event.key==='End'?tabs.length-1:(index+(['ArrowRight','ArrowDown'].includes(event.key)?1:-1)+tabs.length)%tabs.length;
+      browse(tabs[next].dataset.style);tabs[next].focus();
+    });
+    const persist=async()=>{
+      if(busy||selected===null||preview===selected)return;
+      const value=preview;busy=true;render();status.textContent='正在保存风格…';
+      try{
+        const result=await routeRequest('/toy/world/wardrobe',{request_id:videoReplyRequestId(),style_id:value});
+        if(!styles.some(style=>style.style_id===result.wardrobe?.style_id))throw Error('invalid wardrobe');
+        selected=result.wardrobe.style_id;daily=result.daily_outfit||null;
+        status.textContent=selected===value?'风格已生效，林离会按新风格挑选搭配。':'当前风格已由其他客户端更新，请重新读取。';
+      }catch(_){status.textContent='没有保存成功，当前风格仍是'+(styles.find(style=>style.style_id===selected)?.label||'原来的风格')+'。可以重新尝试。';}
+      finally{busy=false;render();}
+    };
+    const load=async()=>{
+      if(busy)return;busy=true;render();status.textContent='正在读取衣橱…';
+      try{
+        const result=await routeRequest('/toy/world/wardrobe');
+        if(!Array.isArray(result.wardrobe_styles)||!result.wardrobe_styles.some(style=>style.style_id===result.wardrobe?.style_id))throw Error('invalid wardrobe');
+        styles=result.wardrobe_styles;selected=preview=result.wardrobe.style_id;daily=result.daily_outfit||null;tabs.length=0;rail.replaceChildren();
+        for(const style of styles){
+          const tab=button('',()=>browse(style.style_id));tab.className='ow-style';tab.dataset.style=style.style_id;tab.id='ow-style-'+style.style_id;
+          tab.setAttribute('role','tab');tab.setAttribute('aria-controls',look.id);tab.setAttribute('aria-label',style.label);
+          const icon=document.createElementNS('http://www.w3.org/2000/svg','svg');icon.setAttribute('viewBox','0 0 28 28');icon.setAttribute('aria-hidden','true');
+          const path=document.createElementNS('http://www.w3.org/2000/svg','path');path.setAttribute('d','M11 7a3 3 0 1 1 5 2l-2 2v3L3 21q-1 2 2 2h18q3 0 2-2l-11-7');icon.append(path);
+          const copy=document.createElement('span');copy.append(text('strong',style.label),text('small',''));tab.append(icon,copy);tabs.push(tab);rail.append(tab);
+        }
+        status.textContent='';retry.hidden=true;
+      }catch(_){selected=null;status.textContent='云端衣橱暂时无法读取。请确认已连接 Olivia 账户，再重新读取。';retry.hidden=false;}
+      finally{busy=false;render();}
+    };
+    panel.append(heading,interior,feedback);section.append(wardrobeStyle(),panel);render();void load();
+    return panel;
+  };
+
+  const openWardrobe = () => {
+    const router=window.__oliviaNativeView?.router;
+    if(router)void router.push('/world/wardrobe');else window.location.hash=WARDROBE_ROUTE;
+  };
+  const mountWardrobePage = page => {
+    page.setAttribute('data-olivia-wardrobe-page','');page.setAttribute('aria-label','林离的衣橱');
+    const breadcrumb=document.createElement('nav');breadcrumb.className='ow-breadcrumb';breadcrumb.setAttribute('aria-label','衣橱位置');
+    const back=text('a','返回世界');back.href=WORLD_ROUTE;
+    back.addEventListener('click',event=>{if(event.button!==0||event.ctrlKey||event.metaKey||event.shiftKey||event.altKey)return;const router=window.__oliviaNativeView?.router;if(router){event.preventDefault();void router.push('/world');}});
+    breadcrumb.append(back,text('span','/'),text('span','衣橱'));
+    page.replaceChildren(breadcrumb);mountWardrobeSetting(page);
+  };
+  const installNativeWardrobeRoute = () => {
+    const native=window.__oliviaNativeView;
+    if(!native?.router||!native.h||native.router.hasRoute('olivia-wardrobe'))return;
+    native.router.addRoute({path:'/world/wardrobe',name:'olivia-wardrobe',component:{
+      name:'OliviaWardrobeView',render(){return native.h('main',{class:'mx-full h-full'})},mounted(){mountWardrobePage(this.$el)},
+      beforeUnmount(){this.$el.querySelector('[data-olivia-wardrobe]')?._wardrobeCleanup?.()},
+    }});
+    if(window.location.hash===WARDROBE_ROUTE)void native.router.replace('/world/wardrobe');
+  };
+
   const mountMusicSettings = (section, composer=false) => {
     const panel=document.createElement("section");
     panel.setAttribute("data-olivia-music-settings","true");
     panel.style.cssText="border-top:1px solid #8884;padding-top:24px;display:flex;flex-direction:column;gap:16px";
     if(!composer)panel.append(text("h3","原创音乐","text-title-m"),text("p","调整下一首原创歌曲。保留演唱风格和参考音色，不影响翻唱。","text-text-secondary text-body-m"));
     const form=document.createElement("form");form.style.cssText="display:flex;flex-direction:column;gap:16px";
-    const fields={};let defaults=null,busy=false;
+    const fields={};let defaults=null,busy=false,limits=null;
     const field=(parent,name,label,type,help)=>{
       const row=document.createElement("label");row.style.cssText="display:flex;flex-direction:column;gap:8px";
       const input=document.createElement(type==="textarea"?"textarea":type==="select"?"select":"input");
@@ -3785,23 +4061,46 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const advanced=document.createElement('details');advanced.append(text('summary','进阶音乐参数'));form.append(advanced);
     const title=field(advanced,'title','歌曲标题','text','留空使用默认标题');title.maxLength=80;
     const duration=field(advanced,'duration','目标时长（秒）','number','留空随机 180–270 秒；填写 180–270，实际时长以生成结果为准。');duration.min=180;duration.max=270;duration.step=1;
+    const automatic=button('改为服务自动时长',()=>{if(!busy){duration.value='';applyLimits();status.textContent='已改为服务自动时长，保存后生效。';}});automatic.hidden=true;duration.parentElement.after(automatic);
     const negative=field(advanced,'negative_tags','避免的风格或元素','textarea','例如：重金属、尖锐高音；多个项目用逗号分隔。');negative.maxLength=1000;
     for(const [name,label,help] of [['style_weight','风格遵循度','0–1，越高越贴近音乐描述；留空使用服务默认值。'],['weirdness_constraint','创意偏离度','0–1，越高越允许偏离常规；留空使用服务默认值。']]){const input=field(advanced,name,label,'number',help);input.min=0;input.max=1;input.step=0.01;}
     const status=text("p","正在读取音乐设置…","text-text-secondary text-body-m");status.setAttribute("role","status");
     const controls=actions();
-    const fill=options=>{for(const [name,input] of Object.entries(fields)){if(input.type==="checkbox")input.checked=options[name];else input.value=options[name]??"";}};
-    const setBusy=value=>{busy=value;for(const el of form.querySelectorAll("input,textarea,select,button"))el.disabled=value;};
+    const applyLimits=()=>{
+      caption.maxLength=limits?.style||1000;
+      caption.parentElement.firstElementChild.textContent=limits?'音乐描述（最多 '+limits.style+' 个字符）':'音乐描述';
+      duration.disabled=busy||limits?.duration_control===false;
+      duration.style.opacity=limits?.duration_control===false?'0.55':'';
+      duration.parentElement.querySelector('small').textContent=limits?.duration_control===false?'当前服务自动决定时长，不支持目标秒数。已保存的数值会保留，请明确改为服务自动时长。':'留空随机 180–270 秒；填写 180–270，实际时长以生成结果为准。';
+      automatic.hidden=limits?.duration_control!==false||duration.value==='';automatic.disabled=busy;
+    };
+    const conflicts=()=>{
+      const errors=[];
+      if(limits&&caption.value.length>limits.style)errors.push('已保存的音乐描述超过 '+limits.style+' 个字符，内容已保留，请自行缩短后保存。');
+      if(limits?.duration_control===false&&duration.value!=='')errors.push('当前服务不支持已保存的目标时长，请点击“改为服务自动时长”后保存。');
+      return errors;
+    };
+    const fill=options=>{for(const [name,input] of Object.entries(fields)){if(input.type==="checkbox")input.checked=options[name];else input.value=options[name]??"";}applyLimits();};
+    const setBusy=value=>{busy=value;for(const el of form.querySelectorAll("input,textarea,select,button"))el.disabled=value;applyLimits();};
+    const readOptions=()=>{
+      if(busy||!defaults)throw Error('音乐参数尚未读取，请稍候或重新打开写信窗口。');
+      const errors=conflicts();if(errors.length)throw Error(errors.join(' '));
+      if(!form.reportValidity())throw Error('请检查音乐参数。');
+      const options={};for(const [name,input] of Object.entries(fields))options[name]=input.type==='checkbox'?input.checked:input.type==='number'?(input.value.trim()===''?null:Number(input.value)):input.value;
+      return options;
+    };
     const load=async()=>{
       if(busy)return;setBusy(true);
       try{if(!setupSessionToken)await requestSetup(SETUP_STATUS_PATH);
-        const result=await requestSetup("/toy/generation/action",{action:"music_settings_status"});defaults=result.defaults;
-        const durationHint=result.original_music_provider==='suno_v6'?"默认目标时长随机为3–4分半，可在进阶设置指定，实际时长以生成结果为准。原创单曲按时长收费 ¥2–3，含小幅随机浮动，最高 ¥3。":result.original_music_provider==='unavailable'?"暂时无法确认服务时长，请连接后重新读取。":"当前服务沿用约 110 秒原创方案。";
-        fill(result.options||defaults);status.textContent=result.error_code?"原设置无法读取，请检查参数。":durationHint+"音乐描述随"+(composer?"这封信":"下一首原创歌曲")+"生效。";
+        const result=await requestSetup("/toy/generation/action",{action:"music_settings_status"});defaults=result.defaults;limits=result.original_music_input_limits||null;
+        const musicPrice=result.original_music_retail_price;
+        const durationHint=limits?.duration_control===false?'当前服务自动决定原创歌曲时长，实际时长以生成结果为准。'+(musicPrice?`原创单曲每首 ¥${(musicPrice.min_cents/100).toFixed(2)}–${(musicPrice.max_cents/100).toFixed(2)}，提交时锁定随机报价。`:''):result.original_music_provider==='suno_v6'?"默认目标时长随机为3–4分半，可在进阶设置指定，实际时长以生成结果为准。原创单曲按时长收费 ¥2–3，含小幅随机浮动，最高 ¥3。":result.original_music_provider==='unavailable'?"暂时无法确认服务时长，请连接后重新读取。":"当前服务沿用约 110 秒原创方案。";
+        fill(result.options||defaults);status.textContent=result.error_code?"原设置无法读取，请检查参数。":conflicts().join(' ')||durationHint+"音乐描述随"+(composer?"这封信":"下一首原创歌曲")+"生效。";
       }catch(_){status.textContent="音乐设置读取失败，请重新读取。";}finally{setBusy(false);save.disabled=!defaults;}
     };
     const save=button("保存音乐设置",async()=>{
-      if(busy||!defaults||!form.reportValidity())return;
-      const options={};for(const [name,input] of Object.entries(fields))options[name]=input.type==="checkbox"?input.checked:input.type==="number"?(input.value.trim()===""?null:Number(input.value)):input.value;
+      if(busy||!defaults)return;
+      let options;try{options=readOptions();}catch(error){status.textContent=error.message;return;}
       setBusy(true);
       try{await requestSetup("/toy/generation/action",{action:"music_settings_save",options});status.textContent="已保存，对下一首原创歌曲生效。";}
       catch(_){status.textContent="保存失败，请检查参数后重试；原设置未改动。";}finally{setBusy(false);}
@@ -3810,7 +4109,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     controls.append(button("恢复推荐参数",()=>{if(!busy&&defaults){fill(defaults);status.textContent=composer?"已恢复推荐参数。":"已填入推荐参数，保存后生效。";}}));
     if(!composer)controls.append(button("重新读取",load));
     form.addEventListener("submit",event=>event.preventDefault());form.append(controls,status);panel.append(form);section.append(panel);void load();
-    return {read:()=>{if(busy||!defaults)throw Error('音乐参数尚未读取，请稍候或重新打开写信窗口。');if(!form.reportValidity())throw Error('请检查音乐参数。');const options={};for(const [name,input] of Object.entries(fields))options[name]=input.type==='checkbox'?input.checked:input.type==='number'?(input.value.trim()===""?null:Number(input.value)):input.value;return options;}};
+    return {read:readOptions};
   };
 
   const mountDiagnosticExport = (section) => {
@@ -4229,6 +4528,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const reply = settingsGroup("reply", "林离怎么回复", "回信方式、图片和主动写信");
     mountVideoReplySetting(reply);
     if (window.__oliviaNativeView) mountProactiveSetting(reply);
+    mountStickerPacks(reply);
     const chat = settingsGroup("chat", "QQ / 微信", "绑定后可以在 QQ 或微信里和林离聊天");
     const letters = settingsGroup("letters", "信件与记忆", "备份信件与聊天，查看长期记忆");
     const memoryRow = document.createElement("div");
@@ -4475,6 +4775,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     window.requestAnimationFrame(() => {
       scheduled = false;
       installNativeWorldRoute();
+      installNativeWardrobeRoute();
       constrainLetterInputs();
       applyProactiveSendGate();
       mountMainNavigation();
@@ -4638,6 +4939,7 @@ BOOTSTRAP_JAVASCRIPT = r'''
         const cloudErrors={GPU_TLS_FAILED:'云端证书校验失败，请更新补丁并检查电脑时间。',GPU_CONNECTION_TIMEOUT:'云端连接超时，本次生成已停止等待。',GPU_CONNECT_FAILED:'无法连接云端，本次生成未完成。',GPU_CONNECTION_FAILED:'云端连接中断，本次生成未完成。',GPU_AUTH_FAILED:'云端 Key 验证失败，请检查 Olivia 账户。',GPU_QUEUE_FULL:'云端队列已满，本次任务未进入队列。',GPU_TASK_TIMEOUT:'云端任务等待超时，已停止等待。',GPU_TASK_FAILED:'云端生成失败。',GPU_DOWNLOAD_FAILED:'生成结果下载失败。',GPU_SHARED_SCENE_MISSING:'视频素材与云端不匹配，请联系管理员。',MEDIA_JOB_INTERRUPTED:'上次生成已中断，未自动重复提交。'};
         cloudErrors.GPU_INSUFFICIENT_BALANCE='Olivia 可用余额不足，本次媒体任务未入队。请充值后重试。';
         cloudErrors.GPU_BILLING_CONSENT_REQUIRED='请更新收费版客户端，确认费用上限后再生成。';
+        cloudErrors.GPU_RECOVERY_REQUIRED='上次视频订单需要恢复核对，未重新提交或重复扣费，请导出诊断包。';
         if(['FAILED','UNAVAILABLE'].includes(data.status)) {
           const code=typeof data.error_code==='string'&&/^[A-Z][A-Z0-9_]{0,95}$/.test(data.error_code)?data.error_code:'';
           status.textContent=(cloudErrors[code]||errors[code]||'本次媒体生成未完成。')+' 文字回信已保留。'+(code?`（${code}）`:'');
@@ -4725,12 +5027,5 @@ BOOTSTRAP_JAVASCRIPT = r'''
   customElements.define('olivia-letter-audio',LetterAudio);
 })();
 ''' + BOOTSTRAP_JAVASCRIPT
-
-BOOTSTRAP_JAVASCRIPT = BOOTSTRAP_JAVASCRIPT.replace(
-    "__OLIVIA_WECHAT_PAYMENT_QR__",
-    "data:image/jpeg;base64," + base64.b64encode(
-        (Path(__file__).parent / "installer/assets/wechat-payment.jpeg").read_bytes()
-    ).decode("ascii"),
-)
 
 __all__ = ["BOOTSTRAP_JAVASCRIPT", "SETTINGS_UI_VERSION"]

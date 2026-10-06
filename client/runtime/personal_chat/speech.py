@@ -7,6 +7,18 @@ import time
 
 _capabilities = {}
 
+BEDTIME_OFFER_INSTRUCTION = {
+    'bedtime': """<bedtime_audio_offer>
+本轮冻结JEV决定是bedtime：用户本人现在准备睡觉，本次睡前对话尚未邀请且没有拒绝。先自然回应，然后必须用一句直接问句询问想听睡前故事还是轻声ASMR陪伴。不能只说晚安或“想听的话告诉我”，不再判断是否需要邀请。午睡也在此刻询问，不能推迟成“醒了/以后想听再告诉我”。问句可以自然表达为“现在想听个故事，还是我轻声陪你一会儿？”只问内容选择，不问几分钟；时长由应用采用默认值。沿用当前人格与关系，不编造近况，不复述用户原话当作自己的经历。本轮需要回应，skip=false，省略silence字段。这是询问，speech=null，不承诺制作或发送，不创建followup。继续输出原聊天JSON。
+</bedtime_audio_offer>""",
+    'clarify': """<bedtime_audio_offer>
+本轮冻结JEV决定是clarify：用户答应了故事和ASMR两个选项的邀请，但尚未选择。简短直接问想听故事还是轻声ASMR，不替用户选择，不问时长。本轮需要回应，skip=false，省略silence字段。这一步speech=null，不承诺制作，不创建followup。继续输出原聊天JSON。
+</bedtime_audio_offer>""",
+    'none': """<bedtime_audio_offer>
+本轮冻结JEV决定是none：当前无需睡前音频邀请或选择澄清。按普通聊天回应最后一条用户消息，不主动邀请故事或ASMR，不复述历史邀请，speech=null，不新增followup。尊重拒绝和不用回复；silence.evidence从当前原话逐字摘抄，不改写。你的近况不是用户的经历。继续输出原聊天JSON。
+</bedtime_audio_offer>"""
+}
+
 
 async def supported(environment):
     """Cache server readiness; older deployments keep ordinary chat working."""
