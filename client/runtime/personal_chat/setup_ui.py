@@ -334,7 +334,7 @@ PERSONAL_CHAT_SETUP_JAVASCRIPT = r'''(() => {
         const login = status.qq_login || {};
         const message = login.logged_in ? "QQ 已登录，正在准备连接…"
           : login.scanned ? "已扫码，请在手机 QQ 上确认登录。"
-          : login.qr_data ? "请用手机 QQ 扫描下方二维码登录。关闭设置页不会关闭 QQ 组件，再次进入即可继续登录。"
+          : login.qr_data ? "请使用用于林离的 QQ 小号扫描下方二维码登录。关闭设置页不会关闭 QQ 组件，再次进入即可继续登录。"
           : "QQ 组件正在后台运行，暂未取得登录二维码。请刷新二维码，或点击下方按钮打开登录窗口。";
         component.append(node("div", message, "olivia-chat-copy"));
         if (login.qr_data) {
