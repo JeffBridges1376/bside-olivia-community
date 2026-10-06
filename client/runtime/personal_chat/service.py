@@ -34,9 +34,11 @@ def _clear_draft(row):
                 'speech_script', 'speech_intent', 'speech_status', 'speech_delivery_status', 'content_review',
                 'proactive_decision', 'proactive_basis', 'proactive_opportunity', 'generation_failure_notice',
                 'generation_context_at', 'stage_timing_seconds', 'stage_actual_calls', 'stage_cache_hits',
+                'degraded_stages',
                 'voice_prepare_seconds', 'voice_prepare_status', 'voice_prepare_timeout_seconds',
                 'generation_retryable', 'generation_failure_context', 'generation_failures',
-                'silence_reason', 'skip_reason', 'user_controls_applied'):
+                'silence_reason', 'skip_reason', 'user_controls_applied',
+                'daily_video_request', 'daily_video_status', 'daily_video_error_code', 'daily_video_candidates'):
         row.pop(key, None)
 
 
@@ -69,11 +71,12 @@ async def delivery_notice(row, send, persist, key, text):
 
 
 class PersonalChatService:
-    def __init__(self, rows, persist, generate, commit, bindings, *, sticker_allowed=lambda key: True, photo=None, prepare_photo=None, speech=None):
+    def __init__(self, rows, persist, generate, commit, bindings, *, sticker_allowed=lambda key: True, sticker_asset=None, photo=None, prepare_photo=None, speech=None):
         self.rows, self.persist = rows, persist
         self.generate, self.commit = generate, commit
         self.bindings = dict(bindings)
         self.sticker_allowed = sticker_allowed
+        self.sticker_asset = sticker_asset
         self.photo = photo
         self.prepare_photo = prepare_photo
         self.photo_tasks = {}
@@ -99,7 +102,8 @@ class PersonalChatService:
         sources = row['source_messages']
         return PersonalMessage(channel, account_id, owner_id, next(iter(sources)),
             row['content'], tuple(sources.items()), row.get('input_kind', 'text'), row.get('user_sent_at'),
-            tuple(tuple(item) for item in row.get('incoming_images', [])))
+            tuple(tuple(item) for item in row.get('incoming_images', [])),
+            tuple(tuple(item) for item in row.get('incoming_media', [])))
 
     async def ingest(self, event):
         """Save owner input before waiting for generation; replay IDs are idempotent."""
@@ -121,13 +125,15 @@ class PersonalChatService:
             if remaining:
                 incoming = combine([PersonalMessage(event.channel, event.account_id, event.owner_id, key, text,
                     input_kind=event.input_kind, sent_at=event.sent_at,
-                    images=tuple(item for item in event.images if item[0] == key))
+                    images=tuple(item for item in event.images if item[0] == key),
+                    media=tuple(item for item in event.media if item[0] == key))
                     for key, text in remaining.items()])
                 now = datetime.now(timezone.utc)
                 self.user_revision += 1
                 self.rows.append({'letter_id': incoming.exchange_id, 'content': incoming.text,
                     'source_messages': dict(incoming.sources), 'binding_id': incoming.binding_id,
                     'input_kind': incoming.input_kind, 'incoming_images': [list(item) for item in incoming.images],
+                    'incoming_media': [list(item) for item in incoming.media],
                     'channel': incoming.channel, 'reply_mode': 'future_im',
                     'life_received_at': now.isoformat(), 'created_at': now.timestamp(),
                     'user_sent_at': incoming.sent_at, 'received_sequence': self.user_revision,
@@ -167,7 +173,7 @@ class PersonalChatService:
     def _combine_rows(self, event, rows):
         from .events import combine
         merged = combine([self._stored_event(row, event.channel, event.account_id, event.owner_id) for row in rows])
-        if len(merged.images) > 4:
+        if len(merged.images) + len(merged.media) > 4:
             raise ValueError('PERSONAL_CHAT_INPUT_BATCH_TOO_LARGE')
         canonical = rows[0]
         if canonical.get('incoming_images') != [list(item) for item in merged.images]:
@@ -176,6 +182,7 @@ class PersonalChatService:
         sent_at = max((at for row in rows if (at := _sent_time(row)) is not None), default=None)
         canonical.update(content=merged.text, source_messages=dict(merged.sources), input_kind=merged.input_kind,
                          incoming_images=[list(item) for item in merged.images],
+                          incoming_media=[list(item) for item in merged.media],
                          read_boundary_created_at=latest.get('read_boundary_created_at', latest['created_at']),
                          read_boundary_sequence=latest.get('read_boundary_sequence', latest['received_sequence']),
                          read_boundary_sent_at=sent_at.isoformat() if sent_at else None)
@@ -215,11 +222,14 @@ class PersonalChatService:
         return merged
 
     async def _generate(self, event, row, send):
+        from runtime.incoming_media import MEDIA_RESOLVER
+        media_token = MEDIA_RESOLVER.set(getattr(send, 'resolve_media', None))
         current = TURN_IS_CURRENT.set(lambda: not self._new_inputs(row))
         try:
             return await self.generate(event, row)
         finally:
             TURN_IS_CURRENT.reset(current)
+            MEDIA_RESOLVER.reset(media_token)
 
     async def handle(self, event, send):
         await self.ingest(event)
@@ -271,7 +281,8 @@ class PersonalChatService:
                 raise ValueError('PERSONAL_CHAT_ID_CONFLICT')
             stored = PersonalMessage(event.channel, event.account_id, event.owner_id,
                 next(iter(sources)), row['content'], tuple(sources.items()), row.get('input_kind','text'), row.get('user_sent_at'),
-                tuple(tuple(item) for item in row.get('incoming_images', [])))
+                tuple(tuple(item) for item in row.get('incoming_images', [])),
+                tuple(tuple(item) for item in row.get('incoming_media', [])))
             terminal = row.get('delivery_status') in {'SENDING', 'DELIVERY_UNCONFIRMED'} or (
                 row.get('delivery_status') == 'FAILED' and (row.get('generation_attempts', 0) >= 2
                                                           or row.get('generation_retryable') is False))
@@ -283,7 +294,8 @@ class PersonalChatService:
                 del remaining[key]
         if remaining:
             fresh = combine([PersonalMessage(event.channel, event.account_id, event.owner_id, key, text, input_kind=event.input_kind, sent_at=event.sent_at,
-                                            images=tuple(item for item in event.images if item[0] == key))
+                                            images=tuple(item for item in event.images if item[0] == key),
+                                            media=tuple(item for item in event.media if item[0] == key))
                              for key, text in remaining.items()])
             return await self._handle_one(fresh, send.for_exchange(fresh) if callable(getattr(send, 'for_exchange', None)) else send)
 
@@ -345,6 +357,7 @@ class PersonalChatService:
                        "binding_id": event.binding_id,
                        "input_kind": event.input_kind,
                        "incoming_images": [list(item) for item in event.images],
+                       "incoming_media": [list(item) for item in event.media],
                        "channel": event.channel, "reply_mode": "future_im",
                        "life_received_at": now, "created_at": datetime.now(timezone.utc).timestamp(),
                        "user_sent_at": event.sent_at,
@@ -599,15 +612,18 @@ class PersonalChatService:
                         or not self.sticker_allowed(row['sticker_id'])):
                     row['sticker_delivery_status'] = 'LOCKED'
                 else:
-                    row['sticker_delivery_status'] = 'SENDING'
+                    row['sticker_delivery_status'] = 'DOWNLOADING'
                     await persist_state(self.persist)
                     try:
                         from runtime.letter_stickers.selection import asset_filename
-                        await send.image(Path(__file__).resolve().parents[1] / 'letter_stickers' /
-                                         asset_filename(row['sticker_id']))
+                        path = (await self.sticker_asset(row['sticker_id']) if self.sticker_asset else
+                                Path(__file__).resolve().parents[1] / 'letter_stickers' / asset_filename(row['sticker_id']))
+                        row['sticker_delivery_status'] = 'SENDING'
+                        await persist_state(self.persist)
+                        await send.image(path)
                         row['sticker_delivery_status'] = 'DELIVERED'
                     except Exception:
-                        row['sticker_delivery_status'] = 'UNKNOWN'
+                        row['sticker_delivery_status'] = ('FAILED' if row['sticker_delivery_status']=='DOWNLOADING' else 'UNKNOWN')
                 await persist_state(self.persist)
             self._schedule_photo(row, send)
             from runtime.image_reply import is_companion_image

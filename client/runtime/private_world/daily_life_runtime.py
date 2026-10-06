@@ -283,15 +283,18 @@ class DailyLifeRuntime:
                 (source_id,),
             )
 
-    def snapshot(self, now: datetime) -> dict:
+    def snapshot(self, now: datetime, *, read_only: bool = False) -> dict:
         if self.relationship is not None:
             relation = self.relationship()
             affinity = (min(relation.trust, relation.comfort) + relation.closeness) / 200
-            self.store.adapt_routine(now, affinity=affinity)
+            if not read_only:
+                self.store.adapt_routine(now, affinity=affinity)
         value = self.store.snapshot(now)
         value.update(refreshing=self._lock.locked() or (self._task is not None and not self._task.done()),
                      error_code=self.error_code, last_failure_code=getattr(self, '_last_failure_code', None))
-        emotion = self.emotion
+        # Support health probes read the life projection without adapting the
+        # routine or lazily creating optional emotion/affect stores.
+        emotion = None if read_only else self.emotion
         view = emotion.view(now) if emotion is not None else {}
         value['emotion'] = dict(
             status='available' if emotion is not None and not emotion.error_code else 'unavailable',
@@ -403,7 +406,8 @@ class DailyLifeRuntime:
                     # published moment advance again within that budget.
                     digest = hashlib.sha256(previous["source_id"].encode("utf-8")).hexdigest()[:12]
                     source_id += f":{digest}"
-                    if not sleep_due and state["rhythm"]["phase"] in {"bathing", "sleep", "interrupted_rest"}:
+                    if (not sleep_due and not state['rhythm'].get('authored_bath')
+                            and state["rhythm"]["phase"] in {"sleep", "interrupted_rest"}):
                         return
                 if exchange_actions:
                     source_id += ':exchange:' + hashlib.sha256(exchange_actions[0]['source_id'].encode()).hexdigest()[:12]
@@ -463,7 +467,7 @@ class DailyLifeRuntime:
                         repeated = (previous is not None and not exchange_actions and not timing_pending
                                     and result['activity']['kind'] == previous.get('activity_kind'))
                         if (meal_port is not None and result['activity']['kind'] != 'meal'
-                                and not (repeated and result['activity']['kind'] != 'rest')):
+                                and not (repeated and result['activity']['kind'] not in {'rest', 'bath_finished', 'shopping'})):
                             from .life_episode import create as create_episode
                             episode = await create_episode(meal_port, source_id, now, result['activity']['kind'],
                                                            {**data, 'selected_activity': result['activity'],

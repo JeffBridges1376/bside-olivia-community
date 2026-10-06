@@ -406,6 +406,9 @@ def _runtime_diagnostic_record(event: object, fields: Mapping[str, object]) -> d
 
     if not isinstance(event, str) or not _RUNTIME_DIAGNOSTIC_EVENT_RE.fullmatch(event):
         return None
+    if event == 'daily_life_failed':
+        from runtime.diagnostics.failure_context import project_daily_life_failure
+        return {'event': event, **project_daily_life_failure(fields)}
     if event in {'personal_chat_transport_closed', 'personal_chat_transport_state', 'personal_chat_exchange_cancelled',
                  'personal_chat_decision_normalized', 'personal_chat_decision_warning'}:
         from runtime.diagnostics.support_bundle import _project_tail_record
@@ -444,6 +447,10 @@ def _safe_log(event: str, **fields) -> None:
         item = (next(_RUNTIME_EVENT_SEQUENCE), projected)
         (_RUNTIME_REQUEST_EVENTS if event in {"request", "cors_preflight"} else _RUNTIME_DIAGNOSTIC_EVENTS).append(item)
     print(json.dumps(record, ensure_ascii=False, sort_keys=True))
+
+
+from runtime.diagnostics.failure_context import set_failure_logger
+set_failure_logger(_safe_log)
 
 
 def _diagnostic_code(prefix: str, exc: Exception) -> str:
@@ -528,6 +535,7 @@ def apply_runtime_llm_config(
             rewriter=rewriter or UnavailableRewriter(),
             discover_runtime_ports=False,
             current_turn_interpreter=_runtime_current_turn_interpreter(quality_orchestrator),
+            recovery_root=_conversation_state_root() or _local_data_root(),
         )
     except Exception:
         raise
@@ -920,7 +928,7 @@ class LetterAdapter:
             related = "\n".join(
                 pair.get("user_letter", "") + "\n" + pair.get("linli_reply", "")
                 for fragment in (self.recent_letter_fragments(content) if recent_fragments is None else recent_fragments)
-                if fragment.fragment_id != 'chat.historical'
+                if fragment.fragment_id not in {'chat.historical', 'chat.relationship'}
                 for pair in json.loads(fragment.text)["letters"]
             )
             now = self._now() if now is None else now
@@ -954,13 +962,19 @@ class LetterAdapter:
         return await emotion.evaluate_received(receipts, now=now)
 
     def recent_letter_fragments(self, content: str = "", *, now=None) -> tuple[UntrustedFragment, ...]:
-        if self.recent_letters is None:
-            return ()
+        now = self._now() if now is None else now
         from runtime.reply.conversation_context import conversation_context
-        recent, historical = conversation_context(self.recent_letters(), query=content,
-            now=self._now() if now is None else now, excluded_sources=self._memory_source_exclusions())
-        return tuple(UntrustedFragment(name, text) for name, text in
+        recent, historical = conversation_context(self.recent_letters() if self.recent_letters is not None else (), query=content,
+            now=now, excluded_sources=self._memory_source_exclusions())
+        fragments = tuple(UntrustedFragment(name, text) for name, text in
                      (('chat.recent', recent), ('chat.historical', historical)) if text)
+        from runtime.memory.history_continuity import companion_view
+        builder = companion_view(getattr(self, 'memory_prompt_builder', None))
+        if builder is not None:
+            relationship = builder.relationship_context(as_of=now, exclude_source_ids=self._memory_source_exclusions())
+            if json.loads(relationship).get('records'):
+                fragments += (UntrustedFragment('chat.relationship', relationship),)
+        return fragments
 
     @staticmethod
     def _memory_source_exclusions() -> tuple[str, ...]:
@@ -1285,6 +1299,25 @@ def _atomic_write_store_file(path: Path, serialized: str) -> None:
         )
 
 
+def _has_saved_video_order(letter) -> bool:
+    root = _local_data_root(_os.environ)
+    lid = str(letter.get('letter_id', ''))
+    if root is None or not _re.fullmatch(r'[A-Za-z0-9_-]{1,80}', lid):
+        return False
+    if letter.get('reply_video_enabled', letter.get('reply_mode') != 'voice_reply') is not True:
+        return False
+    path = root / 'media' / (lid + '-remote-order.private.json')
+    try:
+        saved = json.loads(path.read_text(encoding='utf-8'))
+        submission = saved['submission']
+        return (isinstance(saved['fingerprint'], str) and bool(_re.fullmatch('[a-f0-9]{64}', saved['fingerprint']))
+                and submission['kind'] in {'video', 'lipsync', 'cover_video', 'original_video'}
+                and isinstance(submission['request_id'], str)
+                and bool(_re.fullmatch('[A-Za-z0-9_-]{8,80}', submission['request_id'])))
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
 def _load_store_state() -> None:
     global _store_state_error_code
     root = _state_root()
@@ -1331,7 +1364,11 @@ def _load_store_state() -> None:
                         _mark_media_not_requested(item)
                         needs_persist = True
                     if item.get("media_status") == "PROCESSING":
-                        item.update(media_status="UNAVAILABLE", media_error_code="MEDIA_JOB_INTERRUPTED", media_retryable=True)
+                        from runtime.remote_pipeline import enabled as remote_enabled
+                        if remote_enabled(_os.environ) and _has_saved_video_order(item):
+                            item.update(media_status='QUEUED', media_error_code=None, media_retryable=False)
+                        else:
+                            item.update(media_status="UNAVAILABLE", media_error_code="MEDIA_JOB_INTERRUPTED", media_retryable=True)
                         needs_persist = True
     if isinstance(loaded.get("settings"), dict):
         store.settings = loaded["settings"]
@@ -1600,10 +1637,13 @@ letters_adapter = LetterAdapter(
 
 
 def _create_daily_life_runtime() -> DailyLifeRuntime | None:
-    from runtime.private_world.student_world import shanghai_weather
     try:
+        from runtime.private_world.student_world import shanghai_weather
         path, _reason, enabled = resolve_private_world_database(user_id=_memory_config.user_id)
         if not enabled or path is None:
+            _safe_log('daily_life_failed', failure_stage='initialization', endpoint='daily_life',
+                      error_code='DAILY_LIFE_DISABLED' if not enabled else 'DAILY_LIFE_UNAVAILABLE',
+                      recorded_at_ms=int(time.time() * 1000))
             return None
         return DailyLifeRuntime(
             DailyLifeStore(path.with_name("daily_life.sqlite3")),
@@ -1614,7 +1654,10 @@ def _create_daily_life_runtime() -> DailyLifeRuntime | None:
             weather_provider=shanghai_weather,
             dialogue_rows=lambda: [*store.letters, *store.personal_chats],
         )
-    except (OSError, RuntimeError, ValueError, sqlite3.Error):
+    except (OSError, RuntimeError, ValueError, TypeError, ImportError, sqlite3.Error) as exc:
+        from runtime.diagnostics.failure_context import daily_life_failure
+        _safe_log('daily_life_failed', recorded_at_ms=int(time.time() * 1000),
+                  **daily_life_failure(exc, 'initialization'))
         return None
 
 
@@ -1850,6 +1893,8 @@ async def _migrate_official_history(
 _load_store_state()
 emotion_triage = LetterEmotionTriage(letters_adapter.gateway)
 media_semaphore = asyncio.Semaphore(1)
+# Remote video waits own a separate lane; GPU exclusivity stays on the server.
+video_media_semaphore = asyncio.Semaphore(1)
 media_tasks: set[asyncio.Task] = set()
 reply_tasks: set[asyncio.Task] = set()
 private_world_candidate_tasks: set[asyncio.Task] = set()
@@ -1891,6 +1936,7 @@ reply_pipeline = ReplyPipeline(
     reply_engine,
     reviewer=NullReviewer(),
     rewriter=UnavailableRewriter(),
+    recovery_root=_conversation_state_root() or _local_data_root(),
 )
 
 # ---------------------------------------------------------------------------
@@ -2038,6 +2084,26 @@ async def _media_handler(request: web.Request) -> web.StreamResponse:
 
 
 async def handler(request: web.Request):
+    if request.path.startswith(('/toy/wardrobe/images/', '/toy/images/')):
+        if request.method not in {'GET','HEAD'}:
+            return web.Response(status=405)
+        if request.headers.get('Origin') and not origin_allowed(request.headers['Origin']):
+            return web.Response(status=403)
+        from runtime.image_assets import ensure_image, _catalog
+        from runtime.cloud_service import CloudError
+        try:
+            parts=request.path.split('/')
+            if request.path.startswith('/toy/wardrobe/images/') and len(parts)==5:
+                kind, asset_id='wardrobe',parts[-1]
+            elif request.path.startswith('/toy/images/') and len(parts)==5:
+                kind, asset_id=parts[-2:]
+            else:
+                return web.Response(status=404)
+            target=await ensure_image(_local_data_root(),kind,asset_id)
+            return web.FileResponse(target,headers={'Content-Type':_catalog()[kind][asset_id]['content_type'],
+                'Cache-Control':'private, no-cache',**CORS_HEADERS(request)})
+        except CloudError as exc:
+            return web.Response(status=404 if exc.code in {'IMAGE_ASSET_NOT_FOUND','STICKER_PACK_NOT_INSTALLED'} else 503)
     if request.path.startswith("/toy/local-songs/media/"):
         if request.method not in {"GET", "HEAD"}:
             return web.Response(status=405)
@@ -3603,13 +3669,13 @@ async def _proactive_loop() -> None:
 
 
 def _active_undelivered_letter(*, now: float | None = None, exclude_letter=None) -> dict | None:
-    from original_client_letter_contract import _video_pending, _photo_pending
+    from original_client_letter_contract import _photo_pending
 
     current_time = time.time() if now is None else now
     for letter in store.letters:
         if letter is exclude_letter:
             continue
-        if _video_pending(letter) or _photo_pending(letter):
+        if _photo_pending(letter):
             return letter
         if letter.get("letter_status") in {"PENDING", "PROCESSING"}:
             return letter
@@ -3771,6 +3837,20 @@ async def route(
             code = str(exc) if str(exc) in {'COVER_SOURCE_REQUIRED', 'COVER_TRANSCRIPTION_BUSY', 'COVER_TRANSCRIPTION_UNAVAILABLE'} else 'COVER_TRANSCRIPTION_FAILED'
             _persist_provider_failure(code, 'stage=transcribe; attempts=1', {**_os.environ, 'OLIVIA_LOCAL_DATA_ROOT': str(root)})
             return err(400, code, {'error_code': code})
+    if p in ("/toy/sticker-packs", "/toy/sticker-packs/open"):
+        if method == "POST" and companion_confirmed is not True:
+            return err(403, "COMPANION_CONFIRMATION_REQUIRED", {"status": "FAILED"})
+        root = _local_data_root()
+        if root is None:
+            return err(503, "STICKER_PACK_FOLDER_UNAVAILABLE", {"status": "FAILED"})
+        from runtime.letter_stickers import packs as sticker_packs
+        try:
+            if p.endswith("/open"):
+                await asyncio.to_thread(sticker_packs.open_folder, root)
+            return ok({"folder": str(sticker_packs.folder(root)),
+                       "packs": await asyncio.to_thread(sticker_packs.status, root)})
+        except OSError:
+            return err(503, "STICKER_PACK_FOLDER_UNAVAILABLE", {"status": "FAILED"})
     if p == "/toy/local-songs" or p.startswith("/toy/local-songs/"):
         if method == "POST" and companion_confirmed is not True:
             return err(403, "COMPANION_CONFIRMATION_REQUIRED", {"status": "FAILED"})
@@ -4242,9 +4322,54 @@ async def route(
         await commit_image_memory(sys.modules[__name__], row)
         return ok({'status':'DELIVERED'})
 
+    if p == '/toy/world/wardrobe':
+        from runtime.remote_generation import RemoteGeneration
+        from runtime.cloud_service import CloudError
+        try:
+            api=RemoteGeneration(_os.environ.get('OLIVIA_GPU_API_URL',''),_os.environ.get('OLIVIA_GPU_API_KEY',''))
+            if method=='POST':
+                if not companion_confirmed:
+                    return err(403,'COMPANION_CONFIRMATION_REQUIRED',{})
+                if not isinstance(body,dict) or set(body)!={'request_id','style_id'}:
+                    return err(400,'WARDROBE_STYLE_INVALID',{})
+                result=await api.request('wardrobe_set',body)
+            elif method=='GET':
+                result=await api.request('wardrobe_get',{})
+            else:
+                return err(405,'METHOD_NOT_ALLOWED',{})
+            for style in result['wardrobe_styles']:
+                for look in style['looks']:
+                    look['image_url']=f"http://127.0.0.1:{PORT}/toy/wardrobe/images/{look['look_id']}"
+            return ok(result)
+        except CloudError as exc:
+            return err(exc.status,exc.code,{'error_code':exc.code})
+
     if p == "/toy/settings/reply-routes":
+        from runtime.wardrobe import catalog
+        from runtime.video_reply_settings import image_model_capability, require_image_model
+        async def image_capability():
+            from runtime.remote_generation import RemoteGeneration
+            from runtime.cloud_service import CloudError
+            try:
+                api = RemoteGeneration(_os.environ.get('OLIVIA_GPU_API_URL', ''), _os.environ.get('OLIVIA_GPU_API_KEY', ''))
+                if not api.url or not api.token:
+                    return None
+                return image_model_capability(await asyncio.wait_for(api.request('capabilities', {}), 3))
+            except (CloudError, TimeoutError):
+                return None
         try:
             if method == "POST":
+                if 'image' in body:
+                    VideoReplySettingsStore._validate_image(body['image'])
+                    image = body['image']
+                    saved = video_reply_settings_store.image_snapshot()
+                    retaining_saved = (image.get('model') == saved.get('model') and image['resolution'] == saved['resolution']
+                                       and (image['enabled'] is False or saved['enabled'] is True))
+                    if 'model' in image and not retaining_saved:
+                        capability = await image_capability()
+                        require_image_model(image, {'image': capability} if capability is not None else {})
+                if set(body) == {'request_id', 'wardrobe'}:
+                    return ok(video_reply_settings_store.mutate_wardrobe(body['request_id'], body['wardrobe']))
                 if set(body) == {"request_id", "tier", "image"}:
                     return ok(video_reply_settings_store.mutate_tier(body["request_id"], body["tier"], image=body["image"]))
                 if set(body) == {'request_id', 'image'}:
@@ -4254,7 +4379,11 @@ async def route(
                 if set(body) not in ({"request_id", "routes"}, {"request_id", "routes", "videos"}):
                     return err(400, "VIDEO_REPLY_SETTING_PAYLOAD_INVALID", {})
                 return ok(video_reply_settings_store.mutate_routes(body["request_id"], body["routes"], body.get("videos")))
-            return ok({"state": "available", "image": video_reply_settings_store.image_snapshot(), "tier": video_reply_settings_store.tier_snapshot(), "tier_configured": video_reply_settings_store.saved_tier() is not None,
+            capability = await image_capability()
+            return ok({"state": "available", "image": video_reply_settings_store.image_snapshot(),
+                       **({'image_capability': capability} if capability is not None else {}),
+                       "wardrobe": video_reply_settings_store.wardrobe_snapshot(), "wardrobe_styles": catalog(),
+                       "tier": video_reply_settings_store.tier_snapshot(), "tier_configured": video_reply_settings_store.saved_tier() is not None,
                        "routes": video_reply_settings_store.routes_snapshot(), "videos": video_reply_settings_store.videos_snapshot(),
                        "ready": await asyncio.to_thread(_route_readiness)})
         except VideoReplySettingsError as exc:
@@ -5190,7 +5319,12 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
     def still_current():
         return binding == (letter.get('private_world_delivery_id', ''), letter.get('reply_revision'),
                            letter.get('private_world_reply_sha256'), letter.get('reply_text'))
-    async with media_semaphore:
+    from runtime.remote_pipeline import enabled as remote_enabled
+    is_video = letter.get("reply_video_enabled", reply_mode != "voice_reply") is True
+    # Local renderers still share one physical GPU. Only cloud video dispatch
+    # and polling may overlap the audio lane.
+    lane = video_media_semaphore if is_video and remote_enabled(_os.environ) else media_semaphore
+    async with lane:
         if not still_current():
             return
         letter["media_status"] = "PROCESSING"
@@ -5360,6 +5494,11 @@ async def _render_media_job(letter_id: str, content: str, reply_text: str, reply
                 return
             if video_enabled:
                 letter["reply_video_url"] = f"http://127.0.0.1:{PORT}/toy/media/{output_path.name}"
+                # The text can already have been read. Notify once when the
+                # corresponding video becomes available, without a new letter.
+                if not letter.get('video_completed_at'):
+                    letter['video_completed_at'] = time.time()
+                    letter['is_read'] = 0
             elif reply_mode != "voice_song_video":
                 letter["reply_audio_url"] = f"http://127.0.0.1:{PORT}/toy/media/{output_path.name}"
             letter["media_status"] = "COMPLETED"
@@ -6055,8 +6194,10 @@ async def _run_reply_pipeline_for_letter(
     )
     from runtime.reply.companion_runtime import TURN_CONTEXT
     input_revision = letter.get('input_revision', 0)
+    def turn_is_current():
+        return letter.get('input_revision', 0) == input_revision and letter.get('content', content) == content
     async def save_companion_decision(record):
-        if letter.get('input_revision', 0) != input_revision or letter.get('content', content) != content:
+        if not turn_is_current():
             raise RuntimeError('JEV_INPUT_SUPERSEDED')
         letter['companion_decision'] = record
         _persist_store_state()
@@ -6068,7 +6209,8 @@ async def _run_reply_pipeline_for_letter(
                        + (['audio_speech'] if exact_mode in {ReplyMode.TEXT_LETTER.value, 'voice_reply'}
                           and (letter.get('reply_routes') or {}).get('voice_reply') is True else []),
         input_revision=input_revision, companion_decision=letter.get('companion_decision'),
-        save_companion_decision=save_companion_decision))
+        save_companion_decision=save_companion_decision, turn_is_current=turn_is_current,
+        recovery_namespace=_memory_config.user_id))
     try:
         reply_input = reply_input_override
         if reply_input is None:
@@ -6102,6 +6244,15 @@ async def _run_reply_pipeline_for_letter(
             letters_adapter.build_reply_context(ReplyMode(exact_mode)),
             letter.get('image_reply_settings', {}),
         )
+        if exact_mode == ReplyMode.TEXT_LETTER.value:
+            from runtime.reply.reply_context import TrustedTime
+            if letter.get('generation_context_at'):
+                try:
+                    context = replace(context, trusted_time=TrustedTime(
+                        datetime.fromisoformat(letter['generation_context_at']), source=context.trusted_time.source))
+                except (ValueError, TypeError):
+                    letter.pop('generation_context_at', None)
+            letter.setdefault('generation_context_at', context.trusted_time.instant.isoformat())
         if exact_mode == ReplyMode.TEXT_LETTER.value:
             from original_client_letter_contract import _published
             context = replace(context, sticker_history=tuple(
@@ -6252,6 +6403,10 @@ async def _generate_reply_billed(letter_id, content, *, idempotency_key=None):
             'reviewer_calls': getattr(result, 'reviewer_calls', None),
             'rewrite_calls': getattr(result, 'rewrite_calls', None),
             'quality_error_code': result.error_code,
+            'degraded_stages': getattr(result, 'degraded_stages', {}),
+            'stage_timing_seconds': getattr(result, 'stage_timing_seconds', {}),
+            'stage_cache_hits': getattr(result, 'stage_cache_hits', {}),
+            'stage_actual_calls': getattr(result, 'stage_actual_calls', {}),
         })
         letter.update(quality)
         # Keep the existing private state contract; exported metadata is finite.
@@ -6267,8 +6422,11 @@ async def _generate_reply_billed(letter_id, content, *, idempotency_key=None):
         from runtime.diagnostics.support_bundle import project_reply_quality
         _safe_log("letter_failed", error_code=public_code,
                   **project_reply_quality(letter),
-                  **project_failure_context({'cause_code': getattr(result, 'error_code', None)}))
+                  **project_failure_context({**getattr(result, 'failure_context', {}),
+                      'cause_code': getattr(result, 'error_code', None)}))
         return False
+    if getattr(result, 'degraded_stages', None):
+        letter['image_status'] = 'SKIPPED'
     if getattr(result, 'companion_decision', None) is not None:
         letter['companion_decision'] = result.companion_decision
         letter['companion_timing'] = result.companion_timing
