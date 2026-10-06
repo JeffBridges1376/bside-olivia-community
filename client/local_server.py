@@ -2103,7 +2103,7 @@ async def handler(request: web.Request):
             return web.FileResponse(target,headers={'Content-Type':_catalog()[kind][asset_id]['content_type'],
                 'Cache-Control':'private, no-cache',**CORS_HEADERS(request)})
         except CloudError as exc:
-            return web.Response(status=404 if exc.code=='IMAGE_ASSET_NOT_FOUND' else 503)
+            return web.Response(status=404 if exc.code in {'IMAGE_ASSET_NOT_FOUND','STICKER_PACK_NOT_INSTALLED'} else 503)
     if request.path.startswith("/toy/local-songs/media/"):
         if request.method not in {"GET", "HEAD"}:
             return web.Response(status=405)
@@ -3837,6 +3837,20 @@ async def route(
             code = str(exc) if str(exc) in {'COVER_SOURCE_REQUIRED', 'COVER_TRANSCRIPTION_BUSY', 'COVER_TRANSCRIPTION_UNAVAILABLE'} else 'COVER_TRANSCRIPTION_FAILED'
             _persist_provider_failure(code, 'stage=transcribe; attempts=1', {**_os.environ, 'OLIVIA_LOCAL_DATA_ROOT': str(root)})
             return err(400, code, {'error_code': code})
+    if p in ("/toy/sticker-packs", "/toy/sticker-packs/open"):
+        if method == "POST" and companion_confirmed is not True:
+            return err(403, "COMPANION_CONFIRMATION_REQUIRED", {"status": "FAILED"})
+        root = _local_data_root()
+        if root is None:
+            return err(503, "STICKER_PACK_FOLDER_UNAVAILABLE", {"status": "FAILED"})
+        from runtime.letter_stickers import packs as sticker_packs
+        try:
+            if p.endswith("/open"):
+                await asyncio.to_thread(sticker_packs.open_folder, root)
+            return ok({"folder": str(sticker_packs.folder(root)),
+                       "packs": await asyncio.to_thread(sticker_packs.status, root)})
+        except OSError:
+            return err(503, "STICKER_PACK_FOLDER_UNAVAILABLE", {"status": "FAILED"})
     if p == "/toy/local-songs" or p.startswith("/toy/local-songs/"):
         if method == "POST" and companion_confirmed is not True:
             return err(403, "COMPANION_CONFIRMATION_REQUIRED", {"status": "FAILED"})

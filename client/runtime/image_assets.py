@@ -143,6 +143,12 @@ async def ensure_image(data_root, kind, asset_id, *, base_url=None):
             raw=await asyncio.to_thread(_builtin_image,data_root,entry)
             if await asyncio.to_thread(_save_builtin,raw,target,entry):
                 return target
+            # Other styles come only from packs the user installed from the download page.
+            from runtime.letter_stickers.packs import installed
+            pack_file=(await asyncio.to_thread(installed,data_root)).get(asset_id)
+            if pack_file is None:
+                raise CloudError('STICKER_PACK_NOT_INSTALLED', 404)
+            return pack_file
         from runtime.gpu_settings import GPU_BASE
         base = (base_url or os.environ.get('OLIVIA_GPU_API_URL') or GPU_BASE).rstrip('/')
         ticket_url = base + '/v1/components/images/' + kind + '/' + asset_id

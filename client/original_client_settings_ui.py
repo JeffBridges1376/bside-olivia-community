@@ -3868,6 +3868,42 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     `;return style;
   };
 
+  const STICKER_PACK_PAGE = "175.24.191.6/installers/stickers.html";
+  const mountStickerPacks = (section) => {
+    const row = document.createElement("div");
+    row.className = "olivia-group-row";
+    const copy = document.createElement("div");
+    copy.className = "flex flex-col gap-1";
+    const state = text("span", "表情包：正在读取……", "text-text-body text-body-m");
+    const detail = text("span", "", "text-text-secondary text-body-m");
+    copy.append(state, detail);
+    const stickerPackRequest = async (action) => {
+      const response = await fetch(new URL("/toy/sticker-packs" + action, apiBase), {
+        method: action ? "POST" : "GET", cache: "no-store", credentials: "omit",
+        headers: { "Accept": "application/json", "Content-Type": "application/json", [CONFIRM_HEADER]: CONFIRM_VALUE },
+        ...(action ? { body: "{}" } : {}),
+      });
+      const result = await response.json();
+      const data = result && result.data;
+      if (!response.ok || !data || !Array.isArray(data.packs)) throw new Error("STICKER_PACK_FOLDER_UNAVAILABLE");
+      return data;
+    };
+    const render = (data) => {
+      const ready = data.packs.filter((pack) => pack.installed === pack.total).map((pack) => pack.name);
+      state.textContent = ready.length
+        ? `表情包：线稿（自带）、${ready.join("、")}`
+        : "表情包：线稿（自带）";
+      detail.textContent = `更多风格可在 ${STICKER_PACK_PAGE} 下载，解压到表情包文件夹后，林离在 QQ 里就会使用。文件夹：${data.folder}`;
+    };
+    const open = button("打开表情包文件夹", async () => {
+      try { render(await stickerPackRequest("/open")); }
+      catch (_error) { detail.textContent = "无法打开表情包文件夹，请稍后重试。"; }
+    });
+    row.append(copy, open);
+    section.append(row);
+    stickerPackRequest("").then(render).catch(() => { state.textContent = "表情包：线稿（自带）"; });
+  };
+
   const mountWardrobeSetting = (section) => {
     const panel=document.createElement('section');panel.setAttribute('data-olivia-wardrobe','');
     const heading=document.createElement('header');heading.className='ow-heading';
@@ -4447,6 +4483,7 @@ BOOTSTRAP_JAVASCRIPT = r'''(() => {
     const reply = settingsGroup("reply", "林离怎么回复", "回信方式、图片和主动写信");
     mountVideoReplySetting(reply);
     if (window.__oliviaNativeView) mountProactiveSetting(reply);
+    mountStickerPacks(reply);
     const chat = settingsGroup("chat", "QQ / 微信", "绑定后可以在 QQ 或微信里和林离聊天");
     const letters = settingsGroup("letters", "信件与记忆", "备份信件与聊天，查看长期记忆");
     const memoryRow = document.createElement("div");

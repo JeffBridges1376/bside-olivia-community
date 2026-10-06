@@ -385,7 +385,10 @@ async def _generate_billed(server, event, row):
     from runtime.image_reply import photo_reply_context
     context = photo_reply_context(context, row['image_reply_settings'], channel=event.channel)
     from .stickers import choices
-    sticker_choices = choices(server.store.personal_chats, context.private_behavior, channel=event.channel)
+    from runtime.letter_stickers.packs import installed as installed_packs
+    sticker_choices = choices(server.store.personal_chats, context.private_behavior, channel=event.channel,
+                              installed=installed_packs(getattr(server, '_local_data_root', lambda: None)())
+                              if event.channel == 'qq' else ())
     delayed_delivery = False
     try:
         sent_at = datetime.fromisoformat(row['user_sent_at']) if row.get('user_sent_at') else None
@@ -1035,7 +1038,9 @@ def install_personal_chat(app, server):
                 from runtime.letter_stickers.selection import allowed_stickers
                 try:
                     context = server.letters_adapter.build_reply_context(ReplyMode.FUTURE_IM, future_im_enabled=True)
-                    return key in allowed_stickers(context.private_behavior, channel='qq')
+                    from runtime.letter_stickers.packs import installed
+                    return key in allowed_stickers(context.private_behavior, channel='qq',
+                                                   installed=installed(server._local_data_root()))
                 except Exception:
                     return False
             from runtime.image_assets import ensure_image
