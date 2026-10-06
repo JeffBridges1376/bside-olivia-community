@@ -13,10 +13,10 @@ BASELINES = {
 def prepare(root):
     sources = {}
     for name, digest in BASELINES.items():
-        raw = (root / 'qwen' / name).read_bytes()
-        if hashlib.sha256(raw).hexdigest() != digest:
+        source = (root / 'qwen' / name).read_bytes().decode('utf-8').replace('\r\n', '\n')
+        if hashlib.sha256(source.encode('utf-8')).hexdigest() != digest:
             raise ValueError('Cloud pricing changed; review a fresh baseline')
-        sources[name] = raw.decode('utf-8')
+        sources[name] = source
 
     def change(name, before, after):
         if sources[name].count(before) != 1:

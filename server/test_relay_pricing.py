@@ -95,6 +95,15 @@ class RelayPricingTests(unittest.TestCase):
             installer.apply(self.root)
         self.assertEqual(before, {name: (self.root / 'qwen' / name).read_bytes() for name in self.sources})
 
+    def test_crlf_cloud_source_has_same_reviewed_baseline(self):
+        expected = self.prepare()
+        for name, source in self.sources.items():
+            (self.root / 'qwen' / name).write_bytes(source.replace('\n', '\r\n').encode())
+        with patch.object(installer, 'BASELINES', self.baselines):
+            installer.apply(self.root)
+        self.assertEqual(expected, {name: (self.root / 'qwen' / name).read_bytes().decode()
+                                    for name in self.sources})
+
 
 if __name__ == '__main__':
     unittest.main()
