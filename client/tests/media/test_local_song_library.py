@@ -227,3 +227,50 @@ def test_deleted_song_id_is_not_reused_by_colliding_content(library, tmp_path):
     library.delete(row['id'])
     library.import_path(str(b))
     assert library.songs()[0]['native_id'] != '1861425279'
+
+
+def test_repeated_delete_reimport_keeps_all_old_cache_ids_owned(library, tmp_path):
+    a, b = tmp_path / 'a.mp4', tmp_path / 'b.mp4'
+    a.write_bytes(b'synthetic-song-9584')
+    b.write_bytes(b'synthetic-song-29638')
+    library.import_path(str(a))
+    first = library.songs()[0]
+    library.delete(first['id'])
+    library.import_path(str(a))
+    restored = library.songs()[0]
+    library.delete(restored['id'])
+    library.import_path(str(b))
+    assert library.songs()[0]['native_id'] != first['native_id']
+    assert restored['native_id'] == first['native_id']
+    reopened = LocalSongLibrary(library.root.parent, {})
+    assert reopened._retired()[first['id']] == first['native_id']
+
+
+def test_audio_reimport_reuses_its_owned_native_cache_id(library, tmp_path):
+    import wave
+    source = tmp_path / 'synthetic.wav'
+    with wave.open(str(source), 'wb') as audio:
+        audio.setparams((1, 2, 8000, 0, 'NONE', 'not compressed'))
+        audio.writeframes(b'\x00\x00' * 80)
+    library.import_audio(source, 'Synthetic audio')
+    first = library.songs()[0]
+    library.delete(first['id'])
+    reopened = LocalSongLibrary(library.root.parent, {})
+    reopened.import_audio(source, 'Synthetic audio')
+    assert reopened.songs()[0]['native_id'] == first['native_id']
+
+
+def test_corrupt_id_ledger_preserves_existing_playback_but_cannot_allocate(library, tmp_path):
+    a, b = tmp_path / 'a.mp4', tmp_path / 'b.mp4'
+    a.write_bytes(b'synthetic-song-9584')
+    b.write_bytes(b'synthetic-song-29638')
+    library.import_path(str(a))
+    existing = library.songs()
+    ledger = library.root / 'native-ids.json'
+    ledger.write_text('broken', encoding='utf-8')
+    assert library.songs() == existing
+    result = library.import_path(str(b))
+    assert result['failed'] == 1 and result['added'] == 0
+    assert result['errors'][0]['code'] == 'LOCAL_SONG_ID_LEDGER_INVALID'
+    assert ledger.read_text(encoding='utf-8') == 'broken'
+    assert library.songs() == existing

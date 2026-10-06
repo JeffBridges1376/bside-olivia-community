@@ -62,12 +62,10 @@ class LocalSongLibrary:
     def songs(self):
         with _LOCK:
             rows = self._read()
-            taken = {row.get('native_id') for row in rows if row.get('native_id')} | set(self._retired().values())
             changed = False
             for row in rows:
                 if not row.get('native_id'):
-                    row['native_id'] = _assign_native_id(row['id'], taken)
-                    taken.add(row['native_id'])
+                    row['native_id'] = self._native_id(row['id'], rows)
                     changed = True
             if changed:
                 self._write(rows)
@@ -133,13 +131,29 @@ class LocalSongLibrary:
             rows = data['retired']
             if data['schema_version'] != 1 or not isinstance(rows, dict):
                 raise ValueError()
-            return {str(key): str(value) for key, value in rows.items()}
-        except (OSError, ValueError, KeyError, TypeError):
-            return {}
+            if any(not _ID.fullmatch(key) or not isinstance(value, str) or not value.isascii()
+                   or not value.isdecimal() or not NATIVE_SONG_ID_BASE <= int(value) < NATIVE_SONG_ID_BASE + NATIVE_SONG_ID_SPAN
+                   for key, value in rows.items()) or len(set(rows.values())) != len(rows):
+                raise ValueError()
+            return rows
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise LocalSongError('LOCAL_SONG_ID_LEDGER_INVALID') from exc
+
+    def _native_id(self, song_id, rows):
+        retired = self._retired()
+        taken = {row['native_id'] for row in rows if row.get('native_id') and row['id'] != song_id}
+        owned = retired.get(song_id)
+        if owned is not None:
+            if owned in taken:
+                raise LocalSongError('LOCAL_SONG_NATIVE_ID_CONFLICT')
+            return owned
+        return _assign_native_id(song_id, taken | set(retired.values()))
 
     def _retire(self, song_id, native_id):
         """Keep a deleted song's native id owned by its content for good."""
         retired = self._retired()
+        if song_id in retired and retired[song_id] != native_id:
+            raise LocalSongError('LOCAL_SONG_NATIVE_ID_CONFLICT')
         retired[str(song_id)] = str(native_id)
         fd, name = tempfile.mkstemp(dir=self.root, suffix='.json.tmp')
         try:
@@ -236,9 +250,8 @@ class LocalSongLibrary:
             try:
                 shutil.copyfile(source, temporary)
                 os.replace(temporary, destination)
-                taken = {row.get('native_id') for row in rows if row.get('native_id')} | set(self._retired().values())
                 self._write([*rows, {'id': song_id, 'name': title.strip(), 'duration': duration,
-                                     'media_type': 'audio', 'native_id': _assign_native_id(song_id, taken)}])
+                                     'media_type': 'audio', 'native_id': self._native_id(song_id, rows)}])
             except Exception:
                 destination.unlink(missing_ok=True)
                 raise
@@ -321,9 +334,8 @@ class LocalSongLibrary:
                     target = self.root / (song_id + '.mp4')
                     temporary.replace(target)
                     try:
-                        taken = {row.get('native_id') for row in rows if row.get('native_id')} | set(self._retired().values())
                         self._write([*rows, {'id': song_id, 'name': title[:120], 'duration': duration,
-                                             'native_id': _assign_native_id(song_id, taken)}])
+                                             'native_id': self._native_id(song_id, rows)}])
                     except Exception:
                         target.unlink(missing_ok=True)
                         raise
